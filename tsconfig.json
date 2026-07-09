@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmitOnError": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist",
+    "paths": {
+      "@dreamcode/cli": ["packages/cli/src/index.ts"],
+      "@dreamcode/context": ["packages/context/src/index.ts"],
+      "@dreamcode/core": ["packages/core/src/index.ts"],
+      "@dreamcode/models": ["packages/models/src/index.ts"],
+      "@dreamcode/safety": ["packages/safety/src/index.ts"],
+      "@dreamcode/shared": ["packages/shared/src/index.ts"],
+      "@dreamcode/store": ["packages/store/src/index.ts"],
+      "@dreamcode/tools": ["packages/tools/src/index.ts"]
+    },
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["node"]
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/store" },
+    { "path": "./packages/safety" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/models" },
+    { "path": "./packages/context" },
+    { "path": "./packages/core" },
+    { "path": "./packages/cli" }
+  ]
+}

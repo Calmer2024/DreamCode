@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../store" },
+    { "path": "../safety" },
+    { "path": "../tools" },
+    { "path": "../models" },
+    { "path": "../context" }
+  ]
+}

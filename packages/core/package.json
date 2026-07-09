@@ -1,0 +1,24 @@
+{
+  "name": "@dreamcode/core",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dreamcode/context": "workspace:*",
+    "@dreamcode/models": "workspace:*",
+    "@dreamcode/safety": "workspace:*",
+    "@dreamcode/shared": "workspace:*",
+    "@dreamcode/store": "workspace:*",
+    "@dreamcode/tools": "workspace:*"
+  }
+}

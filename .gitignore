@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.tmp/
+.dreamcode/
+.env
+.env.*
+!.env.example
+!evals/fixtures/safety/.env
+packages/*/dist/

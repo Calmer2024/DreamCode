@@ -1,0 +1,24 @@
+{
+  "name": "@dreamcode/tools",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dreamcode/safety": "workspace:*",
+    "@dreamcode/shared": "workspace:*",
+    "diff": "^8.0.2",
+    "fast-glob": "^3.3.3",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.24.6"
+  }
+}
