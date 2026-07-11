@@ -22,6 +22,11 @@
     "@dreamcode/shared": "workspace:*",
     "@dreamcode/store": "workspace:*",
     "@dreamcode/tools": "workspace:*",
-    "commander": "^14.0.1"
+    "commander": "^14.0.1",
+    "ink": "^7.1.0",
+    "react": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17"
   }
 }

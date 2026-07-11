@@ -14,6 +14,11 @@ export type RiskTag =
   | "shell_readonly"
   | "shell_mutating"
   | "network_access"
+  | "web_fetch"
+  | "mcp_tool"
+  | "rollback"
+  | "install_dependency"
+  | "writes_config"
   | "external_side_effect"
   | "git_history_rewrite"
   | "long_running"
@@ -57,6 +62,8 @@ export interface ChangedFile {
   beforeHash?: string;
   afterHash?: string;
   diff?: string;
+  beforeSnapshotRef?: string;
+  patchRef?: string;
 }
 
 export interface ToolError {
@@ -134,6 +141,7 @@ export interface ModelStreamInput {
   model: string;
   mode: RunMode;
   workspaceRoot: string;
+  signal?: AbortSignal;
 }
 
 export interface ModelProvider {
@@ -143,17 +151,34 @@ export interface ModelProvider {
 
 export type AgentEventType =
   | "session.created"
+  | "session.resumed"
+  | "session.summarized"
+  | "session.indexed"
   | "turn.started"
+  | "turn.interrupted"
   | "user.message"
   | "context.built"
   | "context.compressed"
   | "model.started"
   | "model.delta"
   | "model.tool_call"
+  | "model.usage"
   | "permission.decided"
+  | "approval.remembered"
   | "tool.started"
   | "tool.completed"
+  | "artifact.created"
+  | "web.source.saved"
+  | "skill.loaded"
+  | "skill.resource.loaded"
+  | "mcp.server.started"
+  | "mcp.server.stopped"
+  | "mcp.tool.discovered"
+  | "file.snapshot.created"
   | "file.changed"
+  | "file.rollback.started"
+  | "file.rollback.completed"
+  | "file.rollback.failed"
   | "todo.updated"
   | "turn.completed"
   | "turn.failed";
@@ -179,7 +204,7 @@ export interface Turn {
   sessionId: string;
   prompt: string;
   mode: RunMode;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "interrupted";
   startedAt: string;
   completedAt?: string;
 }

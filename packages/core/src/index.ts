@@ -14,7 +14,7 @@ import type {
   Turn,
 } from "@dreamcode/shared";
 import { createId, makeEvent, nowIso, toErrorMessage } from "@dreamcode/shared";
-import { createSession } from "@dreamcode/store";
+import { createSession, openSession, rebuildSessionIndex, replaySession } from "@dreamcode/store";
 import { createDefaultToolRegistry, type ToolRegistry } from "@dreamcode/tools";
 
 export interface ApprovalRequest {
@@ -26,6 +26,7 @@ export interface RunTurnInput {
   prompt: string;
   workspaceRoot: string;
   provider: ModelProvider;
+  sessionId?: string;
   model?: string;
   mode?: RunMode;
   conversationSummary?: string;
@@ -34,6 +35,7 @@ export interface RunTurnInput {
   registry?: ToolRegistry;
   permissionEngine?: PermissionEngine;
   contextBuilder?: ContextBuilder;
+  signal?: AbortSignal;
   approvalHandler?: (request: ApprovalRequest) => Promise<boolean>;
   questionHandler?: (question: string) => Promise<string>;
 }
@@ -51,10 +53,20 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const permissionEngine = input.permissionEngine ?? new PermissionEngine();
   const contextBuilder = input.contextBuilder ?? new ContextBuilder();
   const maxToolCalls = input.maxToolCalls ?? 80;
-  const { session, eventLog } = await createSession({
-    workspaceRoot: input.workspaceRoot,
-    home: input.home,
-  });
+  const { session, eventLog } = input.sessionId
+    ? await openSession({ sessionId: input.sessionId, home: input.home })
+    : await createSession({
+        workspaceRoot: input.workspaceRoot,
+        home: input.home,
+      });
+  const priorEvents = input.sessionId ? await eventLog.readAll() : [];
+  const resumeState = input.sessionId ? replaySession(priorEvents) : undefined;
+  const conversationSummary = [
+    input.conversationSummary,
+    resumeState ? buildResumeSummary(resumeState) : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const turn: Turn = {
     id: createId("turn"),
     sessionId: session.id,
@@ -86,20 +98,32 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
     return event;
   };
 
-  yield await emit("session.created", { session });
+  yield await emit(input.sessionId ? "session.resumed" : "session.created", {
+    session,
+    restored: resumeState
+      ? {
+          status: resumeState.status,
+          turnCount: resumeState.turns.length,
+          changedFiles: resumeState.changedFiles.map((file) => file.path),
+          latestSummary: resumeState.latestSummary?.message,
+        }
+      : undefined,
+  });
   yield await emit("turn.started", { turn });
   yield await emit("user.message", { content: input.prompt });
 
   try {
     while (toolCallCount < maxToolCalls) {
+      throwIfInterrupted(input.signal);
       const context = await contextBuilder.build({
         prompt: input.prompt,
         mode,
         workspaceRoot: session.workspaceRoot,
-        conversationSummary: input.conversationSummary,
+        conversationSummary,
         observations: state.observations,
         todoItems: state.todoItems,
       });
+      throwIfInterrupted(input.signal);
       yield await emit("context.built", { summary: context.summary });
 
       yield await emit("model.started", {
@@ -117,7 +141,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         model: input.model ?? "",
         mode,
         workspaceRoot: session.workspaceRoot,
+        signal: input.signal,
       })) {
+        throwIfInterrupted(input.signal);
         if (modelEvent.type === "text_delta") {
           assistantText += modelEvent.text;
           yield await emit("model.delta", { text: modelEvent.text });
@@ -126,6 +152,10 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           toolCalls.push(modelEvent.toolCall);
           yield await emit("model.tool_call", { toolCall: modelEvent.toolCall });
         }
+        if (modelEvent.type === "usage") {
+          yield await emit("model.usage", { usage: modelEvent.usage });
+        }
+        throwIfInterrupted(input.signal);
       }
 
       if (toolCalls.length === 0) {
@@ -135,7 +165,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           state,
           eventLogPath: eventLog.filePath,
         });
+        yield await emit("session.summarized", { summary: summary.message });
         yield await emit("turn.completed", { summary });
+        await safelyRebuildIndex(input.home);
         return;
       }
 
@@ -157,7 +189,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
             state,
             eventLogPath: eventLog.filePath,
           });
+          yield await emit("session.summarized", { summary: summary.message });
           yield await emit("turn.completed", { summary });
+          await safelyRebuildIndex(input.home);
           return;
         }
 
@@ -171,6 +205,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           toolCall,
           approvalHandler: input.approvalHandler,
         });
+        throwIfInterrupted(input.signal);
         yield await emit("permission.decided", {
           toolCallId: toolCall.id,
           tool: toolCall.name,
@@ -186,6 +221,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
                 sessionDir: session.sessionDir,
                 workspaceRoot: session.workspaceRoot,
                 mode,
+                signal: input.signal,
                 questionHandler: input.questionHandler,
                 emit,
                 yieldEvent: async (event) => {
@@ -215,6 +251,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         };
         state.observations.push(observation);
         applyResultToState(state, toolCall, result);
+        throwIfInterrupted(input.signal);
 
         if (result.status === "success") {
           consecutiveFailures = 0;
@@ -229,13 +266,78 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
 
     throw new Error(`Maximum tool call count reached (${maxToolCalls}).`);
   } catch (error) {
+    if (error instanceof TurnInterruptedError || input.signal?.aborted) {
+      yield await emit("turn.interrupted", {
+        reason: getAbortReason(input.signal) ?? toErrorMessage(error),
+      });
+      await safelyRebuildIndex(input.home);
+      return;
+    }
+
     const summary = buildFinalSummary({
       status: "failed",
       message: toErrorMessage(error),
       state,
       eventLogPath: eventLog.filePath,
     });
+    yield await emit("session.summarized", { summary: summary.message });
     yield await emit("turn.failed", { error: toErrorMessage(error), summary });
+    await safelyRebuildIndex(input.home);
+  }
+}
+
+class TurnInterruptedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TurnInterruptedError";
+  }
+}
+
+function throwIfInterrupted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new TurnInterruptedError(getAbortReason(signal) ?? "Turn interrupted by user.");
+  }
+}
+
+function getAbortReason(signal: AbortSignal | undefined): string | undefined {
+  if (!signal?.aborted) {
+    return undefined;
+  }
+  const reason = signal.reason;
+  if (typeof reason === "string") {
+    return reason;
+  }
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return "Turn interrupted by user.";
+}
+
+function buildResumeSummary(state: ReturnType<typeof replaySession>): string {
+  const changedFiles = state.changedFiles.map((file) => `${file.operation}: ${file.path}`);
+  const commands = state.commands.map(
+    (command) => `${command.command} -> ${command.exitCode ?? "unknown"} (${command.summary})`,
+  );
+  return [
+    "This turn resumes an existing DreamCode session.",
+    `Previous status: ${state.status}.`,
+    state.latestSummary ? `Latest summary: ${state.latestSummary.message}` : undefined,
+    state.todoItems.length
+      ? `Previous todo:\n${state.todoItems.map((item) => `- ${item.status}: ${item.content}`).join("\n")}`
+      : undefined,
+    changedFiles.length ? `Files already changed:\n${changedFiles.join("\n")}` : undefined,
+    commands.length ? `Commands already run:\n${commands.join("\n")}` : undefined,
+    state.warnings.length ? `Replay warnings:\n${state.warnings.join("\n")}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function safelyRebuildIndex(home: string | undefined): Promise<void> {
+  try {
+    await rebuildSessionIndex(home);
+  } catch {
+    // The JSONL event log is the fact source. Index rebuild failures should not fail a turn.
   }
 }
 
@@ -322,6 +424,7 @@ async function executeToolWithEvents(input: {
   workspaceRoot: string;
   sessionDir: string;
   mode: RunMode;
+  signal?: AbortSignal;
   questionHandler?: (question: string) => Promise<string>;
   emit: <TPayload>(type: AgentEvent["type"], payload: TPayload) => Promise<AgentEvent<TPayload>>;
   yieldEvent: (event: AgentEvent) => Promise<void>;
@@ -350,6 +453,7 @@ async function executeToolWithEvents(input: {
       sessionDir: input.sessionDir,
       mode: input.mode,
       toolCallId: input.toolCall.id,
+      signal: input.signal,
       questionHandler: input.questionHandler,
     });
 
@@ -362,18 +466,80 @@ async function executeToolWithEvents(input: {
         data: result.data,
         stdoutRef: result.stdoutRef,
         stderrRef: result.stderrRef,
+        artifactRefs: result.artifactRefs,
       }),
     );
 
+    for (const artifactRef of result.artifactRefs ?? []) {
+      await input.yieldEvent(
+        await input.emit("artifact.created", {
+          toolCallId: input.toolCall.id,
+          tool: input.toolCall.name,
+          kind: input.toolCall.name.startsWith("web.") ? "web" : "tool",
+          path: artifactRef,
+        }),
+      );
+    }
+
+    if (input.toolCall.name === "web.fetch" && result.status === "success") {
+      const data = result.data as
+        | { title?: string; url?: string; artifactRef?: string }
+        | undefined;
+      await input.yieldEvent(
+        await input.emit("web.source.saved", {
+          toolCallId: input.toolCall.id,
+          title: data?.title,
+          url: data?.url,
+          path: data?.artifactRef,
+        }),
+      );
+    }
+
+    if (input.toolCall.name === "skill.read" && result.status === "success") {
+      const data = result.data as { name?: string; path?: string } | undefined;
+      await input.yieldEvent(
+        await input.emit("skill.loaded", {
+          toolCallId: input.toolCall.id,
+          name: data?.name,
+          path: data?.path,
+        }),
+      );
+    }
+
+    if (input.toolCall.name === "skill.read_resource" && result.status === "success") {
+      const data = result.data as { name?: string; resourcePath?: string } | undefined;
+      await input.yieldEvent(
+        await input.emit("skill.resource.loaded", {
+          toolCallId: input.toolCall.id,
+          name: data?.name,
+          resourcePath: data?.resourcePath,
+        }),
+      );
+    }
+
     for (const changedFile of result.changedFiles ?? []) {
+      if (changedFile.beforeSnapshotRef) {
+        await input.yieldEvent(
+          await input.emit("file.snapshot.created", {
+            toolCallId: input.toolCall.id,
+            path: changedFile.path,
+            beforeHash: changedFile.beforeHash,
+            snapshotRef: changedFile.beforeSnapshotRef,
+          }),
+        );
+      }
       await input.yieldEvent(
         await input.emit("file.changed", { toolCallId: input.toolCall.id, changedFile }),
       );
     }
 
     if (input.toolCall.name === "todo.write") {
+      const data = result.data as { items?: TodoItem[] } | undefined;
       await input.yieldEvent(
-        await input.emit("todo.updated", { toolCallId: input.toolCall.id, items: result.data }),
+        await input.emit("todo.updated", {
+          toolCallId: input.toolCall.id,
+          items: data?.items ?? [],
+        }),
       );
     }
 

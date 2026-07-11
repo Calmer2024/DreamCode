@@ -39,6 +39,30 @@ describe("permission engine", () => {
     expect(decision.decision).toBe("allow");
   });
 
+  it("classifies phase 2 web and mcp tools", () => {
+    const web = engine.decide({
+      mode: "yolo",
+      workspaceRoot: "/repo/project",
+      toolCall: {
+        id: "call_web",
+        name: "web.fetch",
+        input: { url: "https://example.com" },
+      },
+    });
+    const mcp = engine.decide({
+      mode: "yolo",
+      workspaceRoot: "/repo/project",
+      toolCall: {
+        id: "call_mcp",
+        name: "mcp.call",
+        input: { server: "fake", tool: "echo" },
+      },
+    });
+
+    expect(web.decision).toBe("allow");
+    expect(mcp.decision).toBe("ask");
+  });
+
   it("denies workspace external writes and secret reads", () => {
     const externalWrite = engine.decide({
       mode: "yolo",

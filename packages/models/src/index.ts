@@ -529,15 +529,18 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
   async *stream(input: ModelStreamInput): AsyncIterable<ModelEvent> {
     const toolNameMap = new Map<string, string>();
     const tools = toOpenAITools(input.tools, toolNameMap);
-    const stream = await this.client.chat.completions.create({
-      model: input.model || this.defaultModel,
-      messages: input.messages.map((message) => ({
-        role: message.role === "tool" ? "user" : message.role,
-        content: message.content,
-      })) as any,
-      tools: tools as any,
-      stream: true,
-    } as any);
+    const stream = await this.client.chat.completions.create(
+      {
+        model: input.model || this.defaultModel,
+        messages: input.messages.map((message) => ({
+          role: message.role === "tool" ? "user" : message.role,
+          content: message.content,
+        })) as any,
+        tools: tools as any,
+        stream: true,
+      } as any,
+      input.signal ? ({ signal: input.signal } as any) : undefined,
+    );
 
     const pendingToolCalls = new Map<
       number,

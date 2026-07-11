@@ -164,10 +164,16 @@ export function classifyCommand(command: string): CommandClassification {
   }
 
   if (askCommandPatterns.some((pattern) => pattern.test(trimmed))) {
+    const installRisk =
+      /^(npm|pnpm|yarn)\s+(install|add|remove|update|upgrade)(\s|$)|^pip\s+install(\s|$)|^python\s+-m\s+pip\s+install(\s|$)/i.test(
+        trimmed,
+      );
     return {
       decision: "ask",
       reason: "Command may install dependencies, access network, or update external state.",
-      risk: ["shell_mutating", "network_access"],
+      risk: installRisk
+        ? ["shell_mutating", "network_access", "install_dependency"]
+        : ["shell_mutating", "network_access"],
     };
   }
 
@@ -192,6 +198,43 @@ export class PermissionEngine {
 
     if (toolName === "todo.write" || toolName === "question.ask") {
       return allow("Planning and user-question tools are always safe.", []);
+    }
+
+    if (
+      toolName === "skill.list" ||
+      toolName === "skill.read" ||
+      toolName === "skill.read_resource"
+    ) {
+      return allow("Skill metadata and resources are local read-only context.", ["read_workspace"]);
+    }
+
+    if (toolName === "web.search" || toolName === "web.fetch") {
+      if (mode === "plan") {
+        return deny("Plan mode does not allow network access.", ["network_access", "web_fetch"]);
+      }
+      if (mode === "guided") {
+        return ask("Guided mode requires approval before web access.", [
+          "network_access",
+          "web_fetch",
+        ]);
+      }
+      return allow("Public web read access is allowed in this mode.", [
+        "network_access",
+        "web_fetch",
+      ]);
+    }
+
+    if (toolName === "mcp.list" || toolName === "mcp.call") {
+      if (mode === "full") {
+        return allow("Full mode allows configured MCP tools.", [
+          "mcp_tool",
+          "external_side_effect",
+        ]);
+      }
+      return ask("MCP tools require approval because their side effects depend on the server.", [
+        "mcp_tool",
+        "external_side_effect",
+      ]);
     }
 
     if (toolName === "search.grep" || toolName === "search.glob") {

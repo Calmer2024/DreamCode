@@ -21,11 +21,19 @@ import {
   type DreamCodeLlmProfile,
   getActiveLlmProfile,
   getConfigPath,
+  getDreamCodeHome,
+  getIndexPath,
+  listSessions,
   loadDreamCodeConfig,
+  readReplayedSession,
+  rebuildSessionIndex,
+  rollbackSession,
   saveDreamCodeConfig,
   upsertLlmProfile,
 } from "@dreamcode/store";
+import { createDefaultToolRegistry } from "@dreamcode/tools";
 import { Command } from "commander";
+import { runInkTui } from "./tui.js";
 
 interface CliOptions {
   mode: string;
@@ -38,6 +46,7 @@ interface CliOptions {
   maxToolCalls: string;
   home?: string;
   listProviders?: boolean;
+  tui?: boolean;
 }
 
 interface LlmOptions {
@@ -74,6 +83,8 @@ interface SelectChoice<T extends string> {
 
 export async function main(argv = process.argv): Promise<void> {
   const program = new Command();
+  let handledSubcommand = false;
+  const rootPromptMode = shouldTreatAsRootPrompt(argv);
   program
     .name("dreamcode")
     .description("DreamCode 本地 CLI Agent 运行时 MVP")
@@ -91,9 +102,138 @@ export async function main(argv = process.argv): Promise<void> {
     .option("--list-providers", "列出可用模型 provider preset")
     .option("--max-tool-calls <count>", "最大工具调用次数", "80")
     .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
-    .showHelpAfterError();
+    .option("--no-tui", "无 prompt 时禁用 Ink TUI, 使用旧版 REPL")
+    .showHelpAfterError()
+    .action(() => {});
 
-  program.parse(argv);
+  if (!rootPromptMode) {
+    program
+      .command("sessions")
+      .description("列出 DreamCode 历史 session")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .option("--cwd <path>", "只显示指定工作区")
+      .option("--status <status>", "按状态筛选")
+      .action(async (options: { home?: string; cwd?: string; status?: string }) => {
+        handledSubcommand = true;
+        await printSessions(options);
+      });
+
+    program
+      .command("show <sessionId>")
+      .description("显示 session 的重放摘要")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .action(async (sessionId: string, options: { home?: string }) => {
+        handledSubcommand = true;
+        await printSession(sessionId, options.home);
+      });
+
+    program
+      .command("resume [sessionId] [prompt...]")
+      .description("恢复一个历史 session 并追加新 turn")
+      .option("--last", "恢复最近一个 session")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .option("--mode <mode>", "plan | guided | yolo | full", "yolo")
+      .option("--model <model>", "模型名称")
+      .option("--provider <provider>", "模型 provider")
+      .option("--api-key <key>", "直接传入模型 API key")
+      .option("--api-key-env <name>", "从指定环境变量读取模型 API key")
+      .option("--base-url <url>", "覆盖模型 provider base URL")
+      .option("--max-tool-calls <count>", "最大工具调用次数", "80")
+      .action(
+        async (
+          sessionId: string | undefined,
+          promptParts: string[],
+          options: CliOptions & { last?: boolean },
+        ) => {
+          handledSubcommand = true;
+          await resumeSessionCommand(sessionId, promptParts, options);
+        },
+      );
+
+    program
+      .command("diff <sessionId>")
+      .description("显示 session 文件变更 diff")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .option("--file <path>", "只显示单个文件")
+      .action(async (sessionId: string, options: { home?: string; file?: string }) => {
+        handledSubcommand = true;
+        await printSessionDiff(sessionId, options);
+      });
+
+    program
+      .command("rollback <sessionId>")
+      .description("回滚 session 修改过的文件")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .option("--file <path>", "回滚单个文件")
+      .option("--all", "回滚所有文件")
+      .option("--force", "当前文件 hash 不匹配时仍强制回滚")
+      .action(
+        async (
+          sessionId: string,
+          options: { home?: string; file?: string; all?: boolean; force?: boolean },
+        ) => {
+          handledSubcommand = true;
+          const result = await rollbackSession({
+            sessionId,
+            home: options.home,
+            filePath: options.file,
+            all: options.all,
+            force: options.force,
+          });
+          console.log(`已回滚 session ${result.sessionId}`);
+          for (const file of result.rolledBackFiles) {
+            console.log(`- ${file}`);
+          }
+          for (const skipped of result.skippedFiles) {
+            console.log(`跳过 ${skipped.path}: ${skipped.reason}`);
+          }
+        },
+      );
+
+    const index = program.command("index").description("维护 DreamCode 派生索引");
+    index
+      .command("rebuild")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .action(async (options: { home?: string }) => {
+        handledSubcommand = true;
+        const rebuilt = await rebuildSessionIndex(options.home);
+        console.log(`已重建索引: ${getIndexPath(options.home)}`);
+        console.log(`session 数量: ${rebuilt.sessions.length}`);
+      });
+
+    const skills = program.command("skills").description("查看本地 DreamCode skills");
+    skills
+      .command("list")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .option("--cwd <path>", "工作区根目录", process.cwd())
+      .action(async (options: { home?: string; cwd: string }) => {
+        handledSubcommand = true;
+        await runToolCommand("skill.list", {}, options);
+      });
+    skills
+      .command("show <name>")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .option("--cwd <path>", "工作区根目录", process.cwd())
+      .action(async (name: string, options: { home?: string; cwd: string }) => {
+        handledSubcommand = true;
+        await runToolCommand("skill.read", { name }, options);
+      });
+
+    const mcp = program.command("mcp").description("查看配置的 MCP server");
+    mcp
+      .command("list")
+      .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
+      .action(async (options: { home?: string }) => {
+        handledSubcommand = true;
+        const config = await loadDreamCodeConfig(options.home);
+        await runToolCommand("mcp.list", {}, { home: options.home, cwd: process.cwd(), config });
+      });
+  }
+
+  await program.parseAsync(argv);
+  if (handledSubcommand) {
+    return;
+  }
   const options = program.opts<CliOptions>();
 
   if (options.listProviders) {
@@ -107,6 +247,20 @@ export async function main(argv = process.argv): Promise<void> {
   const prompt = program.args.join(" ").trim();
 
   if (!prompt) {
+    if (shouldRunTui(options)) {
+      const transientProfile = createTransientProfile(options, config);
+      await runInkTui({
+        version: "0.1.0",
+        config,
+        workspaceRoot: path.resolve(options.cwd),
+        mode,
+        home: options.home,
+        maxToolCalls,
+        createProvider: (nextPrompt: string) =>
+          createCliProvider(nextPrompt, options, config, transientProfile),
+      });
+      return;
+    }
     await runInteractiveShell({ options, config, mode, maxToolCalls });
     return;
   }
@@ -123,6 +277,7 @@ export async function main(argv = process.argv): Promise<void> {
       mode,
       home: options.home,
       maxToolCalls,
+      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -197,6 +352,7 @@ async function runInteractiveTurn(
       conversationSummary: buildConversationSummary(state.conversation),
       home: state.home,
       maxToolCalls: state.maxToolCalls,
+      registry: createDefaultToolRegistry({ mcpServers: state.config.mcpServers }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -259,6 +415,26 @@ async function handleSlashCommand(
       return true;
     case "llm":
       await runLlmWizard(state, rl);
+      return true;
+    case "sessions":
+      await printSessions({ home: state.home, cwd: state.workspaceRoot });
+      return true;
+    case "diff":
+      if (!args[0]) {
+        console.log("用法: /diff <session-id>");
+        return true;
+      }
+      await printSessionDiff(args[0], { home: state.home });
+      return true;
+    case "skills":
+      await runToolCommand("skill.list", {}, { home: state.home, cwd: state.workspaceRoot });
+      return true;
+    case "mcp":
+      await runToolCommand(
+        "mcp.list",
+        {},
+        { home: state.home, cwd: state.workspaceRoot, config: state.config },
+      );
       return true;
     default:
       console.log(`未知命令: /${command || ""}。输入 /help 查看可用命令。`);
@@ -616,6 +792,231 @@ function printProviderList(): void {
   );
 }
 
+async function printSessions(options: {
+  home?: string;
+  cwd?: string;
+  status?: string;
+}): Promise<void> {
+  const sessions = await listSessions({
+    home: options.home,
+    cwd: options.cwd,
+    status: options.status,
+    limit: 50,
+  });
+  if (!sessions.length) {
+    console.log("没有找到 DreamCode session。");
+    return;
+  }
+  for (const session of sessions) {
+    console.log(
+      [
+        session.id,
+        session.status,
+        session.updatedAt,
+        `${session.changedFileCount} file(s)`,
+        session.title,
+      ].join("  "),
+    );
+    console.log(`  cwd: ${session.workspaceRoot}`);
+  }
+}
+
+async function printSession(sessionId: string, home?: string): Promise<void> {
+  const state = await readReplayedSession(sessionId, home);
+  console.log(`session: ${sessionId}`);
+  console.log(`status: ${state.status}`);
+  console.log(`turns: ${state.turns.length}`);
+  if (state.firstPrompt) {
+    console.log(`first prompt: ${state.firstPrompt}`);
+  }
+  if (state.latestSummary) {
+    printSummary(state.latestSummary);
+  }
+  if (state.changedFiles.length) {
+    console.log("changed files:");
+    for (const file of state.changedFiles) {
+      console.log(`- ${file.operation}: ${file.path}`);
+    }
+  }
+  if (state.commands.length) {
+    console.log("commands:");
+    for (const command of state.commands) {
+      console.log(`- ${command.command} -> ${command.exitCode ?? "unknown"}`);
+    }
+  }
+  for (const warning of state.warnings) {
+    console.log(`warning: ${warning}`);
+  }
+}
+
+async function resumeSessionCommand(
+  sessionId: string | undefined,
+  promptParts: string[],
+  options: {
+    last?: boolean;
+    home?: string;
+    mode: string;
+    model?: string;
+    provider?: string;
+    apiKey?: string;
+    apiKeyEnv?: string;
+    baseUrl?: string;
+    maxToolCalls: string;
+  },
+): Promise<void> {
+  const normalized = normalizeResumeInlineOptions(promptParts, options);
+  const effectiveOptions = normalized.options;
+  const resolvedSessionId = effectiveOptions.last
+    ? await resolveLastSessionId(effectiveOptions.home)
+    : normalizeOptional(sessionId);
+  if (!resolvedSessionId) {
+    throw new Error("请传入 session id, 或使用 dreamcode resume --last。");
+  }
+
+  const prompt =
+    normalized.promptParts.join(" ").trim() ||
+    "继续这个 DreamCode 历史任务。请先根据已有事件确认状态, 然后完成仍未完成的目标。";
+  const config = await loadDreamCodeConfig(effectiveOptions.home);
+  const mode = runModeSchema.parse(effectiveOptions.mode);
+  const maxToolCalls = parseMaxToolCalls(effectiveOptions.maxToolCalls);
+  const { provider, model } = createCliProvider(prompt, effectiveOptions, config);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    for await (const event of runTurn({
+      sessionId: resolvedSessionId,
+      prompt,
+      workspaceRoot: process.cwd(),
+      provider,
+      model,
+      mode,
+      home: effectiveOptions.home,
+      maxToolCalls,
+      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers }),
+      approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
+      questionHandler: async (question: string) =>
+        (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
+    })) {
+      renderEvent(event);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+function normalizeResumeInlineOptions(
+  promptParts: string[],
+  options: {
+    last?: boolean;
+    home?: string;
+    mode: string;
+    model?: string;
+    provider?: string;
+    apiKey?: string;
+    apiKeyEnv?: string;
+    baseUrl?: string;
+    maxToolCalls: string;
+  },
+): {
+  promptParts: string[];
+  options: {
+    last?: boolean;
+    home?: string;
+    mode: string;
+    model?: string;
+    provider?: string;
+    apiKey?: string;
+    apiKeyEnv?: string;
+    baseUrl?: string;
+    maxToolCalls: string;
+  };
+} {
+  const nextOptions = { ...options };
+  const rest: string[] = [];
+  for (let index = 0; index < promptParts.length; index += 1) {
+    const token = promptParts[index] ?? "";
+    const next = promptParts[index + 1];
+    if (token === "--max-tool-calls" && next) {
+      nextOptions.maxToolCalls = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--mode" && next) {
+      nextOptions.mode = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--provider" && next) {
+      nextOptions.provider = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--model" && next) {
+      nextOptions.model = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--api-key-env" && next) {
+      nextOptions.apiKeyEnv = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--base-url" && next) {
+      nextOptions.baseUrl = next;
+      index += 1;
+      continue;
+    }
+    rest.push(token);
+  }
+  return { promptParts: rest, options: nextOptions };
+}
+
+async function resolveLastSessionId(home?: string): Promise<string | undefined> {
+  const sessions = await listSessions({ home, limit: 1 });
+  return sessions[0]?.id;
+}
+
+async function printSessionDiff(
+  sessionId: string,
+  options: { home?: string; file?: string },
+): Promise<void> {
+  const state = await readReplayedSession(sessionId, options.home);
+  const files = options.file
+    ? state.changedFiles.filter((file) => file.path === options.file)
+    : state.changedFiles;
+  if (!files.length) {
+    console.log("这个 session 没有匹配的文件变更。");
+    return;
+  }
+  for (const file of files) {
+    console.log(`diff -- ${file.path}`);
+    console.log(file.diff ?? "(no diff recorded)");
+  }
+}
+
+async function runToolCommand(
+  toolName: string,
+  input: unknown,
+  options: { home?: string; cwd: string; config?: DreamCodeConfig },
+): Promise<void> {
+  const config = options.config ?? (await loadDreamCodeConfig(options.home));
+  const registry = createDefaultToolRegistry({ mcpServers: config.mcpServers });
+  const tool = registry.get(toolName);
+  if (!tool) {
+    throw new Error(`工具不存在: ${toolName}`);
+  }
+  const home = options.home ?? getDreamCodeHome();
+  const result = await tool.execute(input, {
+    workspaceRoot: path.resolve(options.cwd),
+    sessionDir: path.join(home, "sessions", "_cli"),
+    mode: "full",
+    toolCallId: `cli_${toolName.replace(/\W/g, "_")}`,
+  });
+  console.log(result.summary);
+  if (result.data !== undefined) {
+    console.log(JSON.stringify(result.data, null, 2));
+  }
+}
+
 async function askApproval(rl: PromptInterface, request: ApprovalRequest): Promise<boolean> {
   console.log("");
   console.log(`${request.toolCall.name} 需要权限确认`);
@@ -642,6 +1043,13 @@ function renderEvent(event: AgentEvent, options: { markProcessFailure?: boolean 
     case "session.created": {
       const session = payload.session as { id: string; workspaceRoot: string; sessionDir: string };
       console.log(`DreamCode 会话 ${session.id}`);
+      console.log(`工作区: ${session.workspaceRoot}`);
+      console.log(`日志目录: ${session.sessionDir}`);
+      break;
+    }
+    case "session.resumed": {
+      const session = payload.session as { id: string; workspaceRoot: string; sessionDir: string };
+      console.log(`DreamCode 恢复会话 ${session.id}`);
       console.log(`工作区: ${session.workspaceRoot}`);
       console.log(`日志目录: ${session.sessionDir}`);
       break;
@@ -681,6 +1089,18 @@ function renderEvent(event: AgentEvent, options: { markProcessFailure?: boolean 
       console.log(`  文件 ${changed.operation}: ${changed.path}`);
       break;
     }
+    case "artifact.created":
+      console.log(`  artifact: ${String(payload.path)}`);
+      break;
+    case "web.source.saved":
+      console.log(`  source: ${String(payload.title ?? payload.url ?? payload.path)}`);
+      break;
+    case "skill.loaded":
+      console.log(`  skill: ${String(payload.name)}`);
+      break;
+    case "file.snapshot.created":
+      console.log(`  快照: ${String(payload.path)}`);
+      break;
     case "todo.updated":
       console.log("  todo 已更新");
       break;
@@ -754,6 +1174,10 @@ function printSlashHelp(): void {
   console.log("/mode MODE 切换模式: plan | guided | yolo | full");
   console.log("/cwd PATH  切换工作区目录");
   console.log("/clear     清空当前 REPL 的对话摘要");
+  console.log("/sessions  查看当前工作区历史 session");
+  console.log("/diff ID   查看 session 文件变更 diff");
+  console.log("/skills    列出可用 Skill");
+  console.log("/mcp       列出配置的 MCP 工具");
   console.log("/config    显示配置文件路径");
   console.log("/exit      退出");
 }
@@ -992,6 +1416,57 @@ function parseMaxToolCalls(value: string): number {
 function normalizeOptional(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
+}
+
+function shouldRunTui(options: CliOptions): boolean {
+  return options.tui !== false && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+}
+
+function shouldTreatAsRootPrompt(argv: string[]): boolean {
+  const knownCommands = new Set([
+    "sessions",
+    "show",
+    "resume",
+    "diff",
+    "rollback",
+    "index",
+    "skills",
+    "mcp",
+    "help",
+  ]);
+  const optionsWithValue = new Set([
+    "--mode",
+    "--cwd",
+    "--model",
+    "--provider",
+    "--api-key",
+    "--api-key-env",
+    "--base-url",
+    "--max-tool-calls",
+    "--home",
+  ]);
+
+  for (let index = 2; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (token === "--") {
+      return true;
+    }
+    if (optionsWithValue.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (Array.from(optionsWithValue).some((option) => token.startsWith(`${option}=`))) {
+      continue;
+    }
+    if (token.startsWith("-")) {
+      continue;
+    }
+    if (knownCommands.has(token)) {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
