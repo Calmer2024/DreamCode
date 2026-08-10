@@ -93,6 +93,9 @@ importers:
 
   packages/desktop:
     dependencies:
+      '@dreamcode/models':
+        specifier: workspace:*
+        version: link:../models
       '@dreamcode/shared':
         specifier: workspace:*
         version: link:../shared

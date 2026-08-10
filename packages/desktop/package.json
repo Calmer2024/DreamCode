@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@dreamcode/models": "workspace:*",
     "@dreamcode/shared": "workspace:*",
     "@dreamcode/store": "workspace:*",
     "lucide-react": "1.31.0",
