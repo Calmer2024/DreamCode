@@ -154,11 +154,11 @@ describe("DesktopRunManager", () => {
     });
   });
 
-  it("emits failed status errors as plain serializable desktop errors", async () => {
+  it("emits provider setup failures as plain serializable desktop errors", async () => {
     const statuses: DesktopRunStatus[] = [];
     const manager = createManager({
-      loadConfig: async () => {
-        throw new Error("Configuration could not be read.");
+      createProvider: () => {
+        throw new Error("Provider could not be created.");
       },
       emitStatus: (status) => statuses.push(status),
     });
@@ -172,12 +172,217 @@ describe("DesktopRunManager", () => {
     await completion;
 
     expect(statuses.at(-1)?.error).toEqual({
-      code: "run_failed",
-      message: "Configuration could not be read.",
+      code: "provider_setup_failed",
+      message: "Provider could not be created.",
       recoverable: true,
     });
     expect(statuses.at(-1)?.error).not.toBeInstanceOf(Error);
     expect(manager.activeRunId).toBeUndefined();
+  });
+
+  it("stops without waiting for a delayed approval emitter", async () => {
+    const approval = deferred<DesktopApprovalRequest>();
+    const emission = deferred<void>();
+    const { manager, request } = await createScriptedManager(approvalProvider(), {
+      emitApproval: (pending) => {
+        approval.resolve(pending);
+        return emission.promise;
+      },
+    });
+    const { runId, completion } = await manager.start({ ...request, mode: "guided" });
+    const pending = await approval.promise;
+
+    await manager.respondApproval({ ...pending, approved: true });
+    await expect(manager.respondApproval({ ...pending, approved: false })).rejects.toMatchObject({
+      code: "stale_request",
+    });
+
+    await manager.stop(runId);
+
+    await expectSettlesPromptly(completion);
+    expect(manager.activeRunId).toBeUndefined();
+  });
+
+  it("disposes without waiting for a delayed question emitter", async () => {
+    const question = deferred<DesktopQuestionRequest>();
+    const emission = deferred<void>();
+    const { manager, request } = await createScriptedManager(questionProvider(), {
+      emitQuestion: (pending) => {
+        question.resolve(pending);
+        return emission.promise;
+      },
+    });
+    const { completion } = await manager.start(request);
+    const pending = await question.promise;
+
+    await manager.respondQuestion({ ...pending, answer: "README.md" });
+    await expect(
+      manager.respondQuestion({ ...pending, answer: "src/index.ts" }),
+    ).rejects.toMatchObject({ code: "stale_request" });
+
+    const disposal = manager.dispose();
+
+    await expectSettlesPromptly(disposal);
+    await expectSettlesPromptly(completion);
+    expect(manager.activeRunId).toBeUndefined();
+  });
+
+  it("settles an approval exchange when its emitter rejects", async () => {
+    const statuses: DesktopRunStatus[] = [];
+    const { manager, request } = await createScriptedManager(approvalProvider(), {
+      emitApproval: async () => {
+        throw new Error("Approval delivery failed.");
+      },
+      emitStatus: (status) => statuses.push(status),
+    });
+
+    const { completion } = await manager.start({ ...request, mode: "guided" });
+    await expectSettlesPromptly(completion);
+
+    expect(statuses.at(-1)).toMatchObject({
+      status: "failed",
+      error: { code: "run_failed", message: "Approval delivery failed.", recoverable: true },
+    });
+    expect(manager.activeRunId).toBeUndefined();
+  });
+
+  it("settles a question exchange when its emitter rejects", async () => {
+    const statuses: DesktopRunStatus[] = [];
+    const events: DesktopRunEvent[] = [];
+    const { manager, request } = await createScriptedManager(questionProvider(), {
+      emitQuestion: async () => {
+        throw new Error("Question delivery failed.");
+      },
+      emitEvent: (event) => events.push(event),
+      emitStatus: (status) => statuses.push(status),
+    });
+
+    const { completion } = await manager.start(request);
+    await expectSettlesPromptly(completion);
+
+    expect(statuses.at(-1)?.status).toBe("completed");
+    expect(
+      events.find((event) => event.event.type === "tool.completed")?.event.payload,
+    ).toMatchObject({
+      status: "error",
+      summary: "Question delivery failed.",
+    });
+    expect(manager.activeRunId).toBeUndefined();
+  });
+
+  it("rejects public validation errors as plain stack-free data", async () => {
+    const { manager, request } = await createBlockingManager();
+    const active = await manager.start(request);
+
+    const concurrentError = await manager.start(request).catch((error: unknown) => error);
+    const staleError = await manager.stop("stale-run").catch((error: unknown) => error);
+
+    expect(concurrentError).toEqual({
+      code: "run_already_active",
+      message: "Another Turn is already active.",
+      recoverable: true,
+    });
+    expect(staleError).toEqual({
+      code: "stale_run",
+      message: "Run is no longer active.",
+      recoverable: true,
+    });
+    expect(Object.hasOwn(concurrentError as object, "stack")).toBe(false);
+    expect(Object.hasOwn(staleError as object, "stack")).toBe(false);
+    expect(JSON.parse(JSON.stringify(concurrentError))).toEqual(concurrentError);
+
+    await manager.stop(active.runId);
+    await active.completion;
+  });
+
+  it("does not expose an exception message from configuration loading", async () => {
+    const secret = "stored-config-secret-value";
+    const statuses: DesktopRunStatus[] = [];
+    const manager = createManager({
+      loadConfig: async () => {
+        throw new Error(`Could not parse config containing ${secret}.`);
+      },
+      emitStatus: (status) => statuses.push(status),
+    });
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-workspace-"));
+
+    const { completion } = await manager.start({
+      prompt: "Inspect workspace",
+      workspaceRoot,
+      mode: "yolo",
+    });
+    await completion;
+
+    expect(statuses.at(-1)?.error).toEqual({
+      code: "config_load_failed",
+      message: "Failed to load DreamCode configuration.",
+      recoverable: true,
+    });
+    expect(JSON.stringify(statuses)).not.toContain(secret);
+  });
+
+  it("redacts stored and environment API keys from provider errors", async () => {
+    const storedSecret = "stored-provider-secret-value";
+    const environmentSecret = "environment-provider-secret-value";
+    const environmentName = "DREAMCODE_RUN_MANAGER_TEST_API_KEY";
+    const previousEnvironmentValue = process.env[environmentName];
+    process.env[environmentName] = environmentSecret;
+    const config: DreamCodeConfig = {
+      version: 1,
+      currentProfile: "secret",
+      profiles: {
+        secret: {
+          provider: "secret-test",
+          apiKey: storedSecret,
+          apiKeyEnv: environmentName,
+        },
+      },
+    };
+    const events: DesktopRunEvent[] = [];
+    const statuses: DesktopRunStatus[] = [];
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-home-"));
+    const provider: ModelProvider = {
+      name: "secret-test",
+      async *stream() {
+        yield { type: "text_delta", text: "Starting provider request.\n" };
+        throw new Error(`Provider rejected ${storedSecret} and ${environmentSecret}.`);
+      },
+    };
+    const manager = createManager({
+      home,
+      loadConfig: async () => config,
+      createProvider: () => ({ provider }),
+      emitEvent: (event) => events.push(event),
+      emitStatus: (status) => statuses.push(status),
+    });
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-workspace-"));
+
+    try {
+      const { completion } = await manager.start({
+        prompt: "Inspect workspace",
+        workspaceRoot,
+        profileName: "secret",
+        mode: "yolo",
+      });
+      await completion;
+
+      const outbound = JSON.stringify({ events, statuses });
+      expect(outbound).not.toContain(storedSecret);
+      expect(outbound).not.toContain(environmentSecret);
+      expect(outbound).toContain("[REDACTED]");
+      expect(statuses.at(-1)?.error).toEqual({
+        code: "run_failed",
+        message: "Provider rejected [REDACTED] and [REDACTED].",
+        recoverable: true,
+      });
+      expect(Object.hasOwn(statuses.at(-1)?.error ?? {}, "stack")).toBe(false);
+    } finally {
+      if (previousEnvironmentValue === undefined) {
+        delete process.env[environmentName];
+      } else {
+        process.env[environmentName] = previousEnvironmentValue;
+      }
+    }
   });
 });
 
@@ -280,4 +485,21 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function expectSettlesPromptly(promise: Promise<unknown>): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await Promise.race([
+    promise.then(
+      () => "settled" as const,
+      () => "rejected" as const,
+    ),
+    new Promise<"timeout">((resolve) => {
+      timeout = setTimeout(() => resolve("timeout"), 100);
+    }),
+  ]);
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+  expect(outcome).toBe("settled");
 }

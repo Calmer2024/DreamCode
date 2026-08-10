@@ -21,8 +21,8 @@ import { createDesktopProvider } from "./provider";
 
 interface Deferred<T> {
   promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
+  resolve(value: T): boolean;
+  reject(reason: unknown): boolean;
 }
 
 interface ActiveRun {
@@ -98,21 +98,17 @@ export class DesktopRunManager {
   async respondApproval(response: ApprovalResponse): Promise<void> {
     const run = this.#requireRun(response.runId);
     const pending = run.approvals.get(response.requestId);
-    if (!pending) {
+    if (!pending?.resolve(response.approved)) {
       throw desktopError("stale_request", "Approval request is no longer pending.");
     }
-    run.approvals.delete(response.requestId);
-    pending.resolve(response.approved);
   }
 
   async respondQuestion(response: QuestionResponse): Promise<void> {
     const run = this.#requireRun(response.runId);
     const pending = run.questions.get(response.requestId);
-    if (!pending) {
+    if (!pending?.resolve(response.answer)) {
       throw desktopError("stale_request", "Question request is no longer pending.");
     }
-    run.questions.delete(response.requestId);
-    pending.resolve(response.answer);
   }
 
   async dispose(): Promise<void> {
@@ -125,6 +121,7 @@ export class DesktopRunManager {
   }
 
   async #execute(run: ActiveRun, request: StartTurnRequest): Promise<void> {
+    let sensitiveValues: string[] = [];
     let finalStatus: DesktopRunStatus = {
       runId: run.runId,
       status: "failed",
@@ -133,9 +130,25 @@ export class DesktopRunManager {
 
     try {
       await this.#emitStatus({ runId: run.runId, status: "running" });
-      const config = await this.#loadConfig(this.#home);
+      let config: DreamCodeConfig;
+      try {
+        config = await this.#loadConfig(this.#home);
+      } catch {
+        throw desktopError("config_load_failed", "Failed to load DreamCode configuration.");
+      }
+      sensitiveValues = collectSensitiveValues(config);
       const profile = resolveProfile(config, request.profileName);
-      const { provider, model } = this.#createProvider(request.prompt, profile);
+      let providerResult: ReturnType<NonNullable<DesktopRunManagerOptions["createProvider"]>>;
+      try {
+        providerResult = this.#createProvider(request.prompt, profile);
+      } catch (error) {
+        throw desktopError(
+          "provider_setup_failed",
+          redactText(readErrorMessage(error), sensitiveValues),
+        );
+      }
+      const { model } = providerResult;
+      const provider = redactProviderErrors(providerResult.provider, sensitiveValues);
 
       for await (const event of runTurn({
         prompt: request.prompt,
@@ -150,8 +163,10 @@ export class DesktopRunManager {
         approvalHandler: (approval) => this.#requestApproval(run, approval),
         questionHandler: (question) => this.#requestQuestion(run, question),
       })) {
-        await this.#emitEvent({ runId: run.runId, event });
-        finalStatus = statusFromEvent(run.runId, event.type, event.payload) ?? finalStatus;
+        const outboundEvent = sanitizeEvent(event, sensitiveValues);
+        await this.#emitEvent({ runId: run.runId, event: outboundEvent });
+        finalStatus =
+          statusFromEvent(run.runId, outboundEvent.type, outboundEvent.payload) ?? finalStatus;
       }
     } catch (error) {
       finalStatus = {
@@ -159,17 +174,10 @@ export class DesktopRunManager {
         status: run.abortController.signal.aborted ? "interrupted" : "failed",
         ...(run.abortController.signal.aborted
           ? {}
-          : { error: toDesktopError(error, "run_failed") }),
+          : { error: toDesktopError(error, "run_failed", sensitiveValues) }),
       };
     } finally {
-      rejectPending(run, desktopError("stale_request", "Run is no longer active."));
-      try {
-        await this.#emitStatus(finalStatus);
-      } finally {
-        if (this.#active === run) {
-          this.#active = undefined;
-        }
-      }
+      await this.#finalize(run, finalStatus, sensitiveValues);
     }
   }
 
@@ -178,14 +186,18 @@ export class DesktopRunManager {
     const pending = createDeferred<boolean>();
     run.approvals.set(requestId, pending);
     try {
-      await this.#emitApproval({
-        runId: run.runId,
-        requestId,
-        tool: approval.toolCall.name,
-        input: approval.toolCall.input,
-        reason: approval.decision.reason,
-      });
-      return await pending.promise;
+      return await coordinateRequest(
+        run.abortController.signal,
+        () =>
+          this.#emitApproval({
+            runId: run.runId,
+            requestId,
+            tool: approval.toolCall.name,
+            input: approval.toolCall.input,
+            reason: approval.decision.reason,
+          }),
+        pending,
+      );
     } finally {
       run.approvals.delete(requestId);
     }
@@ -196,8 +208,11 @@ export class DesktopRunManager {
     const pending = createDeferred<string>();
     run.questions.set(requestId, pending);
     try {
-      await this.#emitQuestion({ runId: run.runId, requestId, question });
-      return await pending.promise;
+      return await coordinateRequest(
+        run.abortController.signal,
+        () => this.#emitQuestion({ runId: run.runId, requestId, question }),
+        pending,
+      );
     } finally {
       run.questions.delete(requestId);
     }
@@ -215,6 +230,30 @@ export class DesktopRunManager {
       run.abortController.abort(reason);
     }
     rejectPending(run, desktopError("run_interrupted", reason));
+  }
+
+  async #finalize(
+    run: ActiveRun,
+    finalStatus: DesktopRunStatus,
+    sensitiveValues: string[],
+  ): Promise<void> {
+    rejectPending(run, desktopError("stale_request", "Run is no longer active."));
+    let deliveryError: DesktopError | undefined;
+    try {
+      await this.#emitStatus(finalStatus);
+    } catch (error) {
+      deliveryError = desktopError(
+        "status_delivery_failed",
+        redactText(readErrorMessage(error), sensitiveValues),
+      );
+    } finally {
+      if (this.#active === run) {
+        this.#active = undefined;
+      }
+    }
+    if (deliveryError) {
+      throw deliveryError;
+    }
   }
 }
 
@@ -261,50 +300,184 @@ function readFailureMessage(payload: unknown): string {
   return "Turn failed.";
 }
 
-function rejectPending(run: ActiveRun, reason: DesktopManagerError): void {
+function rejectPending(run: ActiveRun, reason: DesktopError): void {
   for (const pending of run.approvals.values()) {
     pending.reject(reason);
   }
-  run.approvals.clear();
   for (const pending of run.questions.values()) {
     pending.reject(reason);
   }
-  run.questions.clear();
 }
 
 function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
+  let settled = false;
+  let settleResolve!: (value: T) => void;
+  let settleReject!: (reason: unknown) => void;
   const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
+    settleResolve = resolvePromise;
+    settleReject = rejectPromise;
   });
-  return { promise, resolve, reject };
+  return {
+    promise,
+    resolve(value) {
+      if (settled) {
+        return false;
+      }
+      settled = true;
+      settleResolve(value);
+      return true;
+    },
+    reject(reason) {
+      if (settled) {
+        return false;
+      }
+      settled = true;
+      settleReject(reason);
+      return true;
+    },
+  };
 }
 
-interface DesktopManagerError extends Error, DesktopError {}
+async function coordinateRequest<T>(
+  signal: AbortSignal,
+  emit: () => unknown,
+  pending: Deferred<T>,
+): Promise<T> {
+  const emission = Promise.resolve()
+    .then(emit)
+    .catch((error: unknown) => {
+      pending.reject(error);
+      throw error;
+    });
+  const exchange = Promise.all([emission, pending.promise]).then(([, response]) => response);
+  return abortable(exchange, signal);
+}
 
-function desktopError(code: string, message: string): DesktopManagerError {
-  return Object.assign(new Error(message), { code, recoverable: true });
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function desktopError(code: string, message: string): DesktopError {
+  return { code, message, recoverable: true };
 }
 
 function statusError(code: string, message: string): DesktopError {
   return { code, message, recoverable: true };
 }
 
-function toDesktopError(error: unknown, code: string): DesktopError {
-  if (isDesktopManagerError(error)) {
-    return statusError(error.code, error.message);
+function toDesktopError(error: unknown, code: string, sensitiveValues: string[]): DesktopError {
+  if (isDesktopError(error)) {
+    return statusError(error.code, redactText(error.message, sensitiveValues));
   }
-  return statusError(code, error instanceof Error ? error.message : String(error));
+  return statusError(code, redactText(readErrorMessage(error), sensitiveValues));
 }
 
-function isDesktopManagerError(error: unknown): error is DesktopManagerError {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      "code" in error &&
-      "message" in error &&
-      "recoverable" in error,
+function isDesktopError(error: unknown): error is DesktopError {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as Partial<DesktopError>;
+  return (
+    typeof candidate.code === "string" &&
+    typeof candidate.message === "string" &&
+    typeof candidate.recoverable === "boolean"
   );
+}
+
+function collectSensitiveValues(config: DreamCodeConfig): string[] {
+  const values = new Set<string>();
+  for (const profile of Object.values(config.profiles)) {
+    addSensitiveValue(values, profile.apiKey);
+    if (profile.apiKeyEnv) {
+      addSensitiveValue(values, process.env[profile.apiKeyEnv]);
+    }
+  }
+  return [...values].sort((left, right) => right.length - left.length);
+}
+
+function addSensitiveValue(values: Set<string>, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+  values.add(value);
+  const trimmed = value.trim();
+  if (trimmed) {
+    values.add(trimmed);
+  }
+}
+
+function redactProviderErrors(provider: ModelProvider, sensitiveValues: string[]): ModelProvider {
+  return {
+    name: provider.name,
+    async *stream(input) {
+      try {
+        yield* provider.stream(input);
+      } catch (error) {
+        throw new Error(redactText(readErrorMessage(error), sensitiveValues));
+      }
+    },
+  };
+}
+
+function sanitizeEvent(
+  event: DesktopRunEvent["event"],
+  sensitiveValues: string[],
+): DesktopRunEvent["event"] {
+  if (sensitiveValues.length === 0) {
+    return event;
+  }
+  return { ...event, payload: sanitizeValue(event.payload, sensitiveValues) };
+}
+
+function sanitizeValue(value: unknown, sensitiveValues: string[]): unknown {
+  if (typeof value === "string") {
+    return redactText(value, sensitiveValues);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeValue(item, sensitiveValues));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizeValue(item, sensitiveValues)]),
+    );
+  }
+  return value;
+}
+
+function redactText(message: string, sensitiveValues: string[]): string {
+  let redacted = message;
+  for (const sensitiveValue of sensitiveValues) {
+    redacted = redacted.replaceAll(sensitiveValue, "[REDACTED]");
+  }
+  return redacted;
+}
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error || isDesktopError(error)) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Unexpected run failure.";
 }
