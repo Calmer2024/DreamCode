@@ -47,7 +47,7 @@ describe("DreamCode desktop shell", () => {
   it("renders only supported navigation and semantic icons", async () => {
     render(<App api={fakeDesktopApi({ bootstrap })} />);
 
-    expect(await screen.findByText("新对话")).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "新对话" })).toBeVisible();
     expect(screen.getByText("会话历史")).toBeVisible();
     expect(screen.getByText("模型与配置")).toBeVisible();
     expect(screen.queryByText("拉取请求")).not.toBeInTheDocument();
@@ -191,8 +191,8 @@ describe("DreamCode desktop shell", () => {
     );
     render(<App api={fakeDesktopApi({ bootstrap: { ...bootstrap, sessions }, readSession })} />);
 
-    await screen.findByText("新对话");
-    fireEvent.click(screen.getByRole("button", { name: "Desktop shell" }));
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(await screen.findByRole("button", { name: "Desktop shell" }));
     fireEvent.click(screen.getByRole("button", { name: "Second session" }));
     await act(async () => {
       second.resolve(replayedSession("sess_2", "D:\\Projects\\Second"));
@@ -234,8 +234,8 @@ describe("DreamCode desktop shell", () => {
     );
     render(<App api={fakeDesktopApi({ bootstrap: { ...bootstrap, sessions }, readSession })} />);
 
-    await screen.findByText("新对话");
-    fireEvent.click(screen.getByRole("button", { name: "Desktop shell" }));
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(await screen.findByRole("button", { name: "Desktop shell" }));
     fireEvent.click(screen.getByRole("button", { name: "Second session" }));
     await act(async () => {
       current.resolve(replayedSession("sess_2", "D:\\Projects\\Second"));
@@ -247,6 +247,179 @@ describe("DreamCode desktop shell", () => {
     });
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("prevents a pending session read from restoring history after new conversation", async () => {
+    const pending = deferred<ReplayedSessionState>();
+    render(<App api={fakeDesktopApi({ bootstrap, readSession: vi.fn(() => pending.promise) })} />);
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(await screen.findByRole("button", { name: "Desktop shell" }));
+    fireEvent.click(screen.getByRole("button", { name: "新对话" }));
+    await act(async () => {
+      pending.resolve(replayedSession("sess_1", "D:\\Projects\\DreamCode"));
+      await pending.promise;
+    });
+
+    expect(screen.getByRole("button", { name: "Desktop shell" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  it("prevents a pending session read from restoring history after workspace change", async () => {
+    const pending = deferred<ReplayedSessionState>();
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          readSession: vi.fn(() => pending.promise),
+          chooseWorkspace: vi.fn().mockResolvedValue("D:\\Projects\\NextWorkspace"),
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(await screen.findByRole("button", { name: "Desktop shell" }));
+    fireEvent.click(screen.getByRole("button", { name: /DreamCode|选择工作区/ }));
+    await act(async () => {
+      pending.resolve(replayedSession("sess_1", "D:\\Projects\\DreamCode"));
+      await pending.promise;
+    });
+
+    expect(screen.getByText("NextWorkspace")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Desktop shell" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  it("preserves edits made while startTurn is pending", async () => {
+    const pending = deferred<{ runId: string }>();
+    render(<App api={fakeDesktopApi({ bootstrap, startTurn: vi.fn(() => pending.promise) })} />);
+
+    const prompt = await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" });
+    fireEvent.change(prompt, { target: { value: "Submitted prompt" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    fireEvent.change(prompt, { target: { value: "New draft while starting" } });
+    await act(async () => {
+      pending.resolve({ runId: "run_pending" });
+      await pending.promise;
+    });
+
+    expect(prompt).toHaveValue("New draft while starting");
+  });
+
+  it("allows a fake profile without an API key", async () => {
+    const startTurn = vi.fn().mockResolvedValue({ runId: "run_fake" });
+    const fakeProfile = {
+      ...bootstrap.profiles[0]!,
+      name: "fake",
+      provider: "fake",
+      apiKeyConfigured: false,
+    };
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap: { ...bootstrap, profiles: [fakeProfile], currentProfile: "fake" },
+          startTurn,
+        })}
+      />,
+    );
+
+    const prompt = await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" });
+    fireEvent.change(prompt, { target: { value: "Run the fake model" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(startTurn).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows an actionable configuration state for an unusable selected profile", async () => {
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap: {
+            ...bootstrap,
+            profiles: [{ ...bootstrap.profiles[0]!, apiKeyConfigured: false }],
+          },
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("先配置模型，再开始对话")).toBeVisible();
+    expect(screen.getByRole("button", { name: "打开模型与配置" })).toBeVisible();
+  });
+
+  it("auto-follows streaming only while the reader remains near the bottom", async () => {
+    let deliverRunEvent: ((message: DesktopRunEvent) => void) | undefined;
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          startTurn: vi.fn().mockResolvedValue({ runId: "run_scroll" }),
+          onRunEvent: (listener) => {
+            deliverRunEvent = listener;
+            return () => undefined;
+          },
+        })}
+      />,
+    );
+
+    const prompt = await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" });
+    fireEvent.change(prompt, { target: { value: "Stream a response" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("button", { name: "停止" });
+    const scroll = document.querySelector<HTMLElement>(".conversation-scroll")!;
+    setScrollMetrics(scroll, { scrollHeight: 1000, clientHeight: 600, scrollTop: 360 });
+    fireEvent.scroll(scroll);
+    deliverRunEvent?.({
+      runId: "run_scroll",
+      event: agentEvent("model.delta", { text: "Following" }),
+    });
+    await screen.findByText("Following");
+    expect(scrollIntoView).toHaveBeenCalled();
+
+    scrollIntoView.mockClear();
+    setScrollMetrics(scroll, { scrollHeight: 1400, clientHeight: 600, scrollTop: 100 });
+    fireEvent.scroll(scroll);
+    deliverRunEvent?.({
+      runId: "run_scroll",
+      event: agentEvent("model.delta", { text: " without jumping" }),
+    });
+    await screen.findByText("Following without jumping");
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("shows the submitted prompt as task title with workspace secondary", async () => {
+    render(<App api={fakeDesktopApi({ bootstrap })} />);
+
+    const prompt = await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" });
+    expect(screen.getByRole("heading", { level: 2, name: "新对话" })).toBeVisible();
+    fireEvent.change(prompt, { target: { value: "Name this task" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Name this task" })).toBeVisible();
+    expect(screen.getAllByText("DreamCode").length).toBeGreaterThan(0);
+  });
+
+  it("shows the active session title as the task title", async () => {
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          readSession: vi
+            .fn()
+            .mockResolvedValue(replayedSession("sess_1", bootstrap.sessions[0]!.workspaceRoot)),
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(await screen.findByRole("button", { name: "Desktop shell" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Desktop shell" })).toBeVisible();
   });
 
   it("submits with Ctrl+Enter and blocks an invalid prompt", async () => {
@@ -386,4 +559,15 @@ function replayedSession(id: string, workspaceRoot: string): ReplayedSessionStat
     costUsd: 0,
     warnings: [],
   };
+}
+
+function setScrollMetrics(
+  element: HTMLElement,
+  metrics: { scrollHeight: number; clientHeight: number; scrollTop: number },
+) {
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: metrics.scrollHeight },
+    clientHeight: { configurable: true, value: metrics.clientHeight },
+    scrollTop: { configurable: true, writable: true, value: metrics.scrollTop },
+  });
 }

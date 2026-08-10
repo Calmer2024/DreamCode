@@ -212,6 +212,19 @@ select:focus-visible {
   padding: 0 18px 0 22px;
 }
 
+.task-identity {
+  min-width: 0;
+}
+
+.task-identity h2 {
+  overflow: hidden;
+  margin: 0 10px;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace-button,
 .icon-button,
 .secondary-button {
@@ -223,10 +236,12 @@ select:focus-visible {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
   border-radius: 8px;
   padding: 8px 10px;
-  font-weight: 600;
+  color: var(--dc-muted);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .workspace-button:hover,
@@ -377,6 +392,20 @@ select:focus-visible {
   padding-top: 12px;
   color: #555;
   font-size: 13px;
+}
+
+.tool-entry,
+.file-entry {
+  border: 1px solid #e8e8e8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fbfbfb;
+}
+
+.status-entry,
+.turn-entry,
+.session-entry {
+  color: var(--dc-muted);
 }
 
 .event-heading {

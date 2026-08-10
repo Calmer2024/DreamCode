@@ -251,6 +251,41 @@ describe("desktop state reducer", () => {
     expect(state.error).toEqual(error);
     expect(state.runStatus).toBe("failed");
   });
+
+  it("resets conversation evidence without dropping bootstrap or workspace state", () => {
+    let state = desktopReducer(runningState("run_1"), {
+      type: "run.event",
+      message: { runId: "run_1", event: toolStarted },
+    });
+    state = desktopReducer(state, { type: "drawer.open", drawer: "terminal" });
+    state = desktopReducer(state, { type: "conversation.new" });
+
+    expect(state.bootstrap).toBe(bootstrap);
+    expect(state.workspaceRoot).toBe("/projects/alpha");
+    expect(state.activeSessionId).toBeUndefined();
+    expect(state.activeSession).toBeUndefined();
+    expect(state.activeRunId).toBeUndefined();
+    expect(state.request).toBeUndefined();
+    expect(state.runStatus).toBe("idle");
+    expect(state.rawEvents).toEqual([]);
+    expect(state.timeline).toEqual([]);
+    expect(state.tools).toEqual([]);
+    expect(state.changedFiles).toEqual([]);
+    expect(state.terminalEntries).toEqual([]);
+    expect(state.drawer).toBeUndefined();
+  });
+
+  it("starts a new conversation when the workspace changes", () => {
+    const state = desktopReducer(runningState("run_1"), {
+      type: "workspace.selected",
+      workspaceRoot: "/projects/beta",
+    });
+
+    expect(state.workspaceRoot).toBe("/projects/beta");
+    expect(state.activeRunId).toBeUndefined();
+    expect(state.request).toBeUndefined();
+    expect(state.timeline).toEqual([]);
+  });
 });
 
 function runningState(runId: string) {

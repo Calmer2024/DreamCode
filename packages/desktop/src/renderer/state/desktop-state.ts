@@ -12,6 +12,7 @@ export type DesktopRunState = "idle" | DesktopRunStatus["status"];
 export type DesktopDrawer = "sessions" | "files" | "terminal" | "details";
 export type DesktopDialog = { type: "profile" | "settings" | "approval" | "question" };
 export type DesktopTimelineKind =
+  | "user"
   | "session"
   | "turn"
   | "assistant"
@@ -82,6 +83,7 @@ export interface DesktopState {
 
 export type DesktopAction =
   | { type: "bootstrap.loaded"; bootstrap: DesktopBootstrap }
+  | { type: "conversation.new" }
   | { type: "workspace.selected"; workspaceRoot?: string }
   | { type: "session.selected"; sessionId?: string }
   | { type: "session.loaded"; sessionId: string; session: ReplayedSessionState }
@@ -116,8 +118,10 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
   switch (action.type) {
     case "bootstrap.loaded":
       return { ...createDesktopState(action.bootstrap), workspaceRoot: state.workspaceRoot };
+    case "conversation.new":
+      return resetConversation(state);
     case "workspace.selected":
-      return { ...state, workspaceRoot: action.workspaceRoot };
+      return resetConversation(state, action.workspaceRoot);
     case "session.selected":
       return { ...state, activeSessionId: action.sessionId };
     case "session.loaded":
@@ -236,7 +240,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       );
     }
     case "user.message":
-      return appendTimeline(next, event, "event", "User message", stringValue(payload.content));
+      return appendTimeline(next, event, "user", "User message", stringValue(payload.content));
     case "model.started":
       return appendTimeline(
         next,
@@ -404,6 +408,27 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         "muted",
       );
   }
+}
+
+function resetConversation(state: DesktopState, workspaceRoot = state.workspaceRoot): DesktopState {
+  return {
+    ...state,
+    workspaceRoot,
+    activeSessionId: undefined,
+    activeSession: undefined,
+    activeRunId: undefined,
+    runStatus: "idle",
+    request: undefined,
+    rawEvents: [],
+    timeline: [],
+    tools: [],
+    changedFiles: [],
+    activeChangedFilePath: undefined,
+    terminalEntries: [],
+    drawer: undefined,
+    dialog: undefined,
+    error: undefined,
+  };
 }
 
 function appendTimeline(

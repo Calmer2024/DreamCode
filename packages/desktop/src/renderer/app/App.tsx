@@ -34,6 +34,9 @@ export function App({ api = window.dreamcode }: AppProps) {
   const pendingRunEvents = useRef<DesktopRunEvent[]>([]);
   const pendingRunStatuses = useRef<DesktopRunStatus[]>([]);
   const sessionLoadSequence = useRef(0);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const timelineEndRef = useRef<HTMLDivElement>(null);
+  const shouldFollowTimeline = useRef(true);
 
   const loadBootstrap = useCallback(async () => {
     setLoading(true);
@@ -46,10 +49,9 @@ export function App({ api = window.dreamcode }: AppProps) {
         workspaceRoot: bootstrap.sessions[0]?.workspaceRoot,
       });
       const currentProfile = bootstrap.profiles.find(
-        (profile) => profile.name === bootstrap.currentProfile && profile.apiKeyConfigured,
+        (profile) => profile.name === bootstrap.currentProfile && isProfileUsable(profile),
       );
-      const availableProfile =
-        currentProfile ?? bootstrap.profiles.find((profile) => profile.apiKeyConfigured);
+      const availableProfile = currentProfile ?? bootstrap.profiles.find(isProfileUsable);
       setProfileName(availableProfile?.name ?? bootstrap.profiles[0]?.name ?? "");
     } catch (error) {
       dispatch({ type: "error", error: desktopError(error) });
@@ -88,29 +90,43 @@ export function App({ api = window.dreamcode }: AppProps) {
   const running = state.runStatus === "running" && Boolean(state.activeRunId);
   const busy = running || starting;
   const selectedProfile = state.profiles.find((profile) => profile.name === profileName);
-  const canSubmit = Boolean(
-    prompt.trim() && state.workspaceRoot?.trim() && selectedProfile?.apiKeyConfigured && !busy,
-  );
+  const profileUsable = Boolean(selectedProfile && isProfileUsable(selectedProfile));
+  const canSubmit = Boolean(prompt.trim() && state.workspaceRoot?.trim() && profileUsable && !busy);
+
+  const taskTitle =
+    state.sessions.find((session) => session.id === state.activeSessionId)?.title ??
+    state.request?.prompt ??
+    "新对话";
+  const timelineRevision = `${timeline.length}:${timeline.at(-1)?.detail ?? ""}:${state.request?.prompt ?? ""}`;
+
+  useEffect(() => {
+    const end = timelineEndRef.current;
+    if (
+      timelineRevision &&
+      shouldFollowTimeline.current &&
+      typeof end?.scrollIntoView === "function"
+    ) {
+      end.scrollIntoView({ block: "end" });
+    }
+  }, [timelineRevision]);
 
   const chooseWorkspace = async () => {
     if (busy) return;
     try {
       const workspaceRoot = await api.chooseWorkspace();
-      if (workspaceRoot) dispatch({ type: "workspace.selected", workspaceRoot });
+      if (workspaceRoot) {
+        sessionLoadSequence.current += 1;
+        dispatch({ type: "workspace.selected", workspaceRoot });
+      }
     } catch (error) {
       dispatch({ type: "error", error: desktopError(error) });
     }
   };
 
   const submit = async () => {
+    const submittedInput = prompt;
     const cleanPrompt = prompt.trim();
-    if (
-      !cleanPrompt ||
-      !state.workspaceRoot ||
-      !selectedProfile?.apiKeyConfigured ||
-      busy ||
-      startingRef.current
-    )
+    if (!cleanPrompt || !state.workspaceRoot || !profileUsable || busy || startingRef.current)
       return;
     const request: StartTurnRequest = {
       prompt: cleanPrompt,
@@ -131,7 +147,7 @@ export function App({ api = window.dreamcode }: AppProps) {
       for (const status of pendingRunStatuses.current) {
         if (status.runId === runId) dispatch({ type: "run.status", status });
       }
-      setPrompt("");
+      setPrompt((current) => (current === submittedInput ? "" : current));
     } catch (error) {
       dispatch({ type: "error", error: desktopError(error) });
     } finally {
@@ -165,13 +181,25 @@ export function App({ api = window.dreamcode }: AppProps) {
     }
   };
 
+  const newConversation = () => {
+    sessionLoadSequence.current += 1;
+    dispatch({ type: "conversation.new" });
+  };
+
+  const trackScrollPosition = () => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    shouldFollowTimeline.current =
+      container.scrollHeight - container.scrollTop - container.clientHeight <= 120;
+  };
+
   return (
     <div className="app-shell">
       <Sidebar
         groups={groups}
         activeSessionId={state.activeSessionId}
         navigationDisabled={busy}
-        onNewConversation={() => dispatch({ type: "session.selected", sessionId: undefined })}
+        onNewConversation={newConversation}
         onOpenHistory={() => dispatch({ type: "drawer.open", drawer: "sessions" })}
         onOpenConfiguration={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
         onOpenSettings={() => dispatch({ type: "dialog.set", dialog: { type: "settings" } })}
@@ -179,6 +207,7 @@ export function App({ api = window.dreamcode }: AppProps) {
       />
       <main className="main-pane">
         <TaskHeader
+          taskTitle={taskTitle}
           workspaceRoot={state.workspaceRoot}
           workspaceSelectionDisabled={busy}
           onChooseWorkspace={() => void chooseWorkspace()}
@@ -186,7 +215,11 @@ export function App({ api = window.dreamcode }: AppProps) {
           onOpenFiles={() => dispatch({ type: "drawer.open", drawer: "files" })}
           onOpenTerminal={() => dispatch({ type: "drawer.open", drawer: "terminal" })}
         />
-        <div className="conversation-scroll">
+        <div
+          className="conversation-scroll"
+          ref={scrollContainerRef}
+          onScroll={trackScrollPosition}
+        >
           <div className="conversation">
             {loading ? (
               <div className="loading-state" role="status">
@@ -208,10 +241,12 @@ export function App({ api = window.dreamcode }: AppProps) {
             ) : (
               <Timeline
                 state={{ ...state, timeline }}
+                profileUsable={profileUsable}
                 onConfigure={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
                 onChooseWorkspace={() => void chooseWorkspace()}
               />
             )}
+            <div ref={timelineEndRef} aria-hidden="true" />
           </div>
         </div>
         {state.error && state.error.code !== "config_load_failed" ? (
@@ -237,6 +272,10 @@ export function App({ api = window.dreamcode }: AppProps) {
       </main>
     </div>
   );
+}
+
+function isProfileUsable(profile: { provider: string; apiKeyConfigured: boolean }): boolean {
+  return profile.provider === "fake" || profile.apiKeyConfigured;
 }
 
 function desktopError(error: unknown): DesktopError {

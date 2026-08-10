@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 interface TaskHeaderProps {
+  taskTitle: string;
   workspaceRoot?: string;
   workspaceSelectionDisabled: boolean;
   onChooseWorkspace: () => void;
@@ -18,6 +19,7 @@ interface TaskHeaderProps {
 }
 
 export function TaskHeader({
+  taskTitle,
   workspaceRoot,
   workspaceSelectionDisabled,
   onChooseWorkspace,
@@ -27,15 +29,18 @@ export function TaskHeader({
 }: TaskHeaderProps) {
   return (
     <header className="task-header">
-      <button
-        type="button"
-        className="workspace-button"
-        disabled={workspaceSelectionDisabled}
-        onClick={onChooseWorkspace}
-      >
-        <Folder aria-hidden="true" />
-        <span>{workspaceRoot ? lastPathSegment(workspaceRoot) : "选择工作区"}</span>
-      </button>
+      <div className="task-identity">
+        <h2>{taskTitle}</h2>
+        <button
+          type="button"
+          className="workspace-button"
+          disabled={workspaceSelectionDisabled}
+          onClick={onChooseWorkspace}
+        >
+          <Folder aria-hidden="true" />
+          <span>{workspaceRoot ? lastPathSegment(workspaceRoot) : "选择工作区"}</span>
+        </button>
+      </div>
       <div className="header-actions">
         <button type="button" className="icon-button" aria-label="搜索">
           <Search aria-hidden="true" />

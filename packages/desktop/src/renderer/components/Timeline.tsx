@@ -2,12 +2,13 @@ import type { DesktopState, DesktopTimelineEntry } from "../state/desktop-state"
 
 interface TimelineProps {
   state: DesktopState;
+  profileUsable: boolean;
   onConfigure: () => void;
   onChooseWorkspace: () => void;
 }
 
-export function Timeline({ state, onConfigure, onChooseWorkspace }: TimelineProps) {
-  if (state.profiles.length === 0) {
+export function Timeline({ state, profileUsable, onConfigure, onChooseWorkspace }: TimelineProps) {
+  if (!profileUsable) {
     return (
       <div className="empty-state configuration-state">
         <span className="empty-kicker">模型未配置</span>
@@ -46,8 +47,8 @@ export function Timeline({ state, onConfigure, onChooseWorkspace }: TimelineProp
 
   return (
     <section className="timeline" aria-label="任务时间线">
-      {state.request ? (
-        <article className="timeline-entry user-entry">
+      {state.request && !state.timeline.some((entry) => entry.kind === "user") ? (
+        <article className="timeline-entry user-entry" data-testid="timeline-user">
           <span className="entry-label">你</span>
           <p>{state.request.prompt}</p>
         </article>
@@ -60,9 +61,18 @@ export function Timeline({ state, onConfigure, onChooseWorkspace }: TimelineProp
 }
 
 function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
+  if (entry.kind === "user") {
+    return (
+      <article className="timeline-entry user-entry" data-testid="timeline-user">
+        <span className="entry-label">你</span>
+        <p>{entry.detail}</p>
+      </article>
+    );
+  }
+
   if (entry.kind === "assistant") {
     return (
-      <article className="timeline-entry assistant-entry">
+      <article className="timeline-entry assistant-entry" data-testid="timeline-assistant">
         <span className="entry-label">DreamCode</span>
         {entry.detail ? <p className="assistant-copy">{entry.detail}</p> : null}
       </article>
@@ -70,7 +80,10 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
   }
 
   return (
-    <article className={`timeline-entry event-entry tone-${entry.tone}`}>
+    <article
+      className={`timeline-entry event-entry ${entry.kind}-entry tone-${entry.tone}`}
+      data-testid={`timeline-${entry.kind}`}
+    >
       <div className="event-heading">
         <span>{entry.title}</span>
         <time dateTime={entry.timestamp}>{formatTime(entry.timestamp)}</time>
