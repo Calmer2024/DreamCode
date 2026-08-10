@@ -50,6 +50,33 @@ export interface DesktopError {
   message: string;
   recoverable: boolean;
 }
+export type DesktopIpcResponse<T> = { ok: true; value: T } | { ok: false; error: DesktopError };
+
+const safeDesktopErrorMessages: Record<string, string> = {
+  invalid_request: "Request is invalid.",
+  run_already_active: "Another turn is already active.",
+  stale_request: "Request is no longer pending.",
+  stale_run: "Run is no longer active.",
+  run_interrupted: "Run was interrupted.",
+  config_load_failed: "Failed to load DreamCode configuration.",
+  provider_setup_failed: "Provider could not be configured.",
+  profile_not_found: "No matching model profile is configured.",
+  run_failed: "Run failed.",
+  status_delivery_failed: "Run status could not be delivered.",
+};
+
+export function sanitizeDesktopError(error: unknown): DesktopError {
+  if (error && typeof error === "object") {
+    const candidate = error as Partial<DesktopError>;
+    const message =
+      typeof candidate.code === "string" ? safeDesktopErrorMessages[candidate.code] : undefined;
+    if (message && typeof candidate.recoverable === "boolean") {
+      return { code: candidate.code as string, message, recoverable: candidate.recoverable };
+    }
+  }
+  return { code: "internal_error", message: "Request failed.", recoverable: true };
+}
+
 export interface DesktopApprovalRequest {
   runId: string;
   requestId: string;

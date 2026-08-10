@@ -54,7 +54,7 @@ describe("registerDesktopIpc", () => {
     expect(ipcMain.removeHandler).toHaveBeenCalledTimes(10);
   });
 
-  it("rejects invalid object requests before calling a service", async () => {
+  it("serializes invalid object requests before calling a service", async () => {
     const { handlers, register, runManager, service } = createIpcFixture();
     register();
 
@@ -68,10 +68,13 @@ describe("registerDesktopIpc", () => {
     ] as const;
 
     for (const [channel, request] of invalidRequests) {
-      await expect(handlers.get(channel)?.({}, request)).rejects.toEqual({
-        code: "invalid_request",
-        message: "Request is invalid.",
-        recoverable: true,
+      await expect(handlers.get(channel)?.({}, request)).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "invalid_request",
+          message: "Request is invalid.",
+          recoverable: true,
+        },
       });
     }
 
@@ -83,23 +86,63 @@ describe("registerDesktopIpc", () => {
     expect(runManager.respondQuestion).not.toHaveBeenCalled();
   });
 
-  it("returns sanitized structured errors from handlers", async () => {
+  it("serializes successful handler results", async () => {
+    const { handlers, register, service } = createIpcFixture();
+    service.bootstrap.mockResolvedValueOnce({ profiles: [], presets: [], sessions: [] });
+    register();
+
+    await expect(handlers.get("desktop:bootstrap")?.({})).resolves.toEqual({
+      ok: true,
+      value: { profiles: [], presets: [], sessions: [] },
+    });
+  });
+
+  it("serializes sanitized structured errors from handlers", async () => {
     const { handlers, register, service } = createIpcFixture();
     service.saveProfile.mockRejectedValueOnce(
       Object.assign(new Error("Configuration contains private-token."), { stack: "private stack" }),
     );
     register();
 
-    const error = await handlers
-      .get("desktop:save-profile")?.({}, { name: "personal", provider: "openai" })
-      .catch((reason: unknown) => reason);
+    const response = await handlers.get("desktop:save-profile")?.(
+      {},
+      {
+        name: "personal",
+        provider: "openai",
+      },
+    );
 
-    expect(error).toEqual({
-      code: "internal_error",
-      message: "Request failed.",
+    expect(response).toEqual({
+      ok: false,
+      error: { code: "internal_error", message: "Request failed.", recoverable: true },
+    });
+    expect(JSON.stringify(response)).not.toContain("private-token");
+    expect(JSON.stringify(response)).not.toContain("private stack");
+  });
+
+  it("does not serialize secret messages from structurally matching errors", async () => {
+    const secret = "secret-in-structured-error";
+    const { handlers, register, service } = createIpcFixture();
+    service.saveProfile.mockRejectedValueOnce({
+      code: "stale_run",
+      message: secret,
       recoverable: true,
     });
-    expect(Object.hasOwn(error as object, "stack")).toBe(false);
+    register();
+
+    const response = await handlers.get("desktop:save-profile")?.(
+      {},
+      {
+        name: "personal",
+        provider: "openai",
+      },
+    );
+
+    expect(response).toEqual({
+      ok: false,
+      error: { code: "stale_run", message: "Run is no longer active.", recoverable: true },
+    });
+    expect(JSON.stringify(response)).not.toContain(secret);
   });
 });
 
@@ -147,12 +190,73 @@ describe("createDesktopApi", () => {
     });
     expect(ipcRenderer.removeListener).toHaveBeenCalledWith("desktop:run-event", wrapped);
 
-    await api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" });
+    ipcRenderer.invoke.mockResolvedValue({ ok: true, value: { runId: "run_1" } });
+
+    await expect(
+      api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" }),
+    ).resolves.toEqual({ runId: "run_1" });
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:start-turn", {
       prompt: "Inspect",
       workspaceRoot: "D:/repo",
       mode: "yolo",
     });
+  });
+
+  it("unwraps serialized failures without exposing secret messages", async () => {
+    const secret = "secret-in-main-error-envelope";
+    const ipcRenderer = {
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "stale_run", message: secret, recoverable: true },
+      }),
+      on: vi.fn(),
+      removeListener: vi.fn(),
+    };
+    const api = createDesktopApi(ipcRenderer);
+
+    const error = await api.stopTurn("run_1").catch((reason: unknown) => reason);
+
+    expect(error).toEqual({
+      code: "stale_run",
+      message: "Run is no longer active.",
+      recoverable: true,
+    });
+    expect(JSON.stringify(error)).not.toContain(secret);
+  });
+
+  it("routes every invoke method through the response unwrapping boundary", async () => {
+    const ipcRenderer = {
+      invoke: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
+      on: vi.fn(),
+      removeListener: vi.fn(),
+    };
+    const api = createDesktopApi(ipcRenderer);
+
+    await Promise.all([
+      api.bootstrap(),
+      api.chooseWorkspace(),
+      api.saveProfile({ name: "personal", provider: "openai" }),
+      api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" }),
+      api.stopTurn("run_1"),
+      api.readSession("sess_1"),
+      api.readDiff({ sessionId: "sess_1", filePath: "src/index.ts" }),
+      api.rollback({ sessionId: "sess_1", filePath: "src/index.ts" }),
+      api.respondApproval({ runId: "run_1", requestId: "approval_1", approved: true }),
+      api.respondQuestion({ runId: "run_1", requestId: "question_1", answer: "yes" }),
+    ]);
+
+    expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).toEqual([
+      "desktop:bootstrap",
+      "desktop:choose-workspace",
+      "desktop:save-profile",
+      "desktop:start-turn",
+      "desktop:stop-turn",
+      "desktop:read-session",
+      "desktop:read-diff",
+      "desktop:rollback",
+      "desktop:approval-response",
+      "desktop:question-response",
+    ]);
   });
 });
 

@@ -2,9 +2,11 @@ import type { z } from "zod";
 import {
   approvalResponseSchema,
   type DesktopError,
+  type DesktopIpcResponse,
   questionResponseSchema,
   rollbackRequestSchema,
   runIdSchema,
+  sanitizeDesktopError,
   saveProfileRequestSchema,
   sessionIdSchema,
   startTurnRequestSchema,
@@ -12,7 +14,7 @@ import {
 import type { DesktopAppService } from "./app-service";
 import type { DesktopRunManager } from "./run-manager";
 
-type IpcHandler = (...arguments_: unknown[]) => Promise<unknown>;
+type IpcHandler = (...arguments_: unknown[]) => Promise<DesktopIpcResponse<unknown>>;
 
 interface IpcMainLike {
   handle(channel: string, listener: IpcHandler): void;
@@ -102,9 +104,9 @@ export function registerDesktopIpc(dependencies: DesktopIpcDependencies): () => 
   for (const channel of channels) {
     dependencies.ipcMain.handle(channel, async (event, request) => {
       try {
-        return await handlers[channel](event, dependencies, request);
+        return { ok: true, value: await handlers[channel](event, dependencies, request) };
       } catch (error) {
-        throw toDesktopError(error);
+        return { ok: false, error: toDesktopError(error) };
       }
     });
   }
@@ -129,20 +131,5 @@ function parseRequest<T>(schema: z.ZodType<T>, request: unknown): T {
 }
 
 function toDesktopError(error: unknown): DesktopError {
-  if (isDesktopError(error)) {
-    return { code: error.code, message: error.message, recoverable: error.recoverable };
-  }
-  return { code: "internal_error", message: "Request failed.", recoverable: true };
-}
-
-function isDesktopError(error: unknown): error is DesktopError {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const candidate = error as Partial<DesktopError>;
-  return (
-    typeof candidate.code === "string" &&
-    typeof candidate.message === "string" &&
-    typeof candidate.recoverable === "boolean"
-  );
+  return sanitizeDesktopError(error);
 }
