@@ -11,7 +11,14 @@ import type {
 export type DesktopRunState = "idle" | DesktopRunStatus["status"];
 export type DesktopDrawer = "sessions" | "files" | "terminal" | "details";
 export type DesktopDialog = { type: "profile" | "settings" | "approval" | "question" };
-export type DesktopTimelineKind = "session" | "turn" | "assistant" | "tool" | "file" | "status";
+export type DesktopTimelineKind =
+  | "session"
+  | "turn"
+  | "assistant"
+  | "tool"
+  | "file"
+  | "status"
+  | "event";
 export type DesktopTimelineTone = "info" | "success" | "warning" | "danger" | "muted";
 
 export interface DesktopTimelineEntry {
@@ -228,10 +235,70 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         stringValue(turn.prompt),
       );
     }
+    case "user.message":
+      return appendTimeline(next, event, "event", "User message", stringValue(payload.content));
+    case "model.started":
+      return appendTimeline(
+        next,
+        event,
+        "event",
+        "Model started",
+        `${stringValue(payload.provider) ?? "provider"} / ${stringValue(payload.model) ?? "default"}`,
+        "muted",
+      );
     case "model.delta": {
       const text = stringValue(payload.text);
       return text ? appendAssistantDelta(next, event, text) : next;
     }
+    case "model.tool_call": {
+      const toolCall = asRecord(payload.toolCall);
+      const tool: DesktopToolEvent = {
+        id: stringValue(toolCall.id) ?? event.id,
+        name: stringValue(toolCall.name) ?? "unknown",
+        status: "queued",
+        inputPreview: previewJson(toolCall.input),
+      };
+      return appendTimeline(
+        { ...next, tools: upsertTool(next.tools, tool) },
+        event,
+        "tool",
+        `Tool requested: ${tool.name}`,
+        tool.inputPreview,
+      );
+    }
+    case "permission.decided": {
+      const decision = asRecord(payload.decision);
+      const outcome = stringValue(decision.decision) ?? "decided";
+      return appendTimeline(
+        next,
+        event,
+        "event",
+        `Permission ${outcome}`,
+        formatPermissionDetail(stringValue(payload.tool), stringValue(decision.reason)),
+        outcome === "allow" ? "success" : outcome === "deny" ? "danger" : "warning",
+      );
+    }
+    case "todo.updated": {
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      return appendTimeline(next, event, "event", "Todo updated", `${items.length} item(s)`);
+    }
+    case "artifact.created":
+    case "web.source.saved": {
+      const title = event.type === "artifact.created" ? "Artifact created" : "Source saved";
+      const detail =
+        stringValue(payload.title) ?? stringValue(payload.url) ?? stringValue(payload.path);
+      return appendTimeline(next, event, "event", title, detail, "success");
+    }
+    case "skill.loaded":
+    case "skill.resource.loaded":
+      return appendTimeline(
+        next,
+        event,
+        "event",
+        event.type === "skill.loaded" ? "Skill loaded" : "Skill resource loaded",
+        stringValue(payload.name) ?? stringValue(payload.resourcePath) ?? stringValue(payload.path),
+        "success",
+      );
     case "tool.started": {
       const toolCallId = stringValue(payload.toolCallId) ?? event.id;
       const name = stringValue(payload.tool) ?? "unknown";
@@ -294,15 +361,21 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         "warning",
       );
     }
-    case "turn.completed":
+    case "turn.completed": {
+      const summary = asRecord(payload.summary);
       return appendTimeline(
-        { ...next, runStatus: "completed" },
+        {
+          ...next,
+          runStatus: "completed",
+          changedFiles: mergeChangedFiles(next.changedFiles, changedFilesFromSummary(summary)),
+        },
         event,
         "status",
         "Turn completed",
-        summaryMessage(payload),
+        stringValue(summary.message),
         "success",
       );
+    }
     case "turn.failed":
       return appendTimeline(
         { ...next, runStatus: "failed" },
@@ -322,7 +395,14 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         "warning",
       );
     default:
-      return next;
+      return appendTimeline(
+        next,
+        event,
+        "event",
+        readableEventTitle(event.type),
+        undefined,
+        "muted",
+      );
   }
 }
 
@@ -380,6 +460,7 @@ function terminalOutput(
             status,
             stream,
             text,
+            exitCode: numberValue(data.exitCode),
             timestamp: event.timestamp,
           },
         ]
@@ -395,6 +476,7 @@ function terminalOutput(
           status,
           stream: "summary",
           text: summary,
+          exitCode: numberValue(data.exitCode),
           timestamp: event.timestamp,
         },
       ];
@@ -425,6 +507,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function previewJson(value: unknown): string | undefined {
@@ -470,6 +556,31 @@ function upsertChangedFile(files: ChangedFile[], next: ChangedFile): ChangedFile
   const updated = [...files];
   updated[index] = { ...updated[index], ...next };
   return updated;
+}
+
+function mergeChangedFiles(current: ChangedFile[], incoming: ChangedFile[]): ChangedFile[] {
+  return incoming.reduce(upsertChangedFile, current);
+}
+
+function changedFilesFromSummary(summary: Record<string, unknown>): ChangedFile[] {
+  if (!Array.isArray(summary.changedFiles)) return [];
+  return summary.changedFiles.flatMap((file) => {
+    const changedFile = changedFileFrom(file);
+    return changedFile ? [changedFile] : [];
+  });
+}
+
+function formatPermissionDetail(
+  tool: string | undefined,
+  reason: string | undefined,
+): string | undefined {
+  if (tool && reason) return `${tool}: ${reason}`;
+  return tool ?? reason;
+}
+
+function readableEventTitle(type: AgentEvent["type"]): string {
+  const text = type.replace(/[._]/g, " ");
+  return `${text.slice(0, 1).toUpperCase()}${text.slice(1)}`;
 }
 
 function summaryMessage(payload: Record<string, unknown>): string | undefined {

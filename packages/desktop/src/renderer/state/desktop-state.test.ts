@@ -91,6 +91,44 @@ describe("desktop state reducer", () => {
     expect(state.rawEvents).toHaveLength(2);
   });
 
+  it("projects key lifecycle events into readable timeline entries with a generic fallback", () => {
+    let state = runningState("run_1");
+    for (const event of [
+      agentEvent("user.message", { content: "Please inspect the failing test." }),
+      agentEvent("model.started", { provider: "openai", model: "gpt-5", toolCount: 3 }),
+      agentEvent("model.tool_call", {
+        toolCall: { id: "call_queued", name: "shell.run", input: { command: "pnpm test" } },
+      }),
+      agentEvent("permission.decided", {
+        tool: "shell.run",
+        decision: { decision: "allow", reason: "Read-only test command" },
+      }),
+      agentEvent("todo.updated", { items: [{ content: "Run tests", status: "completed" }] }),
+      agentEvent("artifact.created", { kind: "report", path: "artifacts/report.md" }),
+      agentEvent("web.source.saved", { title: "API reference", url: "https://example.com" }),
+      agentEvent("skill.loaded", { name: "typescript" }),
+      agentEvent("mcp.server.started", { server: "local" }),
+    ]) {
+      state = desktopReducer(state, { type: "run.event", message: { runId: "run_1", event } });
+    }
+
+    expect(selectTimeline(state).map((entry) => entry.title)).toEqual([
+      "User message",
+      "Model started",
+      "Tool requested: shell.run",
+      "Permission allow",
+      "Todo updated",
+      "Artifact created",
+      "Source saved",
+      "Skill loaded",
+      "Mcp server started",
+    ]);
+    expect(state.tools).toContainEqual(
+      expect.objectContaining({ id: "call_queued", name: "shell.run", status: "queued" }),
+    );
+    expect(state.rawEvents).toHaveLength(9);
+  });
+
   it("derives tool and terminal entries from completed tool events", () => {
     let state = desktopReducer(runningState("run_1"), {
       type: "run.event",
@@ -106,6 +144,51 @@ describe("desktop state reducer", () => {
     ]);
     expect(selectTerminalEntries(state)).toEqual([
       expect.objectContaining({ toolCallId: "call_1", text: "updated 1 file", status: "success" }),
+    ]);
+  });
+
+  it("keeps a live shell command exit code in the terminal entry", () => {
+    const shellCompleted = agentEvent("tool.completed", {
+      toolCallId: "call_shell",
+      tool: "shell.run",
+      status: "error",
+      summary: "Command 'pnpm test' exited with 1.",
+      data: { command: "pnpm test", exitCode: 1, stdout: "one failed test" },
+    });
+    const state = desktopReducer(runningState("run_1"), {
+      type: "run.event",
+      message: { runId: "run_1", event: shellCompleted },
+    });
+
+    expect(selectTerminalEntries(state)).toEqual([
+      expect.objectContaining({ tool: "shell.run", text: "one failed test", exitCode: 1 }),
+    ]);
+  });
+
+  it("merges completed summary files by path without duplicating changed files", () => {
+    let state = desktopReducer(runningState("run_1"), {
+      type: "run.event",
+      message: { runId: "run_1", event: fileChanged },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: {
+        runId: "run_1",
+        event: agentEvent("turn.completed", {
+          summary: {
+            message: "Done.",
+            changedFiles: [
+              { path: "src/math.js", operation: "update", afterHash: "after" },
+              { path: "src/new.ts", operation: "create" },
+            ],
+          },
+        }),
+      },
+    });
+
+    expect(state.changedFiles).toEqual([
+      expect.objectContaining({ path: "src/math.js", afterHash: "after" }),
+      expect.objectContaining({ path: "src/new.ts", operation: "create" }),
     ]);
   });
 
