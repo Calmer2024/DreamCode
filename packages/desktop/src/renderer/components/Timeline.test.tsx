@@ -109,15 +109,45 @@ describe("Timeline", () => {
     expect(evidence).toHaveClass("evidence-entry", "event-entry");
     expect(within(evidence).getByRole("heading", { level: 3 })).toHaveTextContent("Model started");
   });
+
+  it.each([
+    { title: "Turn completed", tone: "success" as const, label: "运行成功", icon: "circle-check" },
+    { title: "Turn failed", tone: "danger" as const, label: "运行失败", icon: "circle-x" },
+    {
+      title: "Turn interrupted",
+      tone: "warning" as const,
+      label: "运行已中断",
+      icon: "circle-stop",
+    },
+  ])("maps $title to its semantic status icon and label", ({ title, tone, label, icon }) => {
+    const state: DesktopState = {
+      ...createDesktopState(),
+      workspaceRoot: "D:\\Projects\\DreamCode",
+      timeline: [entry("status", title, "Outcome detail", tone)],
+    };
+
+    render(
+      <Timeline state={state} profileUsable onConfigure={vi.fn()} onChooseWorkspace={vi.fn()} />,
+    );
+
+    const status = screen.getByLabelText(label);
+    expect(status).toHaveClass(`tone-${tone}`);
+    expect(within(status).getByTestId("timeline-status-icon")).toHaveAttribute("data-lucide", icon);
+  });
 });
 
-function entry(kind: DesktopTimelineKind, title: string, detail: string) {
+function entry(
+  kind: DesktopTimelineKind,
+  title: string,
+  detail: string,
+  tone: "muted" | "success" | "danger" | "warning" = "muted",
+) {
   return {
     id: `entry-${kind}`,
     kind,
     title,
     detail,
-    tone: "muted" as const,
+    tone,
     timestamp: "2026-08-10T00:00:00.000Z",
   };
 }

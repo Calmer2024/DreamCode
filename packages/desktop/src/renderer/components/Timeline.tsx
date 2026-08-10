@@ -1,4 +1,14 @@
-import { Activity, CircleCheck, CircleDot, FileCode2, Radio, Wrench } from "lucide-react";
+import {
+  Activity,
+  CircleCheck,
+  CircleDot,
+  CircleStop,
+  CircleX,
+  Clock,
+  FileCode2,
+  Radio,
+  Wrench,
+} from "lucide-react";
 import type { DesktopState, DesktopTimelineEntry } from "../state/desktop-state";
 
 interface TimelineProps {
@@ -106,16 +116,20 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
   }
 
   if (entry.kind === "status" || entry.kind === "turn" || entry.kind === "session") {
-    const label =
-      entry.kind === "status" ? "运行状态" : entry.kind === "turn" ? "轮次状态" : "会话状态";
-    const Icon = entry.kind === "status" ? CircleCheck : entry.kind === "turn" ? CircleDot : Radio;
+    const status = entry.kind === "status" ? statusPresentation(entry.tone) : undefined;
+    const label = status?.label ?? (entry.kind === "turn" ? "轮次状态" : "会话状态");
+    const Icon = status?.Icon ?? (entry.kind === "turn" ? CircleDot : Radio);
     return (
       <article
         aria-label={label}
         className={`timeline-entry lifecycle-entry ${entry.kind}-entry tone-${entry.tone}`}
         data-testid={`timeline-${entry.kind}`}
       >
-        <Icon aria-hidden="true" />
+        <Icon
+          aria-hidden="true"
+          data-lucide={status?.iconName}
+          data-testid={entry.kind === "status" ? "timeline-status-icon" : undefined}
+        />
         <div className="lifecycle-copy">
           <h3>{entry.title}</h3>
           {entry.detail ? <p>{entry.detail}</p> : null}
@@ -141,6 +155,19 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
       </div>
     </article>
   );
+}
+
+function statusPresentation(tone: DesktopTimelineEntry["tone"]) {
+  if (tone === "success") {
+    return { Icon: CircleCheck, iconName: "circle-check", label: "运行成功" } as const;
+  }
+  if (tone === "danger") {
+    return { Icon: CircleX, iconName: "circle-x", label: "运行失败" } as const;
+  }
+  if (tone === "warning") {
+    return { Icon: CircleStop, iconName: "circle-stop", label: "运行已中断" } as const;
+  }
+  return { Icon: Clock, iconName: "clock", label: "运行状态" } as const;
 }
 
 function TimelineTime({ timestamp }: { timestamp: string }) {
