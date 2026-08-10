@@ -94,6 +94,27 @@ describe("DreamCode desktop shell", () => {
     await waitFor(() => expect(stopTurn).toHaveBeenCalledWith("run_7"));
   });
 
+  it("continues the selected Session instead of creating a new one", async () => {
+    const startTurn = vi.fn().mockResolvedValue({ runId: "run_resume" });
+    const readSession = vi
+      .fn()
+      .mockResolvedValue(replayedSession("sess_1", "D:\\Projects\\DreamCode"));
+    render(<App api={fakeDesktopApi({ bootstrap, readSession, startTurn })} />);
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(screen.getByRole("button", { name: "Desktop shell" }));
+    await waitFor(() => expect(readSession).toHaveBeenCalledWith("sess_1"));
+    const prompt = screen.getByRole("textbox", { name: "给 DreamCode 发送消息" });
+    fireEvent.change(prompt, { target: { value: "Continue this Session" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() =>
+      expect(startTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "sess_1", prompt: "Continue this Session" }),
+      ),
+    );
+  });
+
   it("keeps workspace and session navigation disabled while a run is active", async () => {
     render(<App api={fakeDesktopApi({ bootstrap })} />);
 

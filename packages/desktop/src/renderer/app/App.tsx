@@ -146,6 +146,7 @@ export function App({ api = window.dreamcode }: AppProps) {
       workspaceRoot: state.workspaceRoot,
       mode,
       profileName,
+      ...(state.activeSessionId ? { sessionId: state.activeSessionId } : {}),
     };
     startingRef.current = true;
     pendingRunEvents.current = [];

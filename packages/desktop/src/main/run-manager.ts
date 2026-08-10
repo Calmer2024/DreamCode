@@ -242,6 +242,9 @@ export class DesktopRunManager {
     sensitiveValues: string[],
   ): Promise<void> {
     rejectPending(run, desktopError("stale_request", "Run is no longer active."));
+    if (this.#active === run) {
+      this.#active = undefined;
+    }
     let deliveryError: DesktopError | undefined;
     try {
       await this.#emitStatus(finalStatus);
@@ -250,10 +253,6 @@ export class DesktopRunManager {
         "status_delivery_failed",
         redactText(readErrorMessage(error), sensitiveValues),
       );
-    } finally {
-      if (this.#active === run) {
-        this.#active = undefined;
-      }
     }
     if (deliveryError) {
       throw deliveryError;

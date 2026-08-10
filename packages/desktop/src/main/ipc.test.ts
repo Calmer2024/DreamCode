@@ -97,6 +97,19 @@ describe("registerDesktopIpc", () => {
     });
   });
 
+  it("uses an injected workspace chooser without opening a native dialog", async () => {
+    const chooseWorkspace = vi.fn().mockResolvedValue("D:/isolated-fixture");
+    const { dialog, handlers, register } = createIpcFixture({ chooseWorkspace });
+    register();
+
+    await expect(handlers.get("desktop:choose-workspace")?.({})).resolves.toEqual({
+      ok: true,
+      value: "D:/isolated-fixture",
+    });
+    expect(chooseWorkspace).toHaveBeenCalledOnce();
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+  });
+
   it("serializes sanitized structured errors from handlers", async () => {
     const { handlers, register, service } = createIpcFixture();
     service.saveProfile.mockRejectedValueOnce(
@@ -260,7 +273,7 @@ describe("createDesktopApi", () => {
   });
 });
 
-function createIpcFixture() {
+function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | undefined> } = {}) {
   const handlers = new Map<string, (...arguments_: unknown[]) => Promise<unknown>>();
   const ipcMain = {
     handle: vi.fn((channel: string, handler: (...arguments_: unknown[]) => Promise<unknown>) => {
@@ -284,10 +297,18 @@ function createIpcFixture() {
   };
 
   return {
+    dialog,
     handlers,
     service,
     runManager,
     register: () =>
-      registerDesktopIpc({ ipcMain, dialog, service, runManager, getWindow: () => undefined }),
+      registerDesktopIpc({
+        ipcMain,
+        dialog,
+        service,
+        runManager,
+        getWindow: () => undefined,
+        ...options,
+      } as never),
   };
 }

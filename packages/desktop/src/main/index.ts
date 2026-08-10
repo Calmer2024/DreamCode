@@ -105,6 +105,10 @@ export async function startDesktopApplication(): Promise<void> {
     service,
     runManager,
     getWindow: () => mainWindow,
+    chooseWorkspace:
+      process.env.DREAMCODE_E2E === "1" && process.env.DREAMCODE_E2E_WORKSPACE?.trim()
+        ? async () => process.env.DREAMCODE_E2E_WORKSPACE?.trim()
+        : undefined,
   });
   const confirmClose = createActiveRunCloseConfirmation({ runManager, dialog });
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));

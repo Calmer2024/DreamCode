@@ -37,12 +37,16 @@ export interface DesktopIpcDependencies {
   >;
   runManager: Pick<DesktopRunManager, "start" | "stop" | "respondApproval" | "respondQuestion">;
   getWindow: () => unknown;
+  chooseWorkspace?: () => Promise<string | undefined>;
 }
 
 const handlers = {
   "desktop:bootstrap": async (_event: unknown, dependencies: DesktopIpcDependencies) =>
     dependencies.service.bootstrap(),
   "desktop:choose-workspace": async (_event: unknown, dependencies: DesktopIpcDependencies) => {
+    if (dependencies.chooseWorkspace) {
+      return dependencies.chooseWorkspace();
+    }
     const result = await dependencies.dialog.showOpenDialog(dependencies.getWindow(), {
       properties: ["openDirectory", "createDirectory"],
     });

@@ -46,6 +46,31 @@ describe("DesktopRunManager", () => {
     expect(manager.activeRunId).toBeUndefined();
   });
 
+  it("releases the active run before delivering a terminal status", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-home-"));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-workspace-"));
+    let manager!: DesktopRunManager;
+    let activeRunWhenCompleted: string | undefined;
+    manager = createManager({
+      home,
+      emitStatus: (status) => {
+        if (status.status === "completed") {
+          activeRunWhenCompleted = manager.activeRunId;
+        }
+      },
+    });
+
+    const { completion } = await manager.start({
+      prompt: "Inspect workspace",
+      workspaceRoot,
+      profileName: "fake",
+      mode: "yolo",
+    });
+    await completion;
+
+    expect(activeRunWhenCompleted).toBeUndefined();
+  });
+
   it("rejects a second active Turn", async () => {
     const { manager, request } = await createBlockingManager();
     const first = await manager.start(request);

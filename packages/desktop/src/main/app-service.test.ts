@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
 import { loadDreamCodeConfig, saveDreamCodeConfig, upsertLlmProfile } from "@dreamcode/store";
+import { describe, expect, it } from "vitest";
 import { DesktopAppService } from "./app-service";
 
 function emptyConfig() {
@@ -10,6 +10,19 @@ function emptyConfig() {
 }
 
 describe("DesktopAppService", () => {
+  it("exposes the normal Fake Provider preset without E2E-only variants", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+
+    const bootstrap = await new DesktopAppService(home).bootstrap();
+
+    expect(bootstrap.presets).toContainEqual({
+      id: "fake",
+      displayName: "Fake Provider",
+      defaultModel: "fake",
+    });
+    expect(bootstrap.presets.some((preset) => preset.id.startsWith("e2e-"))).toBe(false);
+  });
+
   it("never returns persisted API key plaintext", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
     const service = new DesktopAppService(home);
@@ -99,9 +112,9 @@ describe("DesktopAppService", () => {
     await expect(service.readChangedFileDiff(sessionId, "src/changed.ts")).resolves.toBe(
       "@@ -1 +1 @@\n-before\n+after",
     );
-    await expect(service.readChangedFileDiff(sessionId, path.join(home, "outside.ts"))).resolves.toBe(
-      "",
-    );
+    await expect(
+      service.readChangedFileDiff(sessionId, path.join(home, "outside.ts")),
+    ).resolves.toBe("");
   });
 
   it("rejects traversal session identifiers before reading or rolling back", async () => {
@@ -120,7 +133,7 @@ describe("DesktopAppService", () => {
     );
     await writeFile(
       path.join(externalSessionDir, "events.jsonl"),
-      JSON.stringify({
+      `${JSON.stringify({
         id: "evt_external",
         timestamp: "2026-08-10T00:00:00.000Z",
         type: "file.changed",
@@ -131,7 +144,7 @@ describe("DesktopAppService", () => {
             diff: "external-secret-diff",
           },
         },
-      }) + "\n",
+      })}\n`,
       "utf8",
     );
 
@@ -142,8 +155,8 @@ describe("DesktopAppService", () => {
     await expect(service.readChangedFileDiff(traversalId, "src/external.ts")).rejects.toThrow(
       "Invalid session ID",
     );
-    await expect(service.rollback({ sessionId: traversalId, filePath: "src/external.ts" })).rejects.toThrow(
-      "Invalid session ID",
-    );
+    await expect(
+      service.rollback({ sessionId: traversalId, filePath: "src/external.ts" }),
+    ).rejects.toThrow("Invalid session ID");
   });
 });

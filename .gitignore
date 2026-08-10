@@ -10,3 +10,6 @@ coverage/
 !.env.example
 !evals/fixtures/safety/.env
 packages/*/dist/
+packages/desktop/dist-main/
+packages/desktop/dist-renderer/
+packages/desktop/test-results/

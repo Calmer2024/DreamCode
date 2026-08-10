@@ -1,4 +1,5 @@
 import { listModelProviderPresets } from "@dreamcode/models";
+import type { DreamCodeConfig } from "@dreamcode/store";
 import {
   listSessions,
   loadDreamCodeConfig,
@@ -7,12 +8,7 @@ import {
   saveDreamCodeConfig,
   upsertLlmProfile,
 } from "@dreamcode/store";
-import type { DreamCodeConfig } from "@dreamcode/store";
-import type {
-  DesktopBootstrap,
-  RollbackRequest,
-  SaveProfileRequest,
-} from "../shared/contracts";
+import type { DesktopBootstrap, RollbackRequest, SaveProfileRequest } from "../shared/contracts";
 
 export function redactProfiles(config: DreamCodeConfig): DesktopBootstrap["profiles"] {
   return Object.entries(config.profiles).map(([name, profile]) => ({
@@ -34,12 +30,15 @@ export class DesktopAppService {
     return {
       profiles: redactProfiles(config),
       currentProfile: config.currentProfile,
-      presets: listModelProviderPresets().map((preset) => ({
-        id: preset.id,
-        displayName: preset.displayName,
-        defaultModel: preset.defaultModel,
-        models: preset.models?.map((model) => ({ id: model.id, label: model.label })),
-      })),
+      presets: [
+        { id: "fake", displayName: "Fake Provider", defaultModel: "fake" },
+        ...listModelProviderPresets().map((preset) => ({
+          id: preset.id,
+          displayName: preset.displayName,
+          defaultModel: preset.defaultModel,
+          models: preset.models?.map((model) => ({ id: model.id, label: model.label })),
+        })),
+      ],
       sessions: await this.listSessions(),
     };
   }
