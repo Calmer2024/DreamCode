@@ -76,6 +76,27 @@ describe("DesktopRunManager", () => {
     expect(manager.activeRunId).toBeUndefined();
   });
 
+  it("waits for interrupted run completion before stop resolves", async () => {
+    const interruptedDelivery = deferred<void>();
+    const { manager, request } = await createBlockingManager({
+      emitStatus: (status) =>
+        status.status === "interrupted" ? interruptedDelivery.promise : undefined,
+    });
+    const active = await manager.start(request);
+    let stopSettled = false;
+
+    const stopping = manager.stop(active.runId).then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(stopSettled).toBe(false);
+    interruptedDelivery.resolve();
+    await stopping;
+    await active.completion;
+    expect(manager.activeRunId).toBeUndefined();
+  });
+
   it("resolves only the matching independently identified approval request", async () => {
     const approval = deferred<DesktopApprovalRequest>();
     const events: DesktopRunEvent[] = [];

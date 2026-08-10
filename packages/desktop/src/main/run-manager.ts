@@ -96,6 +96,7 @@ export class DesktopRunManager {
   async stop(runId: string): Promise<void> {
     const run = this.#requireRun(runId);
     this.#interrupt(run, "Stopped by user.");
+    await run.completion;
   }
 
   async respondApproval(response: ApprovalResponse): Promise<void> {

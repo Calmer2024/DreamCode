@@ -5,8 +5,9 @@
   "type": "module",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "pnpm run build:contracts",
+    "build": "pnpm run build:main && pnpm run build:renderer",
     "build:contracts": "tsup",
+    "build:main": "tsup",
     "build:renderer": "vite build",
     "dev": "vite",
     "typecheck": "tsc -p tsconfig.json --noEmit"
