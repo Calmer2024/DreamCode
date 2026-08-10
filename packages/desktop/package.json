@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsup && vite build",
+    "build": "pnpm run build:contracts",
+    "build:contracts": "tsup",
+    "build:renderer": "vite build",
     "dev": "vite",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -19,12 +21,12 @@
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "@testing-library/jest-dom": "latest",
+    "@testing-library/jest-dom": "7.0.0",
     "@testing-library/react": "16.3.2",
     "@vitejs/plugin-react": "6.0.5",
     "electron": "43.3.0",
     "electron-builder": "26.15.3",
-    "jsdom": "latest",
+    "jsdom": "30.0.1",
     "vite": "8.2.1"
   },
   "build": {
