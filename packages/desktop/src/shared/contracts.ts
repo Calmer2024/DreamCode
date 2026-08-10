@@ -11,6 +11,36 @@ export const startTurnRequestSchema = z.object({
 });
 
 export type StartTurnRequest = z.infer<typeof startTurnRequestSchema> & { mode: RunMode };
+
+export const saveProfileRequestSchema = z.object({
+  name: z.string().trim().min(1),
+  provider: z.string().trim().min(1),
+  model: z.string().trim().min(1).optional(),
+  baseURL: z.string().trim().url().optional(),
+  apiKey: z.string().trim().min(1).optional(),
+  apiKeyEnv: z.string().trim().min(1).optional(),
+});
+
+export const sessionIdSchema = z.string().trim().min(1);
+export const runIdSchema = z.string().trim().min(1);
+
+export const rollbackRequestSchema = z.object({
+  sessionId: sessionIdSchema,
+  filePath: z.string().trim().min(1),
+});
+
+export const approvalResponseSchema = z.object({
+  runId: runIdSchema,
+  requestId: z.string().trim().min(1),
+  approved: z.boolean(),
+});
+
+export const questionResponseSchema = z.object({
+  runId: runIdSchema,
+  requestId: z.string().trim().min(1),
+  answer: z.string().trim().min(1),
+});
+
 export interface DesktopRunEvent {
   runId: string;
   event: AgentEvent;

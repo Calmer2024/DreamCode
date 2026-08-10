@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { startTurnRequestSchema } from "./contracts";
+import {
+  approvalResponseSchema,
+  questionResponseSchema,
+  rollbackRequestSchema,
+  saveProfileRequestSchema,
+  startTurnRequestSchema,
+} from "./contracts";
 
 describe("desktop IPC contracts", () => {
   it("rejects a start request without a workspace", () => {
@@ -14,5 +20,21 @@ describe("desktop IPC contracts", () => {
         startTurnRequestSchema.parse({ prompt: "Fix tests", workspaceRoot: "D:/repo", mode }).mode,
       ).toBe(mode);
     }
+  });
+
+  it("rejects a profile request without a provider", () => {
+    expect(saveProfileRequestSchema.safeParse({ name: "personal" }).success).toBe(false);
+  });
+
+  it("rejects malformed rollback and response requests", () => {
+    expect(
+      rollbackRequestSchema.safeParse({ sessionId: "", filePath: "src/index.ts" }).success,
+    ).toBe(false);
+    expect(
+      approvalResponseSchema.safeParse({ runId: "", requestId: "request", approved: true }).success,
+    ).toBe(false);
+    expect(
+      questionResponseSchema.safeParse({ runId: "run", requestId: "request", answer: "" }).success,
+    ).toBe(false);
   });
 });
