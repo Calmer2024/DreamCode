@@ -20,6 +20,7 @@
       "@dreamcode/cli": ["packages/cli/src/index.ts"],
       "@dreamcode/context": ["packages/context/src/index.ts"],
       "@dreamcode/core": ["packages/core/src/index.ts"],
+      "@dreamcode/desktop": ["packages/desktop/src/shared/contracts.ts"],
       "@dreamcode/models": ["packages/models/src/index.ts"],
       "@dreamcode/safety": ["packages/safety/src/index.ts"],
       "@dreamcode/shared": ["packages/shared/src/index.ts"],
@@ -41,6 +42,7 @@
     { "path": "./packages/models" },
     { "path": "./packages/context" },
     { "path": "./packages/core" },
-    { "path": "./packages/cli" }
+    { "path": "./packages/cli" },
+    { "path": "./packages/desktop" }
   ]
 }

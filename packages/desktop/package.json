@@ -1,0 +1,42 @@
+{
+  "name": "@dreamcode/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsup && vite build",
+    "dev": "vite",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dreamcode/shared": "workspace:*",
+    "@dreamcode/store": "workspace:*",
+    "lucide-react": "1.31.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "16.3.2",
+    "@vitejs/plugin-react": "6.0.5",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3",
+    "jsdom": "latest",
+    "vite": "8.2.1"
+  },
+  "build": {
+    "appId": "com.dreamcode.desktop",
+    "productName": "DreamCode",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-renderer/**/*",
+      "package.json"
+    ]
+  }
+}
