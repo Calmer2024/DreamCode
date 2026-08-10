@@ -1,15 +1,21 @@
 {
   "name": "@dreamcode/desktop",
   "version": "0.1.0",
+  "author": "DreamCode Contributors",
+  "description": "DreamCode local coding agent for Windows",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.7.0",
   "main": "dist-main/main/index.js",
   "scripts": {
     "build": "pnpm run build:main && pnpm run build:renderer",
     "build:contracts": "tsup",
     "build:main": "tsup",
     "build:renderer": "vite build",
+    "chain-test": "node scripts/packaged-chain-test.mjs",
+    "checksums": "node scripts/write-checksums.mjs",
     "dev": "vite",
+    "dist": "pnpm run build && electron-builder --config electron-builder.yml --win --x64",
     "e2e": "playwright test --config playwright.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -35,17 +41,5 @@
     "electron-builder": "26.15.3",
     "jsdom": "30.0.1",
     "vite": "8.2.1"
-  },
-  "build": {
-    "appId": "com.dreamcode.desktop",
-    "productName": "DreamCode",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "dist-renderer/**/*",
-      "package.json"
-    ]
   }
 }

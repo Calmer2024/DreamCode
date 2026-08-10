@@ -13,3 +13,4 @@ packages/*/dist/
 packages/desktop/dist-main/
 packages/desktop/dist-renderer/
 packages/desktop/test-results/
+packages/desktop/release/

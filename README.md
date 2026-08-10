@@ -35,6 +35,50 @@ pnpm dreamcode --provider fake --cwd evals/fixtures/failing-test-js "修复当�
 pnpm dreamcode
 ```
 
+## Windows 桌面版
+
+桌面版面向 Windows 10/11 x64。开发时先构建 Main、preload 和 Renderer，再启动编译后的 Electron 应用：
+
+```powershell
+pnpm desktop:build
+pnpm --dir packages/desktop exec electron dist-main/main/index.js
+```
+
+Renderer 热更新使用两个终端：
+
+```powershell
+# 终端 1
+pnpm --filter @dreamcode/desktop build:main
+pnpm desktop:dev
+
+# 终端 2
+$env:VITE_DEV_SERVER_URL="http://localhost:5173"
+pnpm --dir packages/desktop exec electron dist-main/main/index.js
+```
+
+确定性验收使用普通 Fake Provider，不需要 API key：
+
+```powershell
+pnpm desktop:e2e
+```
+
+生成 Windows x64 安装包和便携版：
+
+```powershell
+pnpm desktop:dist
+pnpm --filter @dreamcode/desktop chain-test
+pnpm --filter @dreamcode/desktop checksums
+```
+
+输出位于 `packages/desktop/release`：
+
+- `DreamCode-Setup-0.1.0-x64.exe`：NSIS 当前用户安装包，可选择安装目录。
+- `DreamCode-Portable-0.1.0-x64.exe`：无需安装的便携版。
+- `chain-test-report.json`：便携版完整任务、命令、重启和 Session 续聊证据。
+- `SHA256SUMS.txt`：两个可执行文件的 SHA-256。
+
+桌面版配置与 Session 默认保存在 `%USERPROFILE%\.dreamcode`。API key 可直接保存到配置文件，也可以保存环境变量名；直接保存时为明文，请只在受信任的 Windows 账户中使用。卸载 NSIS 应用不会删除该目录中的配置和 Session 数据；需要清除时由用户自行备份后删除。便携版同样使用这一数据目录，不会把密钥写入可执行文件所在目录。
+
 常用 slash 命令:
 
 ```text
