@@ -17,21 +17,21 @@ export function ConfigDialog({ api, bootstrap, open, onClose, onSaved }: ConfigD
     bootstrap.profiles.find((profile) => profile.name === bootstrap.currentProfile) ??
     bootstrap.profiles[0];
   const [profileName, setProfileName] = useState(initialProfile?.name ?? "");
-  const selectedProfile =
-    bootstrap.profiles.find((profile) => profile.name === profileName) ?? initialProfile;
+  const selectedProfile = bootstrap.profiles.find((profile) => profile.name === profileName);
   const [provider, setProvider] = useState(
-    selectedProfile?.provider ?? bootstrap.presets[0]?.id ?? "",
+    selectedProfile?.provider ?? initialProfile?.provider ?? bootstrap.presets[0]?.id ?? "",
   );
   const preset = bootstrap.presets.find((item) => item.id === provider);
   const presetModels = useMemo(() => preset?.models ?? [], [preset]);
-  const initialModel = selectedProfile?.model ?? preset?.defaultModel ?? "";
+  const initialModel =
+    selectedProfile?.model ?? initialProfile?.model ?? preset?.defaultModel ?? "";
   const [modelChoice, setModelChoice] = useState(
     presetModels.some((model) => model.id === initialModel) ? initialModel : customModelValue,
   );
   const [customModel, setCustomModel] = useState(
     presetModels.some((model) => model.id === initialModel) ? "" : initialModel,
   );
-  const [baseURL, setBaseURL] = useState(selectedProfile?.baseURL ?? "");
+  const [baseURL, setBaseURL] = useState(selectedProfile?.baseURL ?? initialProfile?.baseURL ?? "");
   const [apiKey, setApiKey] = useState("");
   const [apiKeyEnv, setApiKeyEnv] = useState("");
   const [saving, setSaving] = useState(false);

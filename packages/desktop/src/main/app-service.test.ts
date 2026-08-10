@@ -47,6 +47,30 @@ describe("DesktopAppService", () => {
     });
   });
 
+  it("replaces an existing API key environment variable with a supplied plaintext API key", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+    await saveDreamCodeConfig(
+      upsertLlmProfile(emptyConfig(), "work", {
+        provider: "openai",
+        model: "gpt-existing",
+        apiKeyEnv: "DREAMCODE_OLD_KEY",
+      }),
+      home,
+    );
+
+    await service.saveProfile({
+      name: "work",
+      provider: "openai",
+      model: "gpt-next",
+      apiKey: "replacement-key",
+    });
+
+    const updated = await loadDreamCodeConfig(home);
+    expect(updated.profiles.work).toMatchObject({ apiKey: "replacement-key" });
+    expect(updated.profiles.work?.apiKeyEnv).toBeUndefined();
+  });
+
   it("returns a stored diff only for the exact changed-file path", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
     const sessionId = "sess_diff";

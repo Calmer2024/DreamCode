@@ -57,6 +57,15 @@ describe("ConfigDialog", () => {
     );
   });
 
+  it("does not present a typed new profile as already configured", () => {
+    render(<ConfigDialog api={{} as DesktopApi} bootstrap={bootstrap} open onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("配置名称"), { target: { value: "new-profile" } });
+
+    expect(screen.queryByText("API Key 已配置")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("新的 API Key")).toHaveAttribute("placeholder", "输入 API Key");
+  });
+
   it("preserves an existing custom model and saves a new custom model", async () => {
     const saveProfile = vi.fn().mockResolvedValue(bootstrap);
     const api = { saveProfile } as unknown as DesktopApi;
