@@ -1,12 +1,4 @@
-import {
-  Bell,
-  Folder,
-  List,
-  MoreHorizontal,
-  PanelRight,
-  Search,
-  SquareTerminal,
-} from "lucide-react";
+import { Folder, List, PanelRight, SquareTerminal } from "lucide-react";
 
 interface TaskHeaderProps {
   taskTitle: string;
@@ -34,6 +26,9 @@ export function TaskHeader({
         <button
           type="button"
           className="workspace-button"
+          aria-label={
+            workspaceRoot ? `选择工作区：${lastPathSegment(workspaceRoot)}` : "选择工作区"
+          }
           disabled={workspaceSelectionDisabled}
           onClick={onChooseWorkspace}
         >
@@ -42,13 +37,6 @@ export function TaskHeader({
         </button>
       </div>
       <div className="header-actions">
-        <button type="button" className="icon-button" aria-label="搜索">
-          <Search aria-hidden="true" />
-        </button>
-        <button type="button" className="icon-button" aria-label="通知">
-          <Bell aria-hidden="true" />
-        </button>
-        <span className="header-divider" aria-hidden="true" />
         <button type="button" className="icon-button" aria-label="任务详情" onClick={onOpenDetails}>
           <List aria-hidden="true" />
         </button>
@@ -57,9 +45,6 @@ export function TaskHeader({
         </button>
         <button type="button" className="icon-button" aria-label="文件变更" onClick={onOpenFiles}>
           <PanelRight aria-hidden="true" />
-        </button>
-        <button type="button" className="icon-button" aria-label="更多操作">
-          <MoreHorizontal aria-hidden="true" />
         </button>
       </div>
     </header>

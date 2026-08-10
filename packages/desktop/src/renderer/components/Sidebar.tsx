@@ -68,6 +68,7 @@ export function Sidebar({
                     type="button"
                     className="session-item"
                     aria-current={session.id === activeSessionId ? "page" : undefined}
+                    data-accent={session.id === activeSessionId ? "purple" : undefined}
                     disabled={navigationDisabled}
                     key={session.id}
                     onClick={() => onSelectSession(session.id)}

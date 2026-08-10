@@ -54,6 +54,9 @@ describe("DreamCode desktop shell", () => {
     expect(screen.getByTestId("model-config-icon")).toHaveAttribute("data-lucide", "bot");
     expect(screen.getByTestId("run-mode-icon")).toHaveAttribute("data-lucide", "shield-check");
     expect(screen.queryByRole("button", { name: "添加附件" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "搜索" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "通知" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
   });
 
   it("switches send to stop while a run is active", async () => {
@@ -99,7 +102,7 @@ describe("DreamCode desktop shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await screen.findByRole("button", { name: "停止" });
 
-    expect(screen.getByRole("button", { name: "DreamCode" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择工作区：DreamCode" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Desktop shell" })).toBeDisabled();
   });
 
@@ -215,6 +218,26 @@ describe("DreamCode desktop shell", () => {
         "page",
       ),
     );
+  });
+
+  it("marks the selected session purple and elevated run modes orange", async () => {
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          readSession: vi
+            .fn()
+            .mockResolvedValue(replayedSession("sess_1", bootstrap.sessions[0]!.workspaceRoot)),
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    const sessionButton = screen.getByRole("button", { name: "Desktop shell" });
+    fireEvent.click(sessionButton);
+    await waitFor(() => expect(sessionButton).toHaveAttribute("data-accent", "purple"));
+    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "yolo" } });
+    expect(screen.getByLabelText("运行模式")).toHaveAttribute("data-accent", "orange");
   });
 
   it("ignores an error from a stale session read", async () => {
@@ -420,6 +443,120 @@ describe("DreamCode desktop shell", () => {
     await screen.findByRole("heading", { level: 2, name: "新对话" });
     fireEvent.click(await screen.findByRole("button", { name: "Desktop shell" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Desktop shell" })).toBeVisible();
+  });
+
+  it("opens functional detail controls and handles approval and question requests", async () => {
+    let deliverApproval: Parameters<DesktopApi["onApprovalRequest"]>[0] | undefined;
+    let deliverQuestion: Parameters<DesktopApi["onQuestionRequest"]>[0] | undefined;
+    const respondApproval = vi.fn().mockResolvedValue(undefined);
+    const respondQuestion = vi.fn().mockResolvedValue(undefined);
+    const api = fakeDesktopApi({
+      bootstrap,
+      readSession: vi
+        .fn()
+        .mockResolvedValue(replayedSession("sess_1", bootstrap.sessions[0]!.workspaceRoot)),
+      readDiff: vi.fn().mockResolvedValue("diff evidence"),
+      respondApproval,
+      respondQuestion,
+      onApprovalRequest: (listener) => {
+        deliverApproval = listener;
+        return () => undefined;
+      },
+      onQuestionRequest: (listener) => {
+        deliverQuestion = listener;
+        return () => undefined;
+      },
+    });
+    render(<App api={api} />);
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(screen.getByRole("button", { name: "Desktop shell" }));
+    await screen.findByRole("heading", { level: 2, name: "Desktop shell" });
+    fireEvent.click(screen.getByRole("button", { name: "终端" }));
+    expect(screen.getByRole("dialog", { name: "任务证据" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "终端" })).toHaveAttribute("aria-selected", "true");
+
+    act(() =>
+      deliverApproval?.({
+        runId: "run_1",
+        requestId: "approval_1",
+        tool: "shell_command",
+        input: { command: "pnpm test" },
+        reason: "Needs review",
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "允许" }));
+    await waitFor(() =>
+      expect(respondApproval).toHaveBeenCalledWith({
+        runId: "run_1",
+        requestId: "approval_1",
+        approved: true,
+      }),
+    );
+
+    act(() =>
+      deliverQuestion?.({
+        runId: "run_1",
+        requestId: "question_1",
+        question: "Which file?",
+      }),
+    );
+    fireEvent.change(await screen.findByLabelText("回答"), { target: { value: "README.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交回答" }));
+    await waitFor(() =>
+      expect(respondQuestion).toHaveBeenCalledWith({
+        runId: "run_1",
+        requestId: "question_1",
+        answer: "README.md",
+      }),
+    );
+  });
+
+  it("cleans up every renderer event subscription on unmount", async () => {
+    const unsubscribeRunEvent = vi.fn();
+    const unsubscribeRunStatus = vi.fn();
+    const unsubscribeApproval = vi.fn();
+    const unsubscribeQuestion = vi.fn();
+    const { unmount } = render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          onRunEvent: vi.fn().mockReturnValue(unsubscribeRunEvent),
+          onRunStatus: vi.fn().mockReturnValue(unsubscribeRunStatus),
+          onApprovalRequest: vi.fn().mockReturnValue(unsubscribeApproval),
+          onQuestionRequest: vi.fn().mockReturnValue(unsubscribeQuestion),
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    unmount();
+
+    expect(unsubscribeRunEvent).toHaveBeenCalledOnce();
+    expect(unsubscribeRunStatus).toHaveBeenCalledOnce();
+    expect(unsubscribeApproval).toHaveBeenCalledOnce();
+    expect(unsubscribeQuestion).toHaveBeenCalledOnce();
+  });
+
+  it("opens configuration from the sidebar and applies the saved bootstrap", async () => {
+    const updated = {
+      ...bootstrap,
+      profiles: [{ ...bootstrap.profiles[0]!, model: "gpt-new" }],
+    };
+    const saveProfile = vi.fn().mockResolvedValue(updated);
+    render(<App api={fakeDesktopApi({ bootstrap, saveProfile })} />);
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    fireEvent.click(screen.getByRole("button", { name: "模型与配置" }));
+    expect(screen.getByRole("dialog", { name: "模型与配置" })).toBeVisible();
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "__custom__" } });
+    fireEvent.change(screen.getByLabelText("自定义模型 ID"), {
+      target: { value: "gpt-new" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+
+    await waitFor(() => expect(saveProfile).toHaveBeenCalled());
+    expect(await screen.findByRole("option", { name: "gpt-new" })).toBeInTheDocument();
   });
 
   it("submits with Ctrl+Enter and blocks an invalid prompt", async () => {

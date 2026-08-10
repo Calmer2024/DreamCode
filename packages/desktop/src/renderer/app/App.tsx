@@ -2,18 +2,24 @@ import type { RunMode } from "@dreamcode/shared";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type {
   DesktopApi,
+  DesktopApprovalRequest,
   DesktopError,
+  DesktopQuestionRequest,
   DesktopRunEvent,
   DesktopRunStatus,
   StartTurnRequest,
 } from "../../shared/contracts";
+import { ApprovalDialog, QuestionDialog } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
+import { ConfigDialog } from "../components/ConfigDialog";
+import { DetailDrawer, type DetailTab } from "../components/DetailDrawer";
 import { Sidebar } from "../components/Sidebar";
 import { TaskHeader } from "../components/TaskHeader";
 import { Timeline } from "../components/Timeline";
 import {
   createDesktopState,
   desktopReducer,
+  selectActiveChangedFile,
   selectTimeline,
   selectWorkspaceGroups,
 } from "../state/desktop-state";
@@ -30,6 +36,8 @@ export function App({ api = window.dreamcode }: AppProps) {
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<RunMode>("guided");
   const [profileName, setProfileName] = useState("");
+  const [approvalRequest, setApprovalRequest] = useState<DesktopApprovalRequest>();
+  const [questionRequest, setQuestionRequest] = useState<DesktopQuestionRequest>();
   const startingRef = useRef(false);
   const pendingRunEvents = useRef<DesktopRunEvent[]>([]);
   const pendingRunStatuses = useRef<DesktopRunStatus[]>([]);
@@ -79,14 +87,19 @@ export function App({ api = window.dreamcode }: AppProps) {
       }
       dispatch({ type: "run.status", status });
     });
+    const unsubscribeApproval = api.onApprovalRequest(setApprovalRequest);
+    const unsubscribeQuestion = api.onQuestionRequest(setQuestionRequest);
     return () => {
       unsubscribeRunEvent();
       unsubscribeRunStatus();
+      unsubscribeApproval();
+      unsubscribeQuestion();
     };
   }, [api]);
 
   const groups = useMemo(() => selectWorkspaceGroups(state), [state]);
   const timeline = selectTimeline(state);
+  const activeChangedFile = selectActiveChangedFile(state);
   const running = state.runStatus === "running" && Boolean(state.activeRunId);
   const busy = running || starting;
   const selectedProfile = state.profiles.find((profile) => profile.name === profileName);
@@ -193,6 +206,13 @@ export function App({ api = window.dreamcode }: AppProps) {
       container.scrollHeight - container.scrollTop - container.clientHeight <= 120;
   };
 
+  const drawerTab: DetailTab =
+    state.drawer === "terminal"
+      ? "terminal"
+      : state.drawer === "sessions" || state.drawer === "details"
+        ? "session"
+        : "diff";
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -270,6 +290,53 @@ export function App({ api = window.dreamcode }: AppProps) {
           onStop={() => void stop()}
         />
       </main>
+      {state.dialog?.type === "profile" || state.dialog?.type === "settings" ? (
+        state.bootstrap ? (
+          <ConfigDialog
+            api={api}
+            bootstrap={state.bootstrap}
+            open
+            onClose={() => dispatch({ type: "dialog.set" })}
+            onSaved={(bootstrap) => {
+              dispatch({ type: "bootstrap.loaded", bootstrap });
+              setProfileName(
+                bootstrap.currentProfile ?? bootstrap.profiles.find(isProfileUsable)?.name ?? "",
+              );
+            }}
+          />
+        ) : null
+      ) : null}
+      {state.drawer ? (
+        <DetailDrawer
+          api={api}
+          sessionId={state.activeSessionId}
+          session={state.activeSession}
+          changedFile={activeChangedFile}
+          terminalEntries={state.terminalEntries}
+          events={state.rawEvents}
+          initialTab={drawerTab}
+          onClose={() => dispatch({ type: "drawer.close" })}
+          onSessionRefresh={(session) => {
+            if (state.activeSessionId) {
+              dispatch({ type: "session.loaded", sessionId: state.activeSessionId, session });
+            }
+          }}
+        />
+      ) : null}
+      {approvalRequest ? (
+        <ApprovalDialog
+          api={api}
+          request={approvalRequest}
+          onResolved={() => setApprovalRequest(undefined)}
+        />
+      ) : null}
+      {questionRequest ? (
+        <QuestionDialog
+          api={api}
+          request={questionRequest}
+          onResolved={() => setQuestionRequest(undefined)}
+        />
+      ) : null}
     </div>
   );
 }

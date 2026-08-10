@@ -66,6 +66,7 @@ export function Composer({
             <span className="sr-only">运行模式</span>
             <select
               aria-label="运行模式"
+              data-accent={mode === "yolo" || mode === "full" ? "orange" : undefined}
               value={mode}
               disabled={active || starting}
               onChange={(event) => onModeChange(event.target.value as RunMode)}

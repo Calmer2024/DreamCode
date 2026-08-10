@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { saveDreamCodeConfig, upsertLlmProfile } from "@dreamcode/store";
+import { loadDreamCodeConfig, saveDreamCodeConfig, upsertLlmProfile } from "@dreamcode/store";
 import { DesktopAppService } from "./app-service";
 
 function emptyConfig() {
@@ -26,6 +26,25 @@ describe("DesktopAppService", () => {
 
     expect(JSON.stringify(bootstrap)).not.toContain("secret-value");
     expect(bootstrap.profiles[0]?.apiKeyConfigured).toBe(true);
+  });
+
+  it("preserves an existing credential when a redacted profile is saved without a replacement", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+    await saveDreamCodeConfig(
+      upsertLlmProfile(emptyConfig(), "work", {
+        provider: "openai",
+        model: "gpt-existing",
+        apiKey: "secret-value",
+      }),
+      home,
+    );
+
+    await service.saveProfile({ name: "work", provider: "openai", model: "gpt-next" });
+
+    await expect(loadDreamCodeConfig(home)).resolves.toMatchObject({
+      profiles: { work: { model: "gpt-next", apiKey: "secret-value" } },
+    });
   });
 
   it("returns a stored diff only for the exact changed-file path", async () => {

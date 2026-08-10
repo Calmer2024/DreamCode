@@ -46,13 +46,16 @@ export class DesktopAppService {
 
   async saveProfile(request: SaveProfileRequest): Promise<DesktopBootstrap> {
     const config = await loadDreamCodeConfig(this.home);
+    const existingProfile = config.profiles[request.name.trim()];
     await saveDreamCodeConfig(
       upsertLlmProfile(config, request.name, {
         provider: request.provider,
         model: request.model,
         baseURL: request.baseURL,
-        apiKey: request.apiKey,
-        apiKeyEnv: request.apiKeyEnv,
+        // Renderer bootstrap deliberately redacts these values. Retain them unless the
+        // user explicitly supplies a replacement rather than silently clearing a secret.
+        apiKey: request.apiKey ?? existingProfile?.apiKey,
+        apiKeyEnv: request.apiKeyEnv ?? existingProfile?.apiKeyEnv,
       }),
       this.home,
     );
