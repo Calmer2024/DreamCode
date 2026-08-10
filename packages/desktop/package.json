@@ -12,9 +12,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@dreamcode/core": "workspace:*",
     "@dreamcode/models": "workspace:*",
     "@dreamcode/shared": "workspace:*",
     "@dreamcode/store": "workspace:*",
+    "@dreamcode/tools": "workspace:*",
     "lucide-react": "1.31.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",

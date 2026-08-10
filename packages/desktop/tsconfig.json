@@ -6,5 +6,11 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "include": ["src"],
-  "references": [{ "path": "../shared" }, { "path": "../store" }, { "path": "../models" }]
+  "references": [
+    { "path": "../shared" },
+    { "path": "../store" },
+    { "path": "../models" },
+    { "path": "../tools" },
+    { "path": "../core" }
+  ]
 }
