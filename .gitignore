@@ -3,6 +3,7 @@ dist/
 coverage/
 .tmp/
 .dreamcode/
+.superpowers/
 .env
 .env.*
 !.env.example
