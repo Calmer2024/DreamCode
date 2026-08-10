@@ -230,13 +230,12 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       );
     }
     case "turn.started": {
-      const turn = asRecord(payload.turn);
       return appendTimeline(
         { ...next, runStatus: "running" },
         event,
         "turn",
         "Turn started",
-        stringValue(turn.prompt),
+        undefined,
       );
     }
     case "user.message":

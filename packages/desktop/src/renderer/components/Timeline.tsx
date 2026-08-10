@@ -1,3 +1,4 @@
+import { Activity, CircleCheck, CircleDot, FileCode2, Radio, Wrench } from "lucide-react";
 import type { DesktopState, DesktopTimelineEntry } from "../state/desktop-state";
 
 interface TimelineProps {
@@ -79,18 +80,71 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
     );
   }
 
+  if (entry.kind === "tool" || entry.kind === "file") {
+    const isTool = entry.kind === "tool";
+    const Icon = isTool ? Wrench : FileCode2;
+    const label = isTool ? "工具调用" : "文件变更";
+    const iconName = isTool ? "wrench" : "file-code-2";
+    return (
+      <article
+        aria-label={label}
+        className={`timeline-entry compact-card ${entry.kind}-entry tone-${entry.tone}`}
+        data-testid={`timeline-${entry.kind}`}
+      >
+        <div className="compact-card-heading">
+          <Icon
+            aria-hidden="true"
+            data-lucide={iconName}
+            data-testid={`timeline-${entry.kind}-icon`}
+          />
+          <h3>{entry.title}</h3>
+          <TimelineTime timestamp={entry.timestamp} />
+        </div>
+        {entry.detail ? <p>{entry.detail}</p> : null}
+      </article>
+    );
+  }
+
+  if (entry.kind === "status" || entry.kind === "turn" || entry.kind === "session") {
+    const label =
+      entry.kind === "status" ? "运行状态" : entry.kind === "turn" ? "轮次状态" : "会话状态";
+    const Icon = entry.kind === "status" ? CircleCheck : entry.kind === "turn" ? CircleDot : Radio;
+    return (
+      <article
+        aria-label={label}
+        className={`timeline-entry lifecycle-entry ${entry.kind}-entry tone-${entry.tone}`}
+        data-testid={`timeline-${entry.kind}`}
+      >
+        <Icon aria-hidden="true" />
+        <div className="lifecycle-copy">
+          <h3>{entry.title}</h3>
+          {entry.detail ? <p>{entry.detail}</p> : null}
+        </div>
+        <TimelineTime timestamp={entry.timestamp} />
+      </article>
+    );
+  }
+
   return (
     <article
-      className={`timeline-entry event-entry ${entry.kind}-entry tone-${entry.tone}`}
-      data-testid={`timeline-${entry.kind}`}
+      aria-label="事件证据"
+      className={`timeline-entry evidence-entry event-entry tone-${entry.tone}`}
+      data-testid="timeline-event"
     >
-      <div className="event-heading">
-        <span>{entry.title}</span>
-        <time dateTime={entry.timestamp}>{formatTime(entry.timestamp)}</time>
+      <Activity aria-hidden="true" />
+      <div className="evidence-copy">
+        <div className="event-heading">
+          <h3>{entry.title}</h3>
+          <TimelineTime timestamp={entry.timestamp} />
+        </div>
+        {entry.detail ? <p>{entry.detail}</p> : null}
       </div>
-      {entry.detail ? <p>{entry.detail}</p> : null}
     </article>
   );
+}
+
+function TimelineTime({ timestamp }: { timestamp: string }) {
+  return <time dateTime={timestamp}>{formatTime(timestamp)}</time>;
 }
 
 function formatTime(timestamp: string): string {
