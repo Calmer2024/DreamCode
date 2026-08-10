@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+
 import type { DesktopApi } from "../shared/contracts";
 
 declare global {
