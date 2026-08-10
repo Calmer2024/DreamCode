@@ -65,7 +65,13 @@ interface ApplicationLifecycleInput {
   dispose(): Promise<void> | void;
 }
 
+interface QuitEvent {
+  preventDefault(): void;
+}
+
 export function registerApplicationLifecycle(input: ApplicationLifecycleInput): void {
+  let disposalStarted = false;
+  let disposalComplete = false;
   input.app.on("activate", async () => {
     const window = input.getWindow();
     if (!window || window.isDestroyed()) {
@@ -77,8 +83,22 @@ export function registerApplicationLifecycle(input: ApplicationLifecycleInput): 
       input.app.quit();
     }
   });
-  input.app.on("will-quit", async () => {
-    await input.dispose();
+  input.app.on("will-quit", (event: QuitEvent) => {
+    if (disposalComplete) {
+      return;
+    }
+    event.preventDefault();
+    if (disposalStarted) {
+      return;
+    }
+    disposalStarted = true;
+    void Promise.resolve()
+      .then(() => input.dispose())
+      .catch(() => undefined)
+      .finally(() => {
+        disposalComplete = true;
+        input.app.quit();
+      });
   });
 }
 

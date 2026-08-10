@@ -41,7 +41,7 @@ describe("desktop application lifecycle", () => {
     expect(runManager.stop).not.toHaveBeenCalled();
   });
 
-  it("recreates a missing window, quits on Windows, and disposes on shutdown", async () => {
+  it("recreates a missing window and quits on Windows", async () => {
     const handlers = new Map<string, (...arguments_: unknown[]) => unknown>();
     const app = {
       on: vi.fn((event: string, handler: (...arguments_: unknown[]) => unknown) => {
@@ -62,11 +62,41 @@ describe("desktop application lifecycle", () => {
 
     await handlers.get("activate")?.();
     handlers.get("window-all-closed")?.();
-    await handlers.get("will-quit")?.();
-
     expect(createWindow).toHaveBeenCalledOnce();
     expect(app.quit).toHaveBeenCalledOnce();
+  });
+
+  it("prevents shutdown until asynchronous disposal finishes", async () => {
+    const handlers = new Map<string, (...arguments_: unknown[]) => unknown>();
+    const app = {
+      on: vi.fn((event: string, handler: (...arguments_: unknown[]) => unknown) => {
+        handlers.set(event, handler);
+      }),
+      quit: vi.fn(),
+    };
+    const disposal = deferred<void>();
+    const dispose = vi.fn(() => disposal.promise);
+    registerApplicationLifecycle({
+      app,
+      platform: "win32",
+      getWindow: () => undefined,
+      createWindow: vi.fn(),
+      dispose,
+    });
+
+    const firstEvent = { preventDefault: vi.fn() };
+    handlers.get("will-quit")?.(firstEvent);
+    expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
+    await Promise.resolve();
     expect(dispose).toHaveBeenCalledOnce();
+    expect(app.quit).not.toHaveBeenCalled();
+
+    disposal.resolve();
+    await vi.waitFor(() => expect(app.quit).toHaveBeenCalledOnce());
+
+    const resumedEvent = { preventDefault: vi.fn() };
+    handlers.get("will-quit")?.(resumedEvent);
+    expect(resumedEvent.preventDefault).not.toHaveBeenCalled();
   });
 });
 
