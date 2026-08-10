@@ -19,6 +19,9 @@ import type {
 } from "../shared/contracts";
 import { createDesktopProvider } from "./provider";
 
+const minimumSubstringRedactionLength = 8;
+const redactedMessage = "[REDACTED]";
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve(value: T): boolean;
@@ -416,14 +419,11 @@ function collectSensitiveValues(config: DreamCodeConfig): string[] {
 }
 
 function addSensitiveValue(values: Set<string>, value: string | undefined): void {
-  if (!value) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
     return;
   }
-  values.add(value);
-  const trimmed = value.trim();
-  if (trimmed) {
-    values.add(trimmed);
-  }
+  values.add(trimmed);
 }
 
 function redactProviderErrors(provider: ModelProvider, sensitiveValues: string[]): ModelProvider {
@@ -467,7 +467,13 @@ function sanitizeValue(value: unknown, sensitiveValues: string[]): unknown {
 function redactText(message: string, sensitiveValues: string[]): string {
   let redacted = message;
   for (const sensitiveValue of sensitiveValues) {
-    redacted = redacted.replaceAll(sensitiveValue, "[REDACTED]");
+    if (!redacted.includes(sensitiveValue)) {
+      continue;
+    }
+    if (sensitiveValue.length < minimumSubstringRedactionLength) {
+      return redactedMessage;
+    }
+    redacted = redacted.replaceAll(sensitiveValue, redactedMessage);
   }
   return redacted;
 }

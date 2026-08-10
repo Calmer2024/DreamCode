@@ -384,6 +384,128 @@ describe("DesktopRunManager", () => {
       }
     }
   });
+
+  it("ignores whitespace-only stored and environment credentials", async () => {
+    const environmentName = "DREAMCODE_RUN_MANAGER_BLANK_API_KEY";
+    const previousEnvironmentValue = process.env[environmentName];
+    process.env[environmentName] = " ";
+    const events: DesktopRunEvent[] = [];
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-home-"));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-workspace-"));
+    const provider: ModelProvider = {
+      name: "blank-secret-test",
+      async *stream() {
+        yield { type: "text_delta", text: "Normal provider message remains readable." };
+        yield { type: "done" };
+      },
+    };
+    const manager = createManager({
+      home,
+      loadConfig: async () => ({
+        version: 1,
+        currentProfile: "blank",
+        profiles: {
+          blank: {
+            provider: "blank-secret-test",
+            apiKey: "   ",
+            apiKeyEnv: environmentName,
+          },
+        },
+      }),
+      createProvider: () => ({ provider }),
+      emitEvent: (event) => events.push(event),
+    });
+
+    try {
+      const { completion } = await manager.start({
+        prompt: "Inspect workspace",
+        workspaceRoot,
+        profileName: "blank",
+        mode: "yolo",
+      });
+      await completion;
+
+      const delta = events.find((event) => event.event.type === "model.delta");
+      expect(delta?.event.payload).toEqual({
+        text: "Normal provider message remains readable.",
+      });
+      expect(events.some((event) => event.event.type === "turn.completed")).toBe(true);
+    } finally {
+      if (previousEnvironmentValue === undefined) {
+        delete process.env[environmentName];
+      } else {
+        process.env[environmentName] = previousEnvironmentValue;
+      }
+    }
+  });
+
+  it("redacts the whole affected string for trimmed short credentials", async () => {
+    const environmentName = "DREAMCODE_RUN_MANAGER_SHORT_API_KEY";
+    const previousEnvironmentValue = process.env[environmentName];
+    process.env[environmentName] = " z ";
+    const events: DesktopRunEvent[] = [];
+    const statuses: DesktopRunStatus[] = [];
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-home-"));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-workspace-"));
+    const provider: ModelProvider = {
+      name: "short-secret-test",
+      async *stream() {
+        yield { type: "text_delta", text: "Progress remains readable." };
+        throw new Error("Secrets q and z were rejected.");
+      },
+    };
+    const manager = createManager({
+      home,
+      loadConfig: async () => ({
+        version: 1,
+        currentProfile: "short",
+        profiles: {
+          short: {
+            provider: "short-secret-test",
+            apiKey: " q ",
+            apiKeyEnv: environmentName,
+          },
+        },
+      }),
+      createProvider: () => ({ provider }),
+      emitEvent: (event) => events.push(event),
+      emitStatus: (status) => statuses.push(status),
+    });
+
+    try {
+      const { completion } = await manager.start({
+        prompt: "Inspect workspace",
+        workspaceRoot,
+        profileName: "short",
+        mode: "yolo",
+      });
+      await completion;
+
+      expect(events.find((event) => event.event.type === "model.delta")?.event.payload).toEqual({
+        text: "Progress remains readable.",
+      });
+      expect(
+        (
+          events.find((event) => event.event.type === "session.summarized")?.event.payload as {
+            summary?: string;
+          }
+        ).summary,
+      ).toBe("[REDACTED]");
+      const failed = events.find((event) => event.event.type === "turn.failed")?.event.payload as {
+        error?: string;
+        summary?: { message?: string };
+      };
+      expect(failed.error).toBe("[REDACTED]");
+      expect(failed.summary?.message).toBe("[REDACTED]");
+      expect(statuses.at(-1)?.error?.message).toBe("[REDACTED]");
+    } finally {
+      if (previousEnvironmentValue === undefined) {
+        delete process.env[environmentName];
+      } else {
+        process.env[environmentName] = previousEnvironmentValue;
+      }
+    }
+  });
 });
 
 function createManager(overrides: Partial<DesktopRunManagerOptions> = {}) {
