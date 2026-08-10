@@ -64,11 +64,15 @@ export class DesktopAppService {
   }
 
   readSession(sessionId: string) {
-    return readReplayedSession(sessionId, this.home);
+    return readReplayedSession(validateSessionId(sessionId), this.home);
   }
 
   async rollback(request: RollbackRequest) {
-    const result = await rollbackSession({ ...request, home: this.home });
+    const result = await rollbackSession({
+      ...request,
+      sessionId: validateSessionId(request.sessionId),
+      home: this.home,
+    });
     return { rolledBackFiles: result.rolledBackFiles, failedFiles: result.skippedFiles };
   }
 
@@ -76,4 +80,11 @@ export class DesktopAppService {
     const session = await this.readSession(sessionId);
     return session.changedFiles.find((file) => file.path === filePath)?.diff ?? "";
   }
+}
+
+function validateSessionId(sessionId: string): string {
+  if (!/^sess_[A-Za-z0-9_-]+$/.test(sessionId)) {
+    throw new Error("Invalid session ID.");
+  }
+  return sessionId;
 }

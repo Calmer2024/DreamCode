@@ -60,4 +60,47 @@ describe("DesktopAppService", () => {
       "",
     );
   });
+
+  it("rejects traversal session identifiers before reading or rolling back", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const externalSessionDir = path.join(home, "outside");
+    await mkdir(externalSessionDir, { recursive: true });
+    await writeFile(
+      path.join(externalSessionDir, "session.json"),
+      JSON.stringify({
+        id: "sess_external",
+        workspaceRoot: home,
+        sessionDir: externalSessionDir,
+        createdAt: "2026-08-10T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(externalSessionDir, "events.jsonl"),
+      JSON.stringify({
+        id: "evt_external",
+        timestamp: "2026-08-10T00:00:00.000Z",
+        type: "file.changed",
+        payload: {
+          changedFile: {
+            path: "src/external.ts",
+            operation: "update",
+            diff: "external-secret-diff",
+          },
+        },
+      }) + "\n",
+      "utf8",
+    );
+
+    const service = new DesktopAppService(home);
+    const traversalId = "../outside";
+
+    expect(() => service.readSession(traversalId)).toThrow("Invalid session ID");
+    await expect(service.readChangedFileDiff(traversalId, "src/external.ts")).rejects.toThrow(
+      "Invalid session ID",
+    );
+    await expect(service.rollback({ sessionId: traversalId, filePath: "src/external.ts" })).rejects.toThrow(
+      "Invalid session ID",
+    );
+  });
 });
