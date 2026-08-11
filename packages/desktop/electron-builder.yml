@@ -2,12 +2,14 @@ appId: com.dreamcode.desktop
 productName: DreamCode
 electronDist: node_modules/electron/dist
 directories:
+  buildResources: build
   output: release
 files:
   - dist-main/**
   - dist-renderer/**
 asar: true
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]
@@ -18,6 +20,9 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
   artifactName: DreamCode-Setup-${version}-${arch}.${ext}
 portable:
   artifactName: DreamCode-Portable-${version}-${arch}.${ext}
