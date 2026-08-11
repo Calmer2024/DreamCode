@@ -72,8 +72,8 @@ pnpm --filter @dreamcode/desktop checksums
 
 输出位于 `packages/desktop/release`：
 
-- `DreamCode-Setup-0.1.0-x64.exe`：NSIS 当前用户安装包，可选择安装目录。
-- `DreamCode-Portable-0.1.0-x64.exe`：无需安装的便携版。
+- `DreamCode-Setup-0.1.0-x64.exe`：双击后按向导完成当前用户安装，可选择安装目录。
+- `DreamCode-Portable-0.1.0-x64.exe`：双击即可直接启动，无需安装或管理员权限。
 - `chain-test-report.json`：便携版完整任务、命令、重启和 Session 续聊证据。
 - `SHA256SUMS.txt`：两个可执行文件的 SHA-256。
 

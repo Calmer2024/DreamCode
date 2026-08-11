@@ -77,8 +77,11 @@ try {
   await second.page
     .getByRole("button", { name: "修复当前项目的测试失败, 并运行测试确认。" })
     .click();
+  const completedBeforeResume = (await readEvents(sessionDirectory)).filter(
+    (event) => event.type === "turn.completed",
+  ).length;
   await runPrompt(second.page, "Inspect workspace and report status.");
-  await second.page.getByText("已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  await waitForNewTurnCompletion(sessionDirectory, completedBeforeResume);
   await closeApplication(second.app);
   activeApplication = undefined;
 
@@ -126,15 +129,22 @@ async function launchPackagedApplication({ home, workspace }) {
     childProcess.once("error", reject);
     childProcess.once("exit", (code, signal) => resolve({ code, signal }));
   });
-  await waitForCdpEndpoint(debuggingPort, processExit);
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debuggingPort}`);
-  const context = browser.contexts()[0];
-  if (!context) {
-    throw new Error("Portable app exposed no Playwright browser context.");
+  const application = { browser: undefined, childProcess, page: undefined, processExit };
+  try {
+    await waitForCdpEndpoint(debuggingPort, processExit);
+    application.browser = await chromium.connectOverCDP(`http://127.0.0.1:${debuggingPort}`);
+    const context = application.browser.contexts()[0];
+    if (!context) {
+      throw new Error("Portable app exposed no Playwright browser context.");
+    }
+    application.page =
+      context.pages()[0] ?? (await context.waitForEvent("page", { timeout: 15_000 }));
+    await application.page.waitForLoadState("domcontentloaded");
+    return { app: application, page: application.page };
+  } catch (error) {
+    await closeApplication(application).catch(() => undefined);
+    throw error;
   }
-  const page = context.pages()[0] ?? (await context.waitForEvent("page", { timeout: 15_000 }));
-  await page.waitForLoadState("domcontentloaded");
-  return { app: { browser, childProcess, page, processExit }, page };
 }
 
 async function reserveTcpPort() {
@@ -187,21 +197,66 @@ async function runPrompt(page, prompt) {
   await page.getByRole("button", { name: "发送" }).click();
 }
 
+async function waitForNewTurnCompletion(sessionDirectory, previousCount) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const completedCount = (await readEvents(sessionDirectory)).filter(
+      (event) => event.type === "turn.completed",
+    ).length;
+    if (completedCount > previousCount) return;
+    await delay(100);
+  }
+  throw new Error("Session did not persist a new turn.completed event within 30 seconds.");
+}
+
 async function closeApplication(application) {
-  await application.page.evaluate(() => window.close());
-  const exit = await Promise.race([
-    application.processExit,
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Portable wrapper did not exit after browser close.")),
-        15_000,
+  if (application.page) {
+    await application.page.evaluate(() => window.close()).catch(() => undefined);
+  }
+  let exit;
+  try {
+    exit = await Promise.race([
+      application.processExit,
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Portable wrapper did not exit after browser close.")),
+          15_000,
+        ),
       ),
-    ),
-  ]);
+    ]);
+  } catch (error) {
+    await terminateProcessTree(application.childProcess.pid);
+    await Promise.race([application.processExit, delay(5_000)]);
+    throw error;
+  } finally {
+    await application.browser?.close().catch(() => undefined);
+  }
   if (exit.code !== 0) {
     throw new Error(`Portable wrapper exited with code ${exit.code} (signal ${exit.signal}).`);
   }
-  await application.browser.close().catch(() => undefined);
+}
+
+async function terminateProcessTree(pid) {
+  if (!pid) return;
+  const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 5_000);
+    killer.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    killer.once("error", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function readOnlySessionDirectory(home) {
