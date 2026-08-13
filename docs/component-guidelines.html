@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DreamCode 组件规范</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Noto Sans SC", sans-serif;
+      color: #202124;
+      background: #f2f2f2;
+      --font-ui: "Noto Sans SC", sans-serif;
+      --text-primary: #202124;
+      --text-secondary: #707176;
+      --text-tertiary: #9a9ba0;
+      --surface: #fff;
+      --surface-subtle: #f3f3f3;
+      --surface-hover: #e9e9e9;
+      --surface-selected: #e5e5e5;
+      --border: #dedede;
+      --border-soft: #e8e8e8;
+      --accent: #7935ff;
+      --purple: #7935ff;
+      --purple-soft: #eee6f8;
+      --purple-hover: #e7dcf5;
+      --danger: #f22c2c;
+      --danger-soft: #fce7e7;
+      --radius-window: 13px;
+      --radius-panel: 18px;
+      --radius-control: 12px;
+      --sidebar-width: 306px;
+      --shadow-menu: 0 10px 28px rgba(0, 0, 0, .10);
+      --shadow-dialog: 0 14px 34px rgba(0, 0, 0, .16);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { min-width: 980px; overflow: hidden; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    svg { display: block; }
+    .icon-component { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+
+    .app-shell {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      grid-template-rows: 48px minmax(0, 1fr);
+      border: 1px solid #aaa;
+      border-radius: var(--radius-window);
+      overflow: hidden;
+      background: var(--surface-subtle);
+    }
+
+    .titlebar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #d5d5d5;
+      background: linear-gradient(#f7f7f7, #ededed);
+      user-select: none;
+    }
+
+    .window-menu { display: flex; align-items: center; gap: 7px; padding-left: 14px; }
+    .titlebar-button {
+      height: 34px;
+      padding: 0 10px;
+      border: 0;
+      background: transparent;
+      border-radius: 8px;
+      color: #77797c;
+      font-size: 14px;
+    }
+    .titlebar-button.icon-only { width: 34px; padding: 0; display: grid; place-items: center; }
+    .titlebar-button.icon-only svg { width: 17px; height: 17px; }
+    .titlebar-button:hover { background: rgba(0,0,0,.055); color: var(--text-primary); }
+    .window-controls { margin-left: auto; height: 100%; display: flex; }
+    .window-control { width: 48px; border: 0; background: transparent; display: grid; place-items: center; }
+    .window-control svg { width: 14px; height: 14px; }
+    .window-control:hover { background: #dfdfdf; }
+    .window-control.close:hover { background: #c42b1c; color: white; }
+
+    .sidebar {
+      min-height: 0;
+      padding: 18px 10px 20px;
+      overflow: auto;
+      background: var(--surface-subtle);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px 14px; font-weight: 600; }
+    .brand-mark { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; background: #202124; color: white; font-size: 12px; }
+    .search {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 4px 0 18px;
+      padding: 0 13px;
+      border: 1px solid #d9d9d9;
+      border-radius: 21px;
+      background: #fff;
+      color: var(--text-tertiary);
+    }
+    .search input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--text-primary); }
+    .nav-group { margin: 0 0 18px; }
+    .nav-label { padding: 0 11px 7px; color: #a1a1a5; font-size: 13px; font-weight: 600; }
+    .nav-item {
+      width: 100%; height: 39px; display: flex; align-items: center; gap: 10px;
+      padding: 0 11px; border: 0; border-radius: 11px; background: transparent;
+      text-align: left; cursor: pointer; font-size: 14px;
+    }
+    .nav-item:hover { background: var(--surface-hover); }
+    .nav-item.active { background: var(--surface-selected); }
+    .nav-item svg { width: 18px; height: 18px; stroke-width: 1.65; }
+    .nav-item .external { margin-left: auto; color: var(--text-tertiary); }
+
+    .rules-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+    .rule-card { display: flex; gap: 14px; min-height: 118px; padding: 20px; border: 1px solid var(--border-soft); border-radius: 16px; background: #fff; }
+    .rule-icon { width: 38px; height: 38px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; background: var(--purple-soft); color: var(--purple); }
+    .rule-icon svg { width: 20px; height: 20px; }
+    .rule-card strong { display: block; margin: 1px 0 6px; font-size: 14px; }
+    .rule-card p { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+    .rule-card code { color: var(--purple); font: 12px ui-monospace, monospace; }
+
+    .main-panel {
+      min-width: 0; min-height: 0;
+      display: flex; flex-direction: column;
+      background: var(--surface);
+      border-left: 1px solid #d9d9d9;
+      border-top-left-radius: 16px;
+      overflow: hidden;
+    }
+    .main-header {
+      height: 58px; flex: 0 0 58px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 28px; border-bottom: 1px solid var(--border-soft); background: rgba(255,255,255,.96);
+    }
+    .main-header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    .header-actions { display: flex; gap: 8px; }
+    .quiet-button { border: 1px solid var(--border-soft); border-radius: 10px; background: #fff; padding: 7px 12px; cursor: pointer; }
+    .quiet-button:hover { background: #f7f7f7; }
+    .content { min-height: 0; overflow: auto; scroll-behavior: smooth; }
+    .guide { width: min(1050px, calc(100% - 80px)); margin: 0 auto; padding: 64px 0 110px; }
+    .intro { margin-bottom: 66px; }
+    .eyebrow { margin-bottom: 12px; color: var(--text-tertiary); font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+    .intro h2 { margin: 0 0 14px; font-size: 34px; line-height: 1.18; letter-spacing: -.02em; }
+    .intro p { max-width: 690px; margin: 0; color: var(--text-secondary); font-size: 16px; line-height: 1.75; }
+    .section { margin-top: 76px; scroll-margin-top: 30px; }
+    .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; margin-bottom: 22px; }
+    .section-heading h3 { margin: 0 0 7px; font-size: 23px; }
+    .section-heading p { margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }
+    .spec-chip { flex: 0 0 auto; border: 1px solid var(--border-soft); border-radius: 999px; padding: 7px 11px; color: var(--text-secondary); background: #fff; font-size: 12px; }
+    .stage { position: relative; min-height: 390px; border: 1px solid var(--border-soft); border-radius: 22px; overflow: hidden; background: #fafafa; }
+    .stage-grid { position: absolute; inset: 0; opacity: .55; background-image: linear-gradient(#ececec 1px, transparent 1px), linear-gradient(90deg,#ececec 1px, transparent 1px); background-size: 24px 24px; }
+
+    .menu-trigger {
+      position: absolute; left: 90px; top: 74px; width: 230px; height: 72px;
+      display: flex; align-items: center; justify-content: space-between; padding: 0 18px;
+      border: 1px solid var(--border-soft); border-radius: 14px; background: #fff;
+    }
+    .menu-trigger strong { font-size: 15px; }
+    .menu-trigger span { color: var(--text-secondary); font-size: 12px; }
+    .more-button { width: 34px; height: 34px; border: 0; border-radius: 9px; background: #f2f2f2; cursor: pointer; font-size: 18px; letter-spacing: 2px; }
+    .more-button:hover, .more-button[aria-expanded="true"] { background: #e5e5e5; }
+    .context-menu {
+      position: absolute; left: 267px; top: 93px; z-index: 3;
+      width: 246px; padding: 8px; border: 1px solid #d9d9d9; border-radius: 18px;
+      background: rgba(255,255,255,.98); box-shadow: var(--shadow-menu);
+      transform-origin: top left; transition: opacity 120ms ease, transform 120ms ease;
+    }
+    .context-menu[hidden] { display: block; pointer-events: none; opacity: 0; transform: translateY(-4px) scale(.985); }
+    .menu-item {
+      width: 100%; height: 42px; display: flex; align-items: center; gap: 12px;
+      padding: 0 11px; border: 0; border-radius: 10px; background: transparent;
+      font-size: 15px; text-align: left; cursor: pointer;
+    }
+    .menu-item:hover, .menu-item:focus-visible { outline: 0; background: #f0f0f0; }
+    .menu-item svg { width: 19px; height: 19px; flex: 0 0 auto; color: #5f6267; stroke-width: 1.65; }
+    .menu-item.danger:hover { color: var(--danger); background: #fff1f1; }
+
+    .list-stage { min-height: 570px; padding: 30px; background: #f7f7f7; }
+    .desktop-list-demo { position: relative; min-height: 508px; overflow: hidden; border: 1px solid #dedede; border-radius: 18px; background: #fff; }
+    .desktop-list-sidebar { width: 44%; min-width: 330px; height: 100%; min-height: 508px; padding: 20px 16px; border-right: 1px solid #dedede; background: #f5f5f5; }
+    .new-conversation { height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; cursor: pointer; font-size: 15px; }
+    .new-conversation:hover { background: #e9e9e9; }
+    .new-conversation svg { width: 21px; height: 21px; color: #4f5054; stroke-width: 1.9; }
+    .project-heading { height: 44px; margin-top: 15px; display: flex; align-items: center; gap: 7px; padding: 0 10px; color: #5e5f64; font-size: 15px; font-weight: 700; }
+    .project-heading svg { width: 16px; height: 16px; color: #8b8c91; stroke-width: 2; }
+    .project-row { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 10px; }
+    .project-row:hover { background: #e9e9e9; }
+    .project-row > svg { width: 24px; height: 24px; color: #74757a; stroke-width: 1.8; }
+    .project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; color: #55565a; }
+    .project-actions { margin-left: auto; display: flex; gap: 4px; opacity: 0; }
+    .project-row:hover .project-actions, .project-row:focus-within .project-actions { opacity: 1; }
+    .list-icon-button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #85868a; cursor: pointer; }
+    .list-icon-button:hover { background: #dedede; color: #66676b; }
+    .list-icon-button svg { width: 20px; height: 20px; stroke-width: 1.8; }
+    .conversation-delete.is-confirming { color: var(--danger); background: var(--danger-soft); }
+    .conversation-delete.is-confirming:hover { color: var(--danger); background: #f9dada; }
+    .conversation-actions.is-confirming .conversation-pin { display: none; }
+    .conversation-list { margin-top: 2px; padding-left: 10px; }
+    .conversation-row { position: relative; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 32px; border-radius: 11px; cursor: pointer; }
+    .conversation-row:hover { background: #e9e9e9; }
+    .conversation-row.selected { background: var(--purple-soft); color: var(--purple); }
+    .conversation-row.selected::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 4px; border-radius: 0 3px 3px 0; background: var(--purple); }
+    .conversation-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: #3f4044; }
+    .conversation-row.selected .conversation-title { color: var(--purple); }
+    .conversation-actions { display: flex; gap: 2px; color: #7c7d82; opacity: 0; }
+    .conversation-row:hover .conversation-actions, .conversation-row.selected .conversation-actions, .conversation-row:focus-within .conversation-actions { opacity: 1; }
+    .conversation-row.selected .conversation-actions { color: #85868a; }
+    .conversation-detail { position: absolute; z-index: 3; left: calc(44% - 4px); top: 151px; width: min(475px, 51%); overflow: hidden; border: 1px solid #d9d9d9; border-radius: 19px; background: #fff; box-shadow: 0 15px 34px rgba(0,0,0,.12); }
+    .detail-row { min-height: 61px; display: flex; align-items: center; gap: 13px; padding: 0 21px; border-bottom: 1px solid #e6e6e6; font-size: 15px; }
+    .detail-row:last-child { border-bottom: 0; }
+    .detail-row svg { width: 24px; height: 24px; color: #898a8e; stroke-width: 1.8; }
+    .detail-title { flex: 1; color: #303135; }
+    .detail-time { color: #999a9e; font-size: 14px; font-weight: 600; }
+    .list-anatomy { position: absolute; left: calc(44% + 25px); right: 28px; top: 360px; padding-top: 15px; border-top: 1px solid #e2e2e2; color: var(--text-secondary); font-size: 12px; line-height: 1.75; }
+
+    .dialog-stage { min-height: 410px; display: grid; place-items: center; background: #e7e7e7; }
+    .dialog-stage::before { content: ""; position: absolute; inset: 0; background: linear-gradient(#0000,#00000003); }
+    .dialog {
+      position: relative; z-index: 2; width: min(630px, calc(100% - 70px)); padding: 28px 30px 30px;
+      border: 1px solid #d7d7d7; border-radius: 25px; background: #fff; box-shadow: var(--shadow-dialog);
+    }
+    .dialog h4 { margin: 0 38px 6px 0; font-size: 25px; line-height: 1.35; letter-spacing: -.025em; }
+    .dialog p { margin: 0; color: #919297; font-size: 17px; line-height: 1.65; }
+    .dialog-close { position: absolute; top: 25px; right: 25px; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
+    .dialog-close svg { width: 17px; height: 17px; }
+    .dialog-close:hover { background: #f0f0f0; }
+    .dialog-actions { display: flex; justify-content: flex-end; align-items: center; gap: 16px; margin-top: 17px; }
+    .button { min-width: 88px; height: 47px; padding: 0 22px; border: 0; border-radius: 13px; background: transparent; cursor: pointer; font-size: 16px; }
+    .button:hover { background: #f3f3f3; }
+    .button.secondary { color: #8c8d91; }
+    .button.danger { color: var(--danger); background: var(--danger-soft); }
+    .button.danger:hover { background: #f9dada; }
+    .open-dialog { position: absolute; inset: auto auto 26px 26px; }
+
+    .layout-demo { height: 470px; display: grid; grid-template-columns: 220px 1fr; background: #f2f2f2; }
+    .layout-demo-sidebar { padding: 22px 12px; }
+    .layout-demo-nav { height: 36px; margin-bottom: 6px; border-radius: 9px; background: #e2e2e2; }
+    .layout-demo-nav.short { width: 70%; background: #e9e9e9; }
+    .layout-demo-main { overflow: hidden; border-left: 1px solid #d8d8d8; border-top-left-radius: 16px; background: #fff; }
+    .layout-demo-top { height: 58px; border-bottom: 1px solid var(--border-soft); }
+    .layout-demo-body { padding: 42px; }
+    .skeleton-title { width: 130px; height: 28px; border-radius: 8px; background: #e7e7e7; }
+    .skeleton-card { height: 150px; margin-top: 28px; border: 1px solid #e4e4e4; border-radius: 18px; }
+    .layout-note { position: absolute; padding: 6px 9px; border-radius: 7px; background: #202124; color: white; font-size: 11px; }
+    .layout-note.corner { top: 44px; left: 205px; }
+    .layout-note.border { top: 86px; right: 28px; }
+
+    .settings-demo { display: grid; grid-template-columns: 210px minmax(0,1fr); height: 610px; background: #f3f3f3; }
+    .settings-sidebar { padding: 20px 10px; overflow: hidden; }
+    .settings-back { padding: 0 10px 18px; display: flex; align-items: center; gap: 8px; color: #7f8085; font-size: 14px; }
+    .settings-back svg { width: 16px; height: 16px; }
+    .settings-search { height: 39px; margin-bottom: 18px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #dcdcdc; border-radius: 20px; background: white; color: #97989c; font-size: 13px; }
+    .settings-nav-title { padding: 0 10px 5px; color: #a4a5a9; font-size: 12px; font-weight: 600; }
+    .settings-nav-item { height: 34px; padding: 0 10px; display: flex; align-items: center; gap: 9px; border-radius: 9px; font-size: 13px; }
+    .settings-nav-item svg { width: 16px; height: 16px; }
+    .settings-nav-item.active { background: #e4e4e4; }
+    .settings-content { overflow: auto; border-left: 1px solid #d9d9d9; border-top: 1px solid #e3e3e3; border-top-left-radius: 16px; background: white; }
+    .settings-inner { width: min(650px, calc(100% - 54px)); margin: 0 auto; padding: 54px 0 80px; }
+    .settings-inner > h4 { margin: 0 0 50px; font-size: 25px; }
+    .settings-group-title { margin: 0 0 18px; font-size: 15px; }
+    .settings-card { margin-bottom: 44px; padding: 0 16px; border: 1px solid #e5e5e5; border-radius: 17px; }
+    .setting-row { min-height: 67px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e9e9e9; }
+    .setting-row:last-child { border-bottom: 0; }
+    .setting-copy strong { display: block; margin-bottom: 3px; font-size: 13px; }
+    .setting-copy span { display: block; color: #7b7c81; font-size: 12px; line-height: 1.4; }
+    .switch { position: relative; width: 35px; height: 22px; flex: 0 0 auto; border: 0; border-radius: 11px; background: #b9bbc0; cursor: pointer; transition: background 120ms; }
+    .switch::after { content: ""; position: absolute; width: 18px; height: 18px; left: 2px; top: 2px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #0003; transition: transform 120ms; }
+    .switch[aria-checked="true"] { background: var(--accent); }
+    .switch[aria-checked="true"]::after { transform: translateX(13px); }
+    .select-control { height: 34px; min-width: 118px; padding: 0 30px 0 12px; border: 1px solid #e2e2e2; border-radius: 10px; background: white; color: #303135; font-size: 12px; }
+
+    .tokens { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; }
+    .token { padding: 16px; border: 1px solid var(--border-soft); border-radius: 14px; background: #fff; }
+    .swatch { height: 54px; margin-bottom: 12px; border: 1px solid #0000000e; border-radius: 10px; }
+    .token strong { display: block; font-size: 13px; }
+    .token code { color: var(--text-secondary); font: 11px ui-monospace, monospace; }
+    .focusable:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #168cf0; outline-offset: 2px; }
+    .toast { position: fixed; left: 50%; bottom: 28px; z-index: 20; transform: translate(-50%, 15px); padding: 11px 16px; border-radius: 10px; background: #27282b; color: #fff; opacity: 0; pointer-events: none; transition: .18s ease; font-size: 13px; }
+    .toast.show { opacity: 1; transform: translate(-50%,0); }
+
+    @media (max-width: 1120px) {
+      :root { --sidebar-width: 254px; }
+      .guide { width: calc(100% - 48px); }
+      .context-menu { left: 240px; }
+      .menu-trigger { left: 48px; }
+      .tokens { grid-template-columns: repeat(3, 1fr); }
+      .desktop-list-sidebar { width: 46%; min-width: 280px; }
+      .conversation-detail { left: calc(46% - 4px); width: 52%; }
+      .list-anatomy { left: calc(46% + 20px); }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" fill="none" stroke="currentColor"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88c.26.62.86 1.03 1.53 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" fill="none" stroke="currentColor"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2" fill="none" stroke="currentColor"/><rect x="14" y="3" width="7" height="7" rx="2" fill="none" stroke="currentColor"/><rect x="3" y="14" width="7" height="7" rx="2" fill="none" stroke="currentColor"/><rect x="14" y="14" width="7" height="7" rx="2" fill="none" stroke="currentColor"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 14v7"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5Z"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><path d="M15 4h5v5M20 4l-7 7M9 20H4v-5M4 20l7-7M14 20h6v-6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><path d="M4 8h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor"/><path d="M3 4h18v4H3zM9 12h6" fill="none" stroke="currentColor"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-linecap="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor"/><path d="m16.5 16.5 4 4" fill="none" stroke="currentColor" stroke-linecap="round"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6M8 12h10"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18h1.3a1.7 1.7 0 0 0 1.2-2.9 1.7 1.7 0 0 1 1.2-2.9H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z"/><circle cx="7.5" cy="10" r="1" fill="currentColor" stroke="none"/><circle cx="10" cy="6.8" r="1" fill="currentColor" stroke="none"/><circle cx="14" cy="7" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h8M16 7h4M4 17h4M12 17h8"/><circle cx="14" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="i-plugin" viewBox="0 0 24 24"><path d="M8 3v4M16 3v4M5 7h14v4a7 7 0 0 1-14 0ZM12 18v3"/></symbol>
+    <symbol id="i-browser" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></symbol>
+    <symbol id="i-cursor" viewBox="0 0 24 24"><path d="m5 3 13 10-6 1-3 6Z"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r=".8" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r=".8" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r=".8" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-components" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="8.5" y="14" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-edit-square" viewBox="0 0 24 24"><path d="M13 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-7"/><path d="m10 14 9-9 2 2-9 9-3 1Z"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+  </defs></svg>
+
+  <div class="app-shell">
+    <header class="titlebar">
+      <div class="window-menu">
+        <button class="titlebar-button icon-only" aria-label="侧栏"><svg class="icon-component"><use href="#i-sidebar" /></svg></button>
+        <button class="titlebar-button icon-only" aria-label="后退"><svg class="icon-component"><use href="#i-arrow-left" /></svg></button>
+        <button class="titlebar-button">文件</button><button class="titlebar-button">编辑</button><button class="titlebar-button">视图</button><button class="titlebar-button">帮助</button>
+      </div>
+      <div class="window-controls"><button class="window-control" aria-label="最小化"><svg class="icon-component"><use href="#i-minus" /></svg></button><button class="window-control" aria-label="最大化"><svg class="icon-component"><use href="#i-square" /></svg></button><button class="window-control close" aria-label="关闭窗口"><svg class="icon-component"><use href="#i-x" /></svg></button></div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">DC</span>组件规范</div>
+      <label class="search"><svg width="18" height="18"><use href="#i-search" /></svg><input id="guideSearch" placeholder="搜索规范..." /></label>
+      <div class="nav-group">
+        <div class="nav-label">基础</div>
+        <button class="nav-item active" data-target="overview"><svg><use href="#i-grid" /></svg>整体页面</button>
+        <button class="nav-item" data-target="rules"><svg><use href="#i-components" /></svg>设计规则</button>
+        <button class="nav-item" data-target="tokens"><svg><use href="#i-grid" /></svg>设计 Token</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">组件</div>
+        <button class="nav-item" data-target="menu"><svg><use href="#i-folder" /></svg>右键 / 下拉菜单</button>
+        <button class="nav-item" data-target="dialog"><svg><use href="#i-grid" /></svg>弹窗</button>
+        <button class="nav-item" data-target="lists"><svg><use href="#i-list" /></svg>列表</button>
+        <button class="nav-item" data-target="settings"><svg><use href="#i-settings" /></svg>设置页面</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">原则</div>
+        <div class="nav-item"><svg><use href="#i-grid" /></svg>克制、清晰、原生</div>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="main-header"><h1>DreamCode 桌面端组件规范</h1><div class="header-actions"><button class="quiet-button" id="showMenu">演示菜单</button><button class="quiet-button" id="showDialog">演示弹窗</button></div></header>
+      <div class="content" id="content">
+        <div class="guide">
+          <section class="intro" id="overview" data-search="整体页面 布局 侧栏 圆角 顶部边框">
+            <div class="eyebrow">DreamCode Design System · Desktop</div>
+            <h2>组件直接成为规范。</h2>
+            <p>本页不使用近似示意图，而是以可操作的实际组件定义桌面端视觉基线。所有组件共享字体、颜色、边框、圆角、阴影和交互状态。</p>
+          </section>
+
+          <section class="section" data-search="整体页面 布局 左侧 Tab 右侧 圆角 顶部 border">
+            <div class="section-heading"><div><h3>整体页面规范</h3><p>左侧 Tab 栏保持灰色底；右侧主内容使用白色表面、左边框、顶部边框和左上圆角。</p></div><span class="spec-chip">Sidebar 306 · Radius 16</span></div>
+            <div class="stage layout-demo">
+              <aside class="layout-demo-sidebar"><div class="layout-demo-nav"></div><div class="layout-demo-nav short"></div><div class="layout-demo-nav short"></div></aside>
+              <div class="layout-demo-main"><div class="layout-demo-top"></div><div class="layout-demo-body"><div class="skeleton-title"></div><div class="skeleton-card"></div></div></div>
+              <span class="layout-note corner">左上圆角 16px</span><span class="layout-note border">顶部边框 1px</span>
+            </div>
+          </section>
+
+          <section class="section" id="rules" data-search="设计规则 icon 图标 unicode emoji 字体 Noto Sans SC">
+            <div class="section-heading"><div><h3>设计规则</h3><p>所有产品界面与组件实现必须遵循以下基础约束。</p></div><span class="spec-chip">Required</span></div>
+            <div class="rules-grid">
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-components" /></svg></span><div><strong>图标只能来自 Icon 组件库</strong><p>不使用任何 Unicode 字符图标或 Emoji 图标。箭头、更多、关闭、窗口控制等也必须通过统一的 <code>Icon</code> 组件渲染。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-list" /></svg></span><div><strong>禁止用文本模拟图标</strong><p>不可使用符号字体、字符实体或特殊字符拼出图标。图标需共享尺寸、描边、颜色与无障碍标签。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-user" /></svg></span><div><strong>统一使用 Noto Sans SC</strong><p>中文与界面文字使用 Google Fonts 的 <code>Noto Sans SC</code>，正文 400、强调 500、标题 600 或 700。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-palette" /></svg></span><div><strong>只引用语义 Token</strong><p>颜色、间距、边框、圆角和阴影应通过 Token 复用，交互状态不得创建无意义的近似值。</p></div></article>
+            </div>
+          </section>
+
+          <section class="section" id="tokens" data-search="设计 token 颜色 字体 圆角 阴影">
+            <div class="section-heading"><div><h3>核心 Token</h3><p>组件必须引用语义变量；禁止在同类组件中另造近似色和近似圆角。</p></div></div>
+            <div class="tokens">
+              <div class="token"><div class="swatch" style="background:#fff"></div><strong>Surface</strong><code>#FFFFFF</code></div>
+              <div class="token"><div class="swatch" style="background:#f3f3f3"></div><strong>Sidebar</strong><code>#F3F3F3</code></div>
+              <div class="token"><div class="swatch" style="background:#202124"></div><strong>Text Primary</strong><code>#202124</code></div>
+              <div class="token"><div class="swatch" style="background:#7935ff"></div><strong>Accent / Dream Purple</strong><code>#7935FF</code></div>
+            </div>
+          </section>
+
+          <section class="section" id="menu" data-search="右键 下拉 菜单 context dropdown">
+            <div class="section-heading"><div><h3>右键菜单 / 下拉菜单</h3><p>同一浮层组件承载右键菜单和按钮下拉菜单。菜单项高 42px，图标 19px，浮层圆角 18px。</p></div><span class="spec-chip">Width 246 · Radius 18</span></div>
+            <div class="stage" id="menuStage">
+              <div class="stage-grid"></div>
+              <div class="menu-trigger"><div><strong>GithubProjects</strong><br><span>示例项目</span></div><button class="more-button" id="moreButton" aria-label="更多操作" aria-expanded="true" aria-haspopup="menu"><svg class="icon-component"><use href="#i-more" /></svg></button></div>
+              <div class="context-menu" id="contextMenu" role="menu">
+                <button class="menu-item" role="menuitem"><svg><use href="#i-pin" /></svg>置顶项目</button>
+                <button class="menu-item" role="menuitem"><svg><use href="#i-folder" /></svg>在资源管理器中打开</button>
+                <button class="menu-item" role="menuitem"><svg><use href="#i-branch" /></svg>创建永久工作树</button>
+                <button class="menu-item" role="menuitem"><svg><use href="#i-settings" /></svg>编辑项目</button>
+                <button class="menu-item" role="menuitem"><svg><use href="#i-archive" /></svg>归档聊天</button>
+                <button class="menu-item danger" role="menuitem" data-open-dialog><svg><use href="#i-x" /></svg>移除</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="dialog" data-search="弹窗 modal dialog 确认 删除 移除">
+            <div class="section-heading"><div><h3>弹窗</h3><p>标题先说明动作对象，正文解释影响；取消使用弱按钮，破坏性确认使用淡红底与红色文字。</p></div><span class="spec-chip">630px · Radius 25</span></div>
+            <div class="stage dialog-stage">
+              <article class="dialog" role="dialog" aria-labelledby="demoDialogTitle" aria-describedby="demoDialogDescription">
+                <button class="dialog-close" aria-label="关闭"><svg class="icon-component"><use href="#i-x" /></svg></button>
+                <h4 id="demoDialogTitle">移除 GithubProjects?</h4>
+                <p id="demoDialogDescription">这会从应用中移除该项目。你电脑上的文件和现有聊天不会被删除。</p>
+                <div class="dialog-actions"><button class="button secondary">取消</button><button class="button danger">移除项目</button></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="section" id="lists" data-search="列表 对话列表 项目列表 条目 选中 hover">
+            <div class="section-heading"><div><h3>列表</h3><p>还原桌面端左侧栏层级、选中态、线性 Icon 与对话详情浮层；删除仍采用原地二次确认。</p></div><span class="spec-chip">Row 44 · Radius 11</span></div>
+            <div class="stage list-stage">
+              <div class="desktop-list-demo">
+                <aside class="desktop-list-sidebar">
+                  <button class="new-conversation"><svg class="icon-component"><use href="#i-edit-square" /></svg>新对话</button>
+                  <div class="project-heading">项目<svg class="icon-component"><use href="#i-chevron-down" /></svg></div>
+                  <div class="project-row"><svg class="icon-component"><use href="#i-folder" /></svg><span class="project-name">FreeTime</span></div>
+                  <div class="conversation-list">
+                    <div class="conversation-row selected" tabindex="0"><span class="conversation-title">你是谁？</span><div class="conversation-actions"><button class="list-icon-button conversation-pin" aria-label="置顶对话"><svg class="icon-component"><use href="#i-pin" /></svg></button><button class="list-icon-button conversation-delete" aria-label="删除对话"><svg class="icon-component"><use href="#i-trash" /></svg></button></div></div>
+                    <div class="conversation-row" tabindex="0"><span class="conversation-title">介绍当前仓库</span><div class="conversation-actions"><button class="list-icon-button conversation-pin" aria-label="置顶对话"><svg class="icon-component"><use href="#i-pin" /></svg></button><button class="list-icon-button conversation-delete" aria-label="删除对话"><svg class="icon-component"><use href="#i-trash" /></svg></button></div></div>
+                  </div>
+                </aside>
+                <div class="conversation-detail" aria-label="对话详情">
+                  <div class="detail-row"><span class="detail-title">你是谁？</span><span class="detail-time">4 小时</span></div>
+                  <div class="detail-row"><svg class="icon-component"><use href="#i-folder" /></svg><span class="detail-title">FreeTime</span></div>
+                  <div class="detail-row"><svg class="icon-component"><use href="#i-edit-square" /></svg><span class="detail-title">completed</span></div>
+                </div>
+                <div class="list-anatomy">选中态：背景 <code>#EEE6F8</code>，文字 <code>#7935FF</code>，左侧状态条 4px。项目图标 24px；置顶和删除 Icon 20px、描边 1.8px；详情浮层与选中条目水平对齐。</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="settings" data-search="设置页面 常规 权限 开关 下拉 侧栏">
+            <div class="section-heading"><div><h3>设置页面</h3><p>设置拥有独立二级侧栏；内容按主题分组，相关设置放入有描边的圆角卡片，每行仅保留一个主操作。</p></div><span class="spec-chip">Card Radius 17 · Row 67+</span></div>
+            <div class="stage settings-demo">
+              <aside class="settings-sidebar">
+                <div class="settings-back"><svg class="icon-component"><use href="#i-arrow-left" /></svg>返回应用</div><div class="settings-search"><svg class="icon-component"><use href="#i-search" /></svg>搜索设置...</div>
+                <div class="settings-nav-title">个人</div><div class="settings-nav-item active"><svg class="icon-component"><use href="#i-settings" /></svg>常规</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-palette" /></svg>外观</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-mic" /></svg>语音</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-sliders" /></svg>配置</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-user" /></svg>个性化</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-user" /></svg>账户</div>
+                <div class="settings-nav-title" style="margin-top:16px">集成</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-plugin" /></svg>插件</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-browser" /></svg>浏览器</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-cursor" /></svg>电脑操控</div>
+              </aside>
+              <div class="settings-content"><div class="settings-inner">
+                <h4>常规</h4><h5 class="settings-group-title">权限</h5>
+                <div class="settings-card">
+                  <div class="setting-row"><div class="setting-copy"><strong>默认权限</strong><span>允许读取和编辑工作空间中的文件</span></div><button class="switch" role="switch" aria-checked="true"></button></div>
+                  <div class="setting-row"><div class="setting-copy"><strong>自动审核</strong><span>自动审查额外访问权限请求</span></div><button class="switch" role="switch" aria-checked="true"></button></div>
+                  <div class="setting-row"><div class="setting-copy"><strong>完整访问权限</strong><span>允许编辑电脑上的文件并访问网络</span></div><button class="switch" role="switch" aria-checked="true"></button></div>
+                </div>
+                <h5 class="settings-group-title">常规</h5>
+                <div class="settings-card">
+                  <div class="setting-row"><div class="setting-copy"><strong>默认文件打开目标</strong><span>默认打开文件和文件夹的位置</span></div><select class="select-control"><option>VS Code</option></select></div>
+                  <div class="setting-row"><div class="setting-copy"><strong>集成终端 Shell</strong><span>选择要在集成终端中打开的 Shell</span></div><select class="select-control"><option>PowerShell</option></select></div>
+                  <div class="setting-row"><div class="setting-copy"><strong>语言</strong><span>应用 UI 语言</span></div><select class="select-control"><option>简体中文</option></select></div>
+                </div>
+              </div></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script>
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+    const content = $('#content');
+    const menu = $('#contextMenu');
+    const moreButton = $('#moreButton');
+    const toast = $('#toast');
+
+    function setMenu(open) {
+      menu.hidden = !open;
+      moreButton.setAttribute('aria-expanded', String(open));
+      if (open) requestAnimationFrame(() => $('.menu-item', menu).focus());
+    }
+    function notify(message) {
+      toast.textContent = message; toast.classList.add('show');
+      clearTimeout(notify.timer); notify.timer = setTimeout(() => toast.classList.remove('show'), 1600);
+    }
+    function goTo(id) {
+      const target = document.getElementById(id);
+      if (!target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      $$('.nav-item[data-target]').forEach(item => item.classList.toggle('active', item.dataset.target === id));
+    }
+    function resetConversationDelete(exceptButton = null) {
+      $$('.conversation-delete.is-confirming').forEach(button => {
+        if (button === exceptButton) return;
+        button.classList.remove('is-confirming');
+        button.closest('.conversation-actions').classList.remove('is-confirming');
+        button.setAttribute('aria-label', '删除对话');
+        $('use', button).setAttribute('href', '#i-trash');
+      });
+    }
+
+    moreButton.addEventListener('click', () => setMenu(menu.hidden));
+    $('#menuStage').addEventListener('contextmenu', event => { event.preventDefault(); setMenu(true); });
+    $$('.menu-item').forEach(item => item.addEventListener('click', () => item.hasAttribute('data-open-dialog') ? goTo('dialog') : notify(`已选择：${item.textContent.trim()}`)));
+    $$('.switch').forEach(toggle => toggle.addEventListener('click', () => toggle.setAttribute('aria-checked', String(toggle.getAttribute('aria-checked') !== 'true'))));
+    $$('.conversation-delete').forEach(button => button.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!button.classList.contains('is-confirming')) {
+        resetConversationDelete(button);
+        button.classList.add('is-confirming');
+        button.closest('.conversation-actions').classList.add('is-confirming');
+        button.setAttribute('aria-label', '确认删除对话');
+        $('use', button).setAttribute('href', '#i-check');
+        button.focus();
+        return;
+      }
+      const row = button.closest('.conversation-row');
+      const title = $('.conversation-title', row).textContent.trim();
+      row.remove();
+      notify(`已删除对话：${title}`);
+    }));
+    $$('.nav-item[data-target]').forEach(item => item.addEventListener('click', () => goTo(item.dataset.target)));
+    $('#showMenu').addEventListener('click', () => { goTo('menu'); setTimeout(() => setMenu(true), 380); });
+    $('#showDialog').addEventListener('click', () => goTo('dialog'));
+    $$('.dialog-close, .button.secondary').forEach(button => button.addEventListener('click', () => notify('弹窗已关闭（规范示例保持可见）')));
+    $('.button.danger').addEventListener('click', () => notify('已执行破坏性操作示例'));
+    $('#guideSearch').addEventListener('input', event => {
+      const query = event.target.value.trim().toLowerCase();
+      const match = $$('[data-search]').find(section => section.dataset.search.toLowerCase().includes(query));
+      if (query && match) match.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    content.addEventListener('scroll', () => {
+      const sections = ['overview','rules','tokens','menu','dialog','lists','settings'].map(id => document.getElementById(id));
+      const current = [...sections].reverse().find(section => section.getBoundingClientRect().top < 170) || sections[0];
+      $$('.nav-item[data-target]').forEach(item => item.classList.toggle('active', item.dataset.target === current.id));
+    }, { passive: true });
+    document.addEventListener('click', event => { if (!event.target.closest('.conversation-delete')) resetConversationDelete(); });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') { setMenu(false); resetConversationDelete(); } });
+  </script>
+</body>
+</html>
