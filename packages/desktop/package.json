@@ -1,0 +1,9 @@
+{
+  "name": "@dreamcode/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"dev": "tsx src/main.ts", "build": "tsup src/main.ts --format esm --clean"},
+  "dependencies": {"@dreamcode/models": "workspace:*", "@dreamcode/shared": "workspace:*", "electron": "^37.0.0"},
+  "devDependencies": {"tsup": "^8.5.0", "tsx": "^4.20.6", "typescript": "^5.9.3"}
+}
