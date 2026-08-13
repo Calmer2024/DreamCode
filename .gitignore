@@ -10,3 +10,4 @@ coverage/
 !.env.example
 !evals/fixtures/safety/.env
 packages/*/dist/
+packages/desktop/release*/
