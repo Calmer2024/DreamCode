@@ -22,8 +22,17 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
   return {
     bootstrap: () => invoke<DesktopBootstrap>(renderer, "desktop:bootstrap"),
     chooseWorkspace: () => invoke<string | undefined>(renderer, "desktop:choose-workspace"),
+    openWorkspace: (workspaceRoot: string) =>
+      invoke<void>(renderer, "desktop:open-workspace", workspaceRoot),
     saveProfile: (request: SaveProfileRequest) =>
       invoke<DesktopBootstrap>(renderer, "desktop:save-profile", request),
+    saveProject: (request) => invoke<DesktopBootstrap>(renderer, "desktop:save-project", request),
+    deleteProject: (workspaceRoot) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:delete-project", workspaceRoot),
+    deleteSession: (sessionId) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:delete-session", sessionId),
+    setSessionPinned: (request) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:set-session-pinned", request),
     startTurn: (request: StartTurnRequest) =>
       invoke<{ runId: string }>(renderer, "desktop:start-turn", request),
     stopTurn: (runId: string) => invoke<void>(renderer, "desktop:stop-turn", runId),

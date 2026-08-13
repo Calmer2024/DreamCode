@@ -2,9 +2,11 @@ import type { AgentEvent, RunMode } from "@dreamcode/shared";
 import type { ReplayedSessionState, SessionListItem } from "@dreamcode/store";
 import { z } from "zod";
 
+export const workspaceRootSchema = z.string().trim().min(1);
+
 export const startTurnRequestSchema = z.object({
   prompt: z.string().trim().min(1),
-  workspaceRoot: z.string().trim().min(1),
+  workspaceRoot: workspaceRootSchema,
   mode: z.enum(["plan", "guided", "yolo", "full"]),
   profileName: z.string().trim().min(1).optional(),
   sessionId: z.string().trim().min(1).optional(),
@@ -27,6 +29,16 @@ export const runIdSchema = z.string().trim().min(1);
 export const rollbackRequestSchema = z.object({
   sessionId: sessionIdSchema,
   filePath: z.string().trim().min(1),
+});
+
+export const projectRequestSchema = z.object({
+  workspaceRoot: workspaceRootSchema,
+  name: z.string().trim().min(1),
+  pinned: z.boolean().optional(),
+});
+export const sessionPinRequestSchema = z.object({
+  sessionId: sessionIdSchema,
+  pinned: z.boolean(),
 });
 
 export const approvalResponseSchema = z.object({
@@ -132,11 +144,22 @@ export interface DesktopBootstrap {
     models?: ReadonlyArray<{ id: string; label?: string }>;
   }>;
   sessions: SessionListItem[];
+  projects?: Array<{ workspaceRoot: string; name: string; pinned?: boolean; createdAt: string }>;
+  pinnedSessionIds?: string[];
 }
 export interface DesktopApi {
   bootstrap(): Promise<DesktopBootstrap>;
   chooseWorkspace(): Promise<string | undefined>;
+  openWorkspace(workspaceRoot: string): Promise<void>;
   saveProfile(request: SaveProfileRequest): Promise<DesktopBootstrap>;
+  saveProject(request: {
+    workspaceRoot: string;
+    name: string;
+    pinned?: boolean;
+  }): Promise<DesktopBootstrap>;
+  deleteProject(workspaceRoot: string): Promise<DesktopBootstrap>;
+  deleteSession(sessionId: string): Promise<DesktopBootstrap>;
+  setSessionPinned(request: { sessionId: string; pinned: boolean }): Promise<DesktopBootstrap>;
   startTurn(request: StartTurnRequest): Promise<{ runId: string }>;
   stopTurn(runId: string): Promise<void>;
   readSession(sessionId: string): Promise<ReplayedSessionState>;

@@ -3,13 +3,16 @@ import {
   approvalResponseSchema,
   type DesktopError,
   type DesktopIpcResponse,
+  projectRequestSchema,
   questionResponseSchema,
   rollbackRequestSchema,
   runIdSchema,
   sanitizeDesktopError,
   saveProfileRequestSchema,
   sessionIdSchema,
+  sessionPinRequestSchema,
   startTurnRequestSchema,
+  workspaceRootSchema,
 } from "../shared/contracts";
 import type { DesktopAppService } from "./app-service";
 import type { DesktopRunManager } from "./run-manager";
@@ -33,11 +36,20 @@ export interface DesktopIpcDependencies {
   dialog: DialogLike;
   service: Pick<
     DesktopAppService,
-    "bootstrap" | "saveProfile" | "readSession" | "readChangedFileDiff" | "rollback"
+    | "bootstrap"
+    | "saveProfile"
+    | "saveProject"
+    | "deleteProject"
+    | "deleteSession"
+    | "setSessionPinned"
+    | "readSession"
+    | "readChangedFileDiff"
+    | "rollback"
   >;
   runManager: Pick<DesktopRunManager, "start" | "stop" | "respondApproval" | "respondQuestion">;
   getWindow: () => unknown;
   chooseWorkspace?: () => Promise<string | undefined>;
+  openWorkspace: (workspaceRoot: string) => Promise<void>;
 }
 
 const handlers = {
@@ -52,11 +64,36 @@ const handlers = {
     });
     return result.canceled ? undefined : result.filePaths[0];
   },
+  "desktop:open-workspace": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    workspaceRoot: unknown,
+  ) => dependencies.openWorkspace(parseRequest(workspaceRootSchema, workspaceRoot)),
   "desktop:save-profile": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,
     request: unknown,
   ) => dependencies.service.saveProfile(parseRequest(saveProfileRequestSchema, request)),
+  "desktop:save-project": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.saveProject(parseRequest(projectRequestSchema, request)),
+  "desktop:delete-project": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.deleteProject(parseRequest(workspaceRootSchema, request)),
+  "desktop:delete-session": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.deleteSession(parseRequest(sessionIdSchema, request)),
+  "desktop:set-session-pinned": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.setSessionPinned(parseRequest(sessionPinRequestSchema, request)),
   "desktop:read-session": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,

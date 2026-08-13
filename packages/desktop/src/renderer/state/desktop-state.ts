@@ -34,6 +34,7 @@ export interface DesktopTimelineEntry {
 
 export interface DesktopToolEvent {
   id: string;
+  turnId?: string;
   name: string;
   status: "queued" | "running" | "success" | "error" | "cancelled" | "denied";
   summary?: string;
@@ -56,6 +57,8 @@ export interface DesktopTerminalEntry {
 
 export interface WorkspaceGroup {
   workspaceRoot: string;
+  name?: string;
+  pinned?: boolean;
   sessions: SessionListItem[];
 }
 
@@ -83,6 +86,7 @@ export interface DesktopState {
 
 export type DesktopAction =
   | { type: "bootstrap.loaded"; bootstrap: DesktopBootstrap }
+  | { type: "bootstrap.refreshed"; bootstrap: DesktopBootstrap }
   | { type: "conversation.new" }
   | { type: "workspace.selected"; workspaceRoot?: string }
   | { type: "session.selected"; sessionId?: string }
@@ -118,10 +122,18 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
   switch (action.type) {
     case "bootstrap.loaded":
       return { ...createDesktopState(action.bootstrap), workspaceRoot: state.workspaceRoot };
+    case "bootstrap.refreshed":
+      return {
+        ...state,
+        bootstrap: action.bootstrap,
+        profiles: action.bootstrap.profiles,
+        presets: action.bootstrap.presets,
+        sessions: action.bootstrap.sessions,
+      };
     case "conversation.new":
       return resetConversation(state);
     case "workspace.selected":
-      return resetConversation(state, action.workspaceRoot);
+      return { ...resetConversation(state), workspaceRoot: action.workspaceRoot };
     case "session.selected":
       return { ...state, activeSessionId: action.sessionId };
     case "session.loaded":
@@ -192,7 +204,25 @@ export function selectWorkspaceGroups(state: DesktopState): WorkspaceGroup[] {
       groups.set(session.workspaceRoot, [session]);
     }
   }
-  return Array.from(groups, ([workspaceRoot, sessions]) => ({ workspaceRoot, sessions }));
+  for (const project of state.bootstrap?.projects ?? []) {
+    if (!groups.has(project.workspaceRoot)) groups.set(project.workspaceRoot, []);
+  }
+  if (state.workspaceRoot && !groups.has(state.workspaceRoot)) {
+    groups.set(state.workspaceRoot, []);
+  }
+  const pinnedSessionIds = new Set(state.bootstrap?.pinnedSessionIds ?? []);
+  return Array.from(groups, ([workspaceRoot, sessions]) => {
+    const project = state.bootstrap?.projects?.find((item) => item.workspaceRoot === workspaceRoot);
+    return {
+      workspaceRoot,
+      name: project?.name ?? workspaceRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? workspaceRoot,
+      pinned: project?.pinned === true,
+      sessions: sessions.toSorted(
+        (left, right) =>
+          Number(pinnedSessionIds.has(right.id)) - Number(pinnedSessionIds.has(left.id)),
+      ),
+    };
+  }).toSorted((left, right) => Number(right.pinned) - Number(left.pinned));
 }
 
 export function selectTimeline(state: DesktopState): DesktopTimelineEntry[] {
@@ -257,6 +287,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       const toolCall = asRecord(payload.toolCall);
       const tool: DesktopToolEvent = {
         id: stringValue(toolCall.id) ?? event.id,
+        turnId: event.turnId,
         name: stringValue(toolCall.name) ?? "unknown",
         status: "queued",
         inputPreview: previewJson(toolCall.input),
@@ -307,6 +338,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       const name = stringValue(payload.tool) ?? "unknown";
       const tool: DesktopToolEvent = {
         id: toolCallId,
+        turnId: event.turnId,
         name,
         status: "running",
         inputPreview: previewJson(payload.input),
@@ -332,6 +364,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
           ...next,
           tools: upsertTool(next.tools, {
             id: toolCallId,
+            turnId: event.turnId,
             name,
             status,
             summary,
@@ -375,10 +408,12 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         event,
         "status",
         "Turn completed",
-        stringValue(summary.message),
+        undefined,
         "success",
       );
     }
+    case "session.summarized":
+      return next;
     case "turn.failed":
       return appendTimeline(
         { ...next, runStatus: "failed" },

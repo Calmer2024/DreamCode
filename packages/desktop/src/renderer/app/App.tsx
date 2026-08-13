@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import type {
   DesktopApi,
   DesktopApprovalRequest,
+  DesktopBootstrap,
   DesktopError,
   DesktopQuestionRequest,
   DesktopRunEvent,
@@ -13,6 +14,7 @@ import { ApprovalDialog, QuestionDialog } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
 import { ConfigDialog } from "../components/ConfigDialog";
 import { DetailDrawer, type DetailTab } from "../components/DetailDrawer";
+import { ProjectRemovalDialog } from "../components/ProjectRemovalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { TaskHeader } from "../components/TaskHeader";
 import { Timeline } from "../components/Timeline";
@@ -38,6 +40,7 @@ export function App({ api = window.dreamcode }: AppProps) {
   const [profileName, setProfileName] = useState("");
   const [approvalRequest, setApprovalRequest] = useState<DesktopApprovalRequest>();
   const [questionRequest, setQuestionRequest] = useState<DesktopQuestionRequest>();
+  const [workspacePendingRemoval, setWorkspacePendingRemoval] = useState<string>();
   const startingRef = useRef(false);
   const pendingRunEvents = useRef<DesktopRunEvent[]>([]);
   const pendingRunStatuses = useRef<DesktopRunStatus[]>([]);
@@ -123,11 +126,21 @@ export function App({ api = window.dreamcode }: AppProps) {
     }
   }, [timelineRevision]);
 
+  const applyBootstrap = useCallback((bootstrap: DesktopBootstrap) => {
+    dispatch({ type: "bootstrap.refreshed", bootstrap });
+  }, []);
+
   const chooseWorkspace = async () => {
     if (busy) return;
     try {
       const workspaceRoot = await api.chooseWorkspace();
       if (workspaceRoot) {
+        applyBootstrap(
+          await api.saveProject({
+            workspaceRoot,
+            name: lastPathSegment(workspaceRoot),
+          }),
+        );
         sessionLoadSequence.current += 1;
         dispatch({ type: "workspace.selected", workspaceRoot });
       }
@@ -200,6 +213,31 @@ export function App({ api = window.dreamcode }: AppProps) {
     dispatch({ type: "conversation.new" });
   };
 
+  const saveProject = async (project: {
+    workspaceRoot: string;
+    name: string;
+    pinned?: boolean;
+  }) => {
+    try {
+      applyBootstrap(await api.saveProject(project));
+    } catch (error) {
+      dispatch({ type: "error", error: desktopError(error) });
+    }
+  };
+
+  const removeWorkspace = async (workspaceRoot: string) => {
+    try {
+      applyBootstrap(await api.deleteProject(workspaceRoot));
+      if (state.workspaceRoot === workspaceRoot) {
+        sessionLoadSequence.current += 1;
+        dispatch({ type: "workspace.selected" });
+      }
+      setWorkspacePendingRemoval(undefined);
+    } catch (error) {
+      dispatch({ type: "error", error: desktopError(error) });
+    }
+  };
+
   const trackScrollPosition = () => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -224,6 +262,29 @@ export function App({ api = window.dreamcode }: AppProps) {
         onOpenHistory={() => dispatch({ type: "drawer.open", drawer: "sessions" })}
         onOpenConfiguration={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
         onOpenSettings={() => dispatch({ type: "dialog.set", dialog: { type: "settings" } })}
+        pinnedSessionIds={state.bootstrap?.pinnedSessionIds}
+        onSaveProject={(project) => void saveProject(project)}
+        onOpenWorkspace={(workspaceRoot) => {
+          void api.openWorkspace(workspaceRoot).catch((error) => {
+            dispatch({ type: "error", error: desktopError(error) });
+          });
+        }}
+        onRemoveWorkspace={setWorkspacePendingRemoval}
+        onDeleteSession={(sessionId) => {
+          void api
+            .deleteSession(sessionId)
+            .then((bootstrap) => {
+              applyBootstrap(bootstrap);
+              if (state.activeSessionId === sessionId) dispatch({ type: "conversation.new" });
+            })
+            .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+        }}
+        onSetSessionPinned={(sessionId, pinned) => {
+          void api
+            .setSessionPinned({ sessionId, pinned })
+            .then(applyBootstrap)
+            .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+        }}
         onSelectSession={(sessionId) => void selectSession(sessionId)}
       />
       <main className="main-pane">
@@ -338,8 +399,19 @@ export function App({ api = window.dreamcode }: AppProps) {
           onResolved={() => setQuestionRequest(undefined)}
         />
       ) : null}
+      {workspacePendingRemoval ? (
+        <ProjectRemovalDialog
+          projectName={lastPathSegment(workspacePendingRemoval)}
+          onCancel={() => setWorkspacePendingRemoval(undefined)}
+          onConfirm={() => void removeWorkspace(workspacePendingRemoval)}
+        />
+      ) : null}
     </div>
   );
+}
+
+function lastPathSegment(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
 function isProfileUsable(profile: { provider: string; apiKeyConfigured: boolean }): boolean {

@@ -125,6 +125,10 @@ export async function startDesktopApplication(): Promise<void> {
     service,
     runManager,
     getWindow: () => mainWindow,
+    openWorkspace: async (workspaceRoot) => {
+      const error = await shell.openPath(workspaceRoot);
+      if (error) throw new Error(error);
+    },
     chooseWorkspace:
       process.env.DREAMCODE_E2E === "1" && process.env.DREAMCODE_E2E_WORKSPACE?.trim()
         ? async () => process.env.DREAMCODE_E2E_WORKSPACE?.trim()

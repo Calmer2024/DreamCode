@@ -7,7 +7,9 @@ import {
   getConfigPath,
   loadDreamCodeConfig,
   saveDreamCodeConfig,
+  setSessionPinned,
   upsertLlmProfile,
+  upsertProject,
 } from "./index";
 
 describe("DreamCode config", () => {
@@ -40,5 +42,18 @@ describe("DreamCode config", () => {
       baseURL: "https://api.deepseek.com",
     });
     await expect(readFile(configPath, "utf8")).resolves.toContain('"currentProfile": "deepseek"');
+  });
+
+  it("persists project metadata and pinned sessions in the shared config", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
+    const workspaceRoot = path.join(home, "workspace");
+
+    await upsertProject({ workspaceRoot, name: "Workspace", pinned: true }, home);
+    await setSessionPinned("sess_1", true, home);
+
+    await expect(loadDreamCodeConfig(home)).resolves.toMatchObject({
+      projects: [{ workspaceRoot: path.resolve(workspaceRoot), name: "Workspace", pinned: true }],
+      pinnedSessionIds: ["sess_1"],
+    });
   });
 });

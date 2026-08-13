@@ -3,10 +3,15 @@
 import type { AgentEvent } from "@dreamcode/shared";
 import type { ReplayedSessionState } from "@dreamcode/store";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopApi, DesktopBootstrap, DesktopRunEvent } from "../../shared/contracts";
 import "../../test/setup";
 import { App } from "./App";
+
+afterEach(() => {
+  window.localStorage.removeItem("dreamcode:pinned-workspaces");
+  window.localStorage.removeItem("dreamcode:removed-workspaces");
+});
 
 const bootstrap: DesktopBootstrap = {
   profiles: [
@@ -57,6 +62,50 @@ describe("DreamCode desktop shell", () => {
     expect(screen.queryByRole("button", { name: "搜索" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "通知" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
+  });
+
+  it("persists project pin, explorer, and destructive chat removal through the desktop API", async () => {
+    const openWorkspace = vi.fn().mockResolvedValue(undefined);
+    const saveProject = vi.fn().mockResolvedValue({
+      ...bootstrap,
+      projects: [
+        {
+          workspaceRoot: "D:\\Projects\\DreamCode",
+          name: "DreamCode",
+          pinned: true,
+          createdAt: "2026-08-10T00:00:00.000Z",
+        },
+      ],
+    });
+    const deleteProject = vi.fn().mockResolvedValue({
+      ...bootstrap,
+      sessions: [],
+      projects: [],
+    });
+    render(<App api={fakeDesktopApi({ bootstrap, openWorkspace, saveProject, deleteProject })} />);
+
+    await screen.findByRole("heading", { level: 2, name: "新对话" });
+    const more = screen.getByRole("button", { name: "项目更多操作" });
+    fireEvent.click(more);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "置顶项目" }));
+    expect(saveProject).toHaveBeenCalledWith({
+      workspaceRoot: "D:\\Projects\\DreamCode",
+      name: "DreamCode",
+      pinned: true,
+    });
+
+    fireEvent.click(more);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在资源管理器中打开" }));
+    expect(openWorkspace).toHaveBeenCalledWith("D:\\Projects\\DreamCode");
+
+    fireEvent.click(more);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "移除" }));
+    expect(screen.getByRole("dialog", { name: "移除 DreamCode?" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "移除项目" }));
+
+    await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("D:\\Projects\\DreamCode"));
+    expect(screen.queryByRole("button", { name: "项目更多操作" })).not.toBeInTheDocument();
+    expect(screen.getByText("尚未选择工作区")).toBeVisible();
   });
 
   it("switches send to stop while a run is active", async () => {
@@ -330,7 +379,7 @@ describe("DreamCode desktop shell", () => {
       await pending.promise;
     });
 
-    expect(screen.getByText("NextWorkspace")).toBeVisible();
+    expect(screen.getAllByText("NextWorkspace")[0]).toBeVisible();
     expect(screen.getByRole("button", { name: "Desktop shell" })).not.toHaveAttribute(
       "aria-current",
     );
@@ -661,7 +710,12 @@ function fakeDesktopApi(
   const api: DesktopApi = {
     bootstrap: vi.fn().mockResolvedValue(bootstrapValue),
     chooseWorkspace: vi.fn().mockResolvedValue(undefined),
+    openWorkspace: vi.fn().mockResolvedValue(undefined),
     saveProfile: vi.fn().mockResolvedValue(bootstrapValue),
+    saveProject: vi.fn().mockResolvedValue(bootstrapValue),
+    deleteProject: vi.fn().mockResolvedValue(bootstrapValue),
+    deleteSession: vi.fn().mockResolvedValue(bootstrapValue),
+    setSessionPinned: vi.fn().mockResolvedValue(bootstrapValue),
     startTurn: vi.fn().mockResolvedValue({ runId: "run_1" }),
     stopTurn: vi.fn().mockResolvedValue(undefined),
     readSession: vi.fn(),

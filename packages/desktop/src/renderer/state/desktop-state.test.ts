@@ -91,6 +91,39 @@ describe("desktop state reducer", () => {
     expect(state.rawEvents).toHaveLength(2);
   });
 
+  it("keeps one markdown assistant answer when legacy summary and completion events repeat it", () => {
+    let state = desktopReducer(runningState("run_1"), {
+      type: "run.event",
+      message: {
+        runId: "run_1",
+        event: agentEvent("model.delta", { text: "## Done\n\n- Tests passed" }),
+      },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: {
+        runId: "run_1",
+        event: agentEvent("session.summarized", { summary: "## Done\n\n- Tests passed" }),
+      },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: {
+        runId: "run_1",
+        event: agentEvent("turn.completed", {
+          summary: { message: "## Done\n\n- Tests passed", changedFiles: [] },
+        }),
+      },
+    });
+
+    expect(state.timeline.filter((entry) => entry.kind === "assistant")).toEqual([
+      expect.objectContaining({ detail: "## Done\n\n- Tests passed" }),
+    ]);
+    expect(
+      state.timeline.find((entry) => entry.title === "Turn completed")?.detail,
+    ).toBeUndefined();
+  });
+
   it("projects key lifecycle events into readable timeline entries with a generic fallback", () => {
     let state = runningState("run_1");
     for (const event of [

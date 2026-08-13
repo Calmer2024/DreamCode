@@ -1,12 +1,17 @@
 import { listModelProviderPresets } from "@dreamcode/models";
 import type { DreamCodeConfig } from "@dreamcode/store";
 import {
+  deleteProjectMetadata,
+  deleteSessionsForWorkspace,
+  deleteSession as deleteStoredSession,
   listSessions,
   loadDreamCodeConfig,
+  setSessionPinned as persistSessionPinned,
   readReplayedSession,
   rollbackSession,
   saveDreamCodeConfig,
   upsertLlmProfile,
+  upsertProject,
 } from "@dreamcode/store";
 import type { DesktopBootstrap, RollbackRequest, SaveProfileRequest } from "../shared/contracts";
 
@@ -40,7 +45,30 @@ export class DesktopAppService {
         })),
       ],
       sessions: await this.listSessions(),
+      projects: config.projects ?? [],
+      pinnedSessionIds: config.pinnedSessionIds ?? [],
     };
+  }
+
+  async saveProject(request: { workspaceRoot: string; name: string; pinned?: boolean }) {
+    await upsertProject(request, this.home);
+    return this.bootstrap();
+  }
+
+  async deleteSession(sessionId: string) {
+    await deleteStoredSession(validateSessionId(sessionId), this.home);
+    return this.bootstrap();
+  }
+
+  async deleteProject(workspaceRoot: string) {
+    await deleteSessionsForWorkspace(workspaceRoot, this.home);
+    await deleteProjectMetadata(workspaceRoot, this.home);
+    return this.bootstrap();
+  }
+
+  async setSessionPinned(request: { sessionId: string; pinned: boolean }) {
+    await persistSessionPinned(validateSessionId(request.sessionId), request.pinned, this.home);
+    return this.bootstrap();
   }
 
   async saveProfile(request: SaveProfileRequest): Promise<DesktopBootstrap> {

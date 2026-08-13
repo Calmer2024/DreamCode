@@ -42,6 +42,15 @@ export interface DreamCodeConfig {
   currentProfile?: string;
   profiles: Record<string, DreamCodeLlmProfile>;
   mcpServers?: Record<string, DreamCodeMcpServerConfig>;
+  projects?: DreamCodeProject[];
+  pinnedSessionIds?: string[];
+}
+
+export interface DreamCodeProject {
+  workspaceRoot: string;
+  name: string;
+  pinned?: boolean;
+  createdAt: string;
 }
 
 export function getConfigPath(home = getDreamCodeHome()): string {
@@ -97,6 +106,78 @@ export function upsertLlmProfile(
       [normalizedName]: normalizeProfile(profile),
     },
   });
+}
+
+export async function upsertProject(
+  project: Pick<DreamCodeProject, "workspaceRoot" | "name"> & Partial<DreamCodeProject>,
+  home = getDreamCodeHome(),
+): Promise<DreamCodeConfig> {
+  const config = await loadDreamCodeConfig(home);
+  const workspaceRoot = path.resolve(project.workspaceRoot);
+  const existing = config.projects?.find((item) => item.workspaceRoot === workspaceRoot);
+  const next: DreamCodeProject = {
+    workspaceRoot,
+    name: project.name.trim() || path.basename(workspaceRoot),
+    pinned: project.pinned ?? existing?.pinned,
+    createdAt: existing?.createdAt ?? project.createdAt ?? nowIso(),
+  };
+  const projects = [
+    ...(config.projects ?? []).filter((item) => item.workspaceRoot !== workspaceRoot),
+    next,
+  ];
+  const updated = normalizeConfig({ ...config, projects });
+  await saveDreamCodeConfig(updated, home);
+  return updated;
+}
+
+export async function deleteProjectMetadata(
+  workspaceRoot: string,
+  home = getDreamCodeHome(),
+): Promise<DreamCodeConfig> {
+  const config = await loadDreamCodeConfig(home);
+  const resolved = path.resolve(workspaceRoot);
+  const updated = normalizeConfig({
+    ...config,
+    projects: (config.projects ?? []).filter((item) => item.workspaceRoot !== resolved),
+  });
+  await saveDreamCodeConfig(updated, home);
+  return updated;
+}
+
+export async function setSessionPinned(
+  sessionId: string,
+  pinned: boolean,
+  home = getDreamCodeHome(),
+): Promise<DreamCodeConfig> {
+  const config = await loadDreamCodeConfig(home);
+  const ids = new Set(config.pinnedSessionIds ?? []);
+  if (pinned) ids.add(sessionId);
+  else ids.delete(sessionId);
+  const updated = normalizeConfig({ ...config, pinnedSessionIds: [...ids] });
+  await saveDreamCodeConfig(updated, home);
+  return updated;
+}
+
+export async function deleteSession(sessionId: string, home = getDreamCodeHome()): Promise<void> {
+  const resolved = path.resolve(getSessionDir(sessionId, home));
+  const sessionsRoot = path.resolve(getSessionsRoot(home));
+  if (path.dirname(resolved) !== sessionsRoot) throw new Error("Invalid session ID.");
+  await rm(resolved, { recursive: true, force: true });
+  await setSessionPinned(sessionId, false, home);
+  await rebuildSessionIndex(home);
+}
+
+export async function deleteSessionsForWorkspace(
+  workspaceRoot: string,
+  home = getDreamCodeHome(),
+): Promise<string[]> {
+  const resolvedWorkspace = path.resolve(workspaceRoot);
+  const sessions = await listSessions({ home, limit: Number.MAX_SAFE_INTEGER });
+  const ids = sessions
+    .filter((item) => path.resolve(item.workspaceRoot) === resolvedWorkspace)
+    .map((item) => item.id);
+  for (const id of ids) await deleteSession(id, home);
+  return ids;
 }
 
 export class JsonlEventLog {
@@ -590,12 +671,43 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
       : Object.keys(profiles)[0];
 
   const mcpServers = normalizeMcpServers(input.mcpServers);
+  const projects = normalizeProjects(input.projects);
+  const pinnedSessionIds = Array.isArray(input.pinnedSessionIds)
+    ? [
+        ...new Set(
+          input.pinnedSessionIds.filter(
+            (item): item is string => typeof item === "string" && Boolean(item.trim()),
+          ),
+        ),
+      ]
+    : [];
   return {
     version: 1,
     currentProfile,
     profiles,
     ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+    ...(projects.length ? { projects } : {}),
+    ...(pinnedSessionIds.length ? { pinnedSessionIds } : {}),
   };
+}
+
+function normalizeProjects(input: unknown): DreamCodeProject[] {
+  if (!Array.isArray(input)) return [];
+  const projects = new Map<string, DreamCodeProject>();
+  for (const value of input) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const project = value as Partial<DreamCodeProject>;
+    const workspaceRoot = normalizeString(project.workspaceRoot);
+    if (!workspaceRoot) continue;
+    const resolved = path.resolve(workspaceRoot);
+    projects.set(resolved, {
+      workspaceRoot: resolved,
+      name: normalizeString(project.name) ?? path.basename(resolved),
+      pinned: project.pinned === true || undefined,
+      createdAt: normalizeString(project.createdAt) ?? nowIso(),
+    });
+  }
+  return [...projects.values()];
 }
 
 function normalizeProfile(profile: Partial<DreamCodeLlmProfile>): DreamCodeLlmProfile {

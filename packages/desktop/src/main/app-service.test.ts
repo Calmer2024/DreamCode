@@ -1,7 +1,12 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDreamCodeConfig, saveDreamCodeConfig, upsertLlmProfile } from "@dreamcode/store";
+import {
+  createSession,
+  loadDreamCodeConfig,
+  saveDreamCodeConfig,
+  upsertLlmProfile,
+} from "@dreamcode/store";
 import { describe, expect, it } from "vitest";
 import { DesktopAppService } from "./app-service";
 
@@ -158,5 +163,23 @@ describe("DesktopAppService", () => {
     await expect(
       service.rollback({ sessionId: traversalId, filePath: "src/external.ts" }),
     ).rejects.toThrow("Invalid session ID");
+  });
+
+  it("deletes project conversations and metadata without deleting workspace files", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const workspaceRoot = path.join(home, "workspace");
+    const sourcePath = path.join(workspaceRoot, "README.md");
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(sourcePath, "keep me", "utf8");
+    const { session } = await createSession({ workspaceRoot, home });
+    const service = new DesktopAppService(home);
+
+    await service.saveProject({ workspaceRoot, name: "Workspace", pinned: true });
+    const deleted = await service.deleteProject(workspaceRoot);
+
+    expect(deleted.projects).toEqual([]);
+    expect(deleted.sessions).toEqual([]);
+    await expect(access(sourcePath)).resolves.toBeUndefined();
+    await expect(access(path.join(home, "sessions", session.id))).rejects.toThrow();
   });
 });

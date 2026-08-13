@@ -1,5 +1,6 @@
-import { Bot, Folder, History, Settings, SquarePen } from "lucide-react";
+import { Bot, Folder, History, Pin, PinOff, Settings, SquarePen, Trash2 } from "lucide-react";
 import type { WorkspaceGroup } from "../state/desktop-state";
+import { ProjectMoreMenu } from "./ProjectMoreMenu";
 
 interface SidebarProps {
   groups: WorkspaceGroup[];
@@ -9,6 +10,12 @@ interface SidebarProps {
   onOpenHistory: () => void;
   onOpenConfiguration: () => void;
   onOpenSettings: () => void;
+  onSaveProject: (project: { workspaceRoot: string; name: string; pinned?: boolean }) => void;
+  onOpenWorkspace: (workspaceRoot: string) => void;
+  onRemoveWorkspace: (workspaceRoot: string) => void;
+  pinnedSessionIds?: string[];
+  onDeleteSession: (sessionId: string) => void;
+  onSetSessionPinned: (sessionId: string, pinned: boolean) => void;
   onSelectSession: (sessionId: string) => void;
 }
 
@@ -20,8 +27,15 @@ export function Sidebar({
   onOpenHistory,
   onOpenConfiguration,
   onOpenSettings,
+  onSaveProject,
+  onOpenWorkspace,
+  onRemoveWorkspace,
+  pinnedSessionIds = [],
+  onDeleteSession,
+  onSetSessionPinned,
   onSelectSession,
 }: SidebarProps) {
+  const pinnedSessions = new Set(pinnedSessionIds);
   return (
     <aside className="sidebar" aria-label="DreamCode 导航">
       <div className="brand-row">
@@ -58,23 +72,73 @@ export function Sidebar({
         ) : (
           groups.map((group) => (
             <section className="workspace-group" key={group.workspaceRoot}>
-              <div className="workspace-name" title={group.workspaceRoot}>
-                <Folder aria-hidden="true" />
-                <span>{lastPathSegment(group.workspaceRoot)}</span>
+              <div className="workspace-heading">
+                <div className="workspace-name" title={group.workspaceRoot}>
+                  <Folder aria-hidden="true" />
+                  <span>{group.name ?? lastPathSegment(group.workspaceRoot)}</span>
+                </div>
+                <ProjectMoreMenu
+                  projectName={group.name ?? lastPathSegment(group.workspaceRoot)}
+                  pinned={group.pinned === true}
+                  onTogglePin={() =>
+                    onSaveProject({
+                      workspaceRoot: group.workspaceRoot,
+                      name: group.name ?? lastPathSegment(group.workspaceRoot),
+                      pinned: !group.pinned,
+                    })
+                  }
+                  onOpenWorkspace={() => onOpenWorkspace(group.workspaceRoot)}
+                  onRename={() => {
+                    const name = window
+                      .prompt("项目名称", group.name ?? lastPathSegment(group.workspaceRoot))
+                      ?.trim();
+                    if (name) onSaveProject({ workspaceRoot: group.workspaceRoot, name });
+                  }}
+                  onRemove={() => onRemoveWorkspace(group.workspaceRoot)}
+                />
               </div>
               <div className="session-list">
                 {group.sessions.map((session) => (
-                  <button
-                    type="button"
-                    className="session-item"
-                    aria-current={session.id === activeSessionId ? "page" : undefined}
-                    data-accent={session.id === activeSessionId ? "purple" : undefined}
-                    disabled={navigationDisabled}
-                    key={session.id}
-                    onClick={() => onSelectSession(session.id)}
-                  >
-                    {session.title}
-                  </button>
+                  <div className="session-row" key={session.id}>
+                    <button
+                      type="button"
+                      className="session-item"
+                      aria-current={session.id === activeSessionId ? "page" : undefined}
+                      data-accent={session.id === activeSessionId ? "purple" : undefined}
+                      disabled={navigationDisabled}
+                      onClick={() => onSelectSession(session.id)}
+                    >
+                      {session.title}
+                    </button>
+                    <div className="session-actions">
+                      <button
+                        type="button"
+                        aria-label={pinnedSessions.has(session.id) ? "取消置顶对话" : "置顶对话"}
+                        title={pinnedSessions.has(session.id) ? "取消置顶" : "置顶"}
+                        onClick={() =>
+                          onSetSessionPinned(session.id, !pinnedSessions.has(session.id))
+                        }
+                      >
+                        {pinnedSessions.has(session.id) ? (
+                          <PinOff aria-hidden="true" />
+                        ) : (
+                          <Pin aria-hidden="true" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="删除对话"
+                        title="永久删除对话"
+                        onClick={() => {
+                          if (window.confirm("永久删除该对话及其本地事件、快照和产物？")) {
+                            onDeleteSession(session.id);
+                          }
+                        }}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             </section>

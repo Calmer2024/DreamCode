@@ -17,6 +17,10 @@ describe("registerDesktopIpc", () => {
     const service = {
       bootstrap: vi.fn(),
       saveProfile: vi.fn(),
+      saveProject: vi.fn(),
+      deleteProject: vi.fn(),
+      deleteSession: vi.fn(),
+      setSessionPinned: vi.fn(),
       readSession: vi.fn(),
       readChangedFileDiff: vi.fn(),
       rollback: vi.fn(),
@@ -34,12 +38,18 @@ describe("registerDesktopIpc", () => {
       service,
       runManager,
       getWindow: () => undefined,
+      openWorkspace: vi.fn(),
     });
 
     expect(ipcMain.handle.mock.calls.map(([channel]) => channel)).toEqual([
       "desktop:bootstrap",
       "desktop:choose-workspace",
+      "desktop:open-workspace",
       "desktop:save-profile",
+      "desktop:save-project",
+      "desktop:delete-project",
+      "desktop:delete-session",
+      "desktop:set-session-pinned",
       "desktop:read-session",
       "desktop:read-diff",
       "desktop:rollback",
@@ -51,7 +61,7 @@ describe("registerDesktopIpc", () => {
 
     dispose();
 
-    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(10);
+    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(15);
   });
 
   it("serializes invalid object requests before calling a service", async () => {
@@ -60,6 +70,11 @@ describe("registerDesktopIpc", () => {
 
     const invalidRequests = [
       ["desktop:save-profile", { name: "", provider: "openai" }],
+      ["desktop:save-project", { workspaceRoot: "", name: "Project" }],
+      ["desktop:delete-project", ""],
+      ["desktop:delete-session", ""],
+      ["desktop:set-session-pinned", { sessionId: "", pinned: true }],
+      ["desktop:open-workspace", ""],
       ["desktop:read-diff", { sessionId: "", filePath: "src/index.ts" }],
       ["desktop:rollback", { sessionId: "", filePath: "src/index.ts" }],
       ["desktop:start-turn", { prompt: "", workspaceRoot: "D:/repo", mode: "yolo" }],
@@ -177,16 +192,21 @@ describe("createDesktopApi", () => {
     expect(Object.keys(api).sort()).toEqual([
       "bootstrap",
       "chooseWorkspace",
+      "deleteProject",
+      "deleteSession",
       "onApprovalRequest",
       "onQuestionRequest",
       "onRunEvent",
       "onRunStatus",
+      "openWorkspace",
       "readDiff",
       "readSession",
       "respondApproval",
       "respondQuestion",
       "rollback",
       "saveProfile",
+      "saveProject",
+      "setSessionPinned",
       "startTurn",
       "stopTurn",
     ]);
@@ -248,7 +268,12 @@ describe("createDesktopApi", () => {
     await Promise.all([
       api.bootstrap(),
       api.chooseWorkspace(),
+      api.openWorkspace("D:/repo"),
       api.saveProfile({ name: "personal", provider: "openai" }),
+      api.saveProject({ workspaceRoot: "D:/repo", name: "repo" }),
+      api.deleteProject("D:/repo"),
+      api.deleteSession("sess_1"),
+      api.setSessionPinned({ sessionId: "sess_1", pinned: true }),
       api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" }),
       api.stopTurn("run_1"),
       api.readSession("sess_1"),
@@ -261,7 +286,12 @@ describe("createDesktopApi", () => {
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).toEqual([
       "desktop:bootstrap",
       "desktop:choose-workspace",
+      "desktop:open-workspace",
       "desktop:save-profile",
+      "desktop:save-project",
+      "desktop:delete-project",
+      "desktop:delete-session",
+      "desktop:set-session-pinned",
       "desktop:start-turn",
       "desktop:stop-turn",
       "desktop:read-session",
@@ -285,6 +315,10 @@ function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | un
   const service = {
     bootstrap: vi.fn(),
     saveProfile: vi.fn(),
+    saveProject: vi.fn(),
+    deleteProject: vi.fn(),
+    deleteSession: vi.fn(),
+    setSessionPinned: vi.fn(),
     readSession: vi.fn(),
     readChangedFileDiff: vi.fn(),
     rollback: vi.fn(),
@@ -295,6 +329,7 @@ function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | un
     respondApproval: vi.fn(),
     respondQuestion: vi.fn(),
   };
+  const openWorkspace = vi.fn();
 
   return {
     dialog,
@@ -308,6 +343,7 @@ function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | un
         service,
         runManager,
         getWindow: () => undefined,
+        openWorkspace,
         ...options,
       } as never),
   };
