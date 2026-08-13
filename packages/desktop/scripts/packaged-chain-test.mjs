@@ -55,7 +55,7 @@ try {
   assertions.startupVisible = await first.page.getByText("DreamCode", { exact: true }).isVisible();
   await chooseWorkspace(first.page);
   await runPrompt(first.page, "修复当前项目的测试失败, 并运行测试确认。");
-  await first.page.getByText("已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  await first.page.getByText(/^已完成 · 耗时 /).waitFor({ timeout: 30_000 });
   assertions.taskCompleted = true;
   assertions.fileChanged = (
     await readFile(path.join(workspace, "src", "math.js"), "utf8")
