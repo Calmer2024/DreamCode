@@ -324,6 +324,29 @@ export const MODEL_PROVIDER_PRESETS: readonly ModelProviderPreset[] = [
     docsUrl: "https://platform.minimax.io/docs/api-reference/text-openai-api",
   },
   {
+    id: "mimo",
+    displayName: "Mimo",
+    protocol: "openai-compatible",
+    defaultModel: "mimo-v2.5",
+    models: [
+      {
+        id: "mimo-v2.5",
+        label: "mimo-v2.5",
+        description: "Mimo 通用 Agent 模型",
+      },
+      {
+        id: "mimo-v2.5-pro",
+        label: "mimo-v2.5-pro",
+        description: "Mimo 高级推理与编码模型",
+      },
+    ],
+    defaultBaseURL: "https://api.xiaomimimo.com/v1",
+    apiKeyEnvVars: ["MIMO_API_KEY", "DREAMCODE_MIMO_API_KEY", ...GENERIC_API_KEY_ENV_VARS],
+    baseURLEnvVars: ["MIMO_BASE_URL", "DREAMCODE_MIMO_BASE_URL", ...GENERIC_BASE_URL_ENV_VARS],
+    modelEnvVars: ["MIMO_MODEL", "DREAMCODE_MIMO_MODEL", ...GENERIC_MODEL_ENV_VARS],
+    aliases: ["xiaomi-mimo", "mimo-ai"],
+  },
+  {
     id: "openai-compatible",
     displayName: "自定义 OpenAI-compatible",
     protocol: "openai-compatible",
