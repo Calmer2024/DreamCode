@@ -39,6 +39,8 @@ pnpm dreamcode
 
 桌面版面向 Windows 10/11 x64。开发时先构建 Main、preload 和 Renderer，再启动编译后的 Electron 应用：
 
+桌面端正式 UI 使用 React + Vite 实现。页面编排位于 `packages/desktop/src/renderer/app/App.tsx`，组件位于 `packages/desktop/src/renderer/components`，视觉样式位于 `packages/desktop/src/renderer/app/app.css`。`packages/desktop/index.html` 只是 Vite 的空挂载入口，不是 UI/UX 实现文件；不要在其中或新的 `renderer.html` 中实现产品界面。详细边界见 `packages/desktop/README.md`。
+
 ```powershell
 pnpm desktop:build
 pnpm --dir packages/desktop exec electron dist-main/main/index.js
