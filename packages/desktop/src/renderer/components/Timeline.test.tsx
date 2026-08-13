@@ -22,6 +22,7 @@ describe("Timeline", () => {
         entry("user", "User message", "Fix the timeline"),
         entry("tool", "Running shell.run", "pnpm test"),
         entry("file", "update src/app.ts", "diff --git"),
+        entry("assistant", "Assistant", "## All tests passed"),
         entry("status", "Turn completed", "All tests passed"),
       ],
     };
@@ -34,7 +35,9 @@ describe("Timeline", () => {
     expect(screen.getByTestId("timeline-user")).toBeVisible();
     expect(screen.getByTestId("timeline-tool")).toHaveTextContent("pnpm test");
     expect(screen.getByTestId("timeline-file")).toHaveTextContent("src/app.ts");
-    expect(screen.getByTestId("timeline-status")).toHaveTextContent("All tests passed");
+    expect(screen.getByRole("heading", { level: 2, name: "All tests passed" })).toBeVisible();
+    expect(screen.queryByTestId("timeline-status")).not.toBeInTheDocument();
+    expect(screen.getByText(/已完成 · 耗时/).closest("details")).not.toHaveAttribute("open");
   });
 
   it("shows a real turn prompt once when turn.started precedes user.message", () => {
@@ -94,8 +97,8 @@ describe("Timeline", () => {
       "file-code-2",
     );
 
+    expect(screen.queryByTestId("timeline-status")).not.toBeInTheDocument();
     for (const [label, testId] of [
-      ["运行状态", "timeline-status"],
       ["轮次状态", "timeline-turn"],
       ["会话状态", "timeline-session"],
     ] as const) {
@@ -111,7 +114,6 @@ describe("Timeline", () => {
   });
 
   it.each([
-    { title: "Turn completed", tone: "success" as const, label: "运行成功", icon: "circle-check" },
     { title: "Turn failed", tone: "danger" as const, label: "运行失败", icon: "circle-x" },
     {
       title: "Turn interrupted",

@@ -30,6 +30,7 @@ describe("runTurn fake model integration", () => {
 
     const completed = events.find((event) => event.type === "turn.completed");
     expect(completed).toBeDefined();
+    expect(events.some((event) => event.type === "session.summarized")).toBe(false);
     const summary = (completed!.payload as { summary: FinalSummary }).summary;
     expect(summary.changedFiles.map((file) => file.path)).toContain("src/math.js");
     expect(summary.commands[0]?.command).toBe("npm test");

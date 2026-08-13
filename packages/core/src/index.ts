@@ -165,7 +165,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           state,
           eventLogPath: eventLog.filePath,
         });
-        yield await emit("session.summarized", { summary: summary.message });
         yield await emit("turn.completed", { summary });
         await safelyRebuildIndex(input.home);
         return;
@@ -189,7 +188,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
             state,
             eventLogPath: eventLog.filePath,
           });
-          yield await emit("session.summarized", { summary: summary.message });
           yield await emit("turn.completed", { summary });
           await safelyRebuildIndex(input.home);
           return;
@@ -280,7 +278,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       state,
       eventLogPath: eventLog.filePath,
     });
-    yield await emit("session.summarized", { summary: summary.message });
     yield await emit("turn.failed", { error: toErrorMessage(error), summary });
     await safelyRebuildIndex(input.home);
   }

@@ -1,5 +1,6 @@
 import {
   Activity,
+  ChevronDown,
   CircleCheck,
   CircleDot,
   CircleStop,
@@ -7,9 +8,12 @@ import {
   Clock,
   FileCode2,
   Radio,
+  SquareTerminal,
   Wrench,
 } from "lucide-react";
-import type { DesktopState, DesktopTimelineEntry } from "../state/desktop-state";
+import type { ReactNode } from "react";
+import type { DesktopState, DesktopTimelineEntry, DesktopToolEvent } from "../state/desktop-state";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface TimelineProps {
   state: DesktopState;
@@ -60,14 +64,124 @@ export function Timeline({ state, profileUsable, onConfigure, onChooseWorkspace 
     <section className="timeline" aria-label="任务时间线">
       {state.request && !state.timeline.some((entry) => entry.kind === "user") ? (
         <article className="timeline-entry user-entry" data-testid="timeline-user">
-          <span className="entry-label">你</span>
-          <p>{state.request.prompt}</p>
+          <div className="user-bubble">{state.request.prompt}</div>
         </article>
       ) : null}
-      {state.timeline.map((entry) => (
+      {conversationBlocks(state.timeline, state.tools)}
+    </section>
+  );
+}
+
+function conversationBlocks(
+  entries: DesktopTimelineEntry[],
+  tools: DesktopToolEvent[],
+): ReactNode[] {
+  const blocks: ReactNode[] = [];
+  let execution: DesktopTimelineEntry[] = [];
+  const flushExecution = () => {
+    if (!execution.length) return;
+    blocks.push(
+      <ExecutionSegment
+        entries={execution}
+        tools={tools}
+        key={`execution-${execution[0]?.id ?? blocks.length}`}
+      />,
+    );
+    execution = [];
+  };
+
+  for (const entry of entries) {
+    if (entry.kind === "user") {
+      flushExecution();
+      blocks.push(<TimelineItem entry={entry} key={entry.id} />);
+    } else {
+      execution.push(entry);
+    }
+  }
+  flushExecution();
+  return blocks;
+}
+
+function ExecutionSegment({
+  entries,
+  tools,
+}: {
+  entries: DesktopTimelineEntry[];
+  tools: DesktopToolEvent[];
+}) {
+  const turnId = entries.find((entry) => entry.turnId)?.turnId;
+  const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
+  const hasCanonicalTools = segmentTools.length > 0;
+  const completed = entries.some((entry) => entry.title === "Turn completed");
+  const processEntries = entries.filter(
+    (entry) => entry.kind !== "assistant" && entry.title !== "Turn completed",
+  );
+  const summaries = entries.filter((entry) => entry.kind === "assistant");
+  let processRendered = false;
+
+  return (
+    <>
+      {processEntries.length ? (
+        <details className="execution-segment" open={completed ? undefined : true}>
+          <summary className="execution-summary">
+            <span>
+              {completed
+                ? `已完成 · 耗时 ${formatElapsed(entries)}`
+                : `处理中 · ${formatElapsed(entries)}`}
+            </span>
+            <ChevronDown aria-hidden="true" />
+          </summary>
+          <div className="execution-content">
+            {processEntries.map((entry) => {
+              if (entry.kind === "tool" && hasCanonicalTools) {
+                if (processRendered) return null;
+                processRendered = true;
+                return <ToolProcess tools={segmentTools} key={`process-${entry.id}`} />;
+              }
+              return <TimelineItem entry={entry} key={entry.id} />;
+            })}
+          </div>
+        </details>
+      ) : null}
+      {summaries.map((entry) => (
         <TimelineItem entry={entry} key={entry.id} />
       ))}
-    </section>
+    </>
+  );
+}
+
+function ToolProcess({ tools }: { tools: DesktopToolEvent[] }) {
+  return (
+    <details className="tool-process">
+      <summary className="tool-process-summary">
+        <SquareTerminal aria-hidden="true" />
+        <span>{`运行了 ${tools.length} 个命令`}</span>
+        <ChevronDown aria-hidden="true" />
+      </summary>
+      <div className="tool-process-rows">
+        {tools.map((tool) => (
+          <CommandRow tool={tool} key={tool.id} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function CommandRow({ tool }: { tool: DesktopToolEvent }) {
+  return (
+    <details className={`command-row tone-${tool.status}`} aria-label={`执行命令：${tool.name}`}>
+      <summary>
+        <SquareTerminal aria-hidden="true" />
+        <span className="command-state">{commandState(tool)}</span>
+        <code>{commandPreview(tool)}</code>
+        <ChevronDown aria-hidden="true" />
+      </summary>
+      <div className="command-detail">
+        <span className="command-tool">{tool.name}</span>
+        {tool.inputPreview ? <pre>{tool.inputPreview}</pre> : null}
+        {tool.summary ? <p>{tool.summary}</p> : null}
+      </div>
+    </details>
   );
 }
 
@@ -75,8 +189,7 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
   if (entry.kind === "user") {
     return (
       <article className="timeline-entry user-entry" data-testid="timeline-user">
-        <span className="entry-label">你</span>
-        <p>{entry.detail}</p>
+        <div className="user-bubble">{entry.detail}</div>
       </article>
     );
   }
@@ -84,8 +197,7 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
   if (entry.kind === "assistant") {
     return (
       <article className="timeline-entry assistant-entry" data-testid="timeline-assistant">
-        <span className="entry-label">DreamCode</span>
-        {entry.detail ? <p className="assistant-copy">{entry.detail}</p> : null}
+        {entry.detail ? <MarkdownContent>{entry.detail}</MarkdownContent> : null}
       </article>
     );
   }
@@ -178,4 +290,39 @@ function formatTime(timestamp: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.valueOf())) return "";
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function formatElapsed(entries: DesktopTimelineEntry[]): string {
+  const timestamps = entries
+    .map((entry) => new Date(entry.timestamp).valueOf())
+    .filter(Number.isFinite);
+  if (!timestamps.length) return "0秒";
+  const elapsedSeconds = Math.max(
+    0,
+    Math.round((Math.max(...timestamps) - Math.min(...timestamps)) / 1000),
+  );
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return minutes ? `${minutes}分钟 ${seconds}秒` : `${seconds}秒`;
+}
+
+function commandState(tool: DesktopToolEvent): string {
+  if (tool.status === "running" || !tool.completedAt) return "正在运行";
+  const started = tool.startedAt ? new Date(tool.startedAt).valueOf() : Number.NaN;
+  const completed = new Date(tool.completedAt).valueOf();
+  const seconds = Number.isFinite(started)
+    ? Math.max(1, Math.round((completed - started) / 1000))
+    : 1;
+  return `已在 ${seconds}s 内运行`;
+}
+
+function commandPreview(tool: DesktopToolEvent): string {
+  if (!tool.inputPreview) return tool.summary ?? tool.name;
+  try {
+    const input = JSON.parse(tool.inputPreview) as Record<string, unknown>;
+    if (typeof input.command === "string") return input.command;
+  } catch {
+    // Truncated previews remain useful as fallback labels.
+  }
+  return tool.inputPreview;
 }

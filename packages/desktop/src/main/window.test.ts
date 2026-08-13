@@ -6,6 +6,8 @@ describe("createMainWindow", () => {
     const fixture = createWindowFixture({ rendererUrl: "http://127.0.0.1:5173" });
 
     expect(fixture.options).toMatchObject({
+      autoHideMenuBar: true,
+      title: "DreamCode",
       width: 1440,
       height: 900,
       minWidth: 1024,

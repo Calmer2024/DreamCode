@@ -1,4 +1,6 @@
 export interface BrowserWindowOptionsLike {
+  autoHideMenuBar: boolean;
+  title: string;
   width: number;
   height: number;
   minWidth: number;
@@ -46,6 +48,8 @@ export interface CreateMainWindowInput {
 
 export function createMainWindow(input: CreateMainWindowInput): DesktopWindow {
   const window = new input.BrowserWindow({
+    autoHideMenuBar: true,
+    title: "DreamCode",
     width: 1440,
     height: 900,
     minWidth: 1024,

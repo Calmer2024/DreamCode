@@ -33,7 +33,7 @@ test("launches, completes a Fake task, shows Diff, restarts, and resumes the Ses
       await selectWorkspace(desktop.page);
       await saveFakeProfile(desktop.page);
       await runPrompt(desktop.page, prompt);
-      await expect(desktop.page.getByText("已完成", { exact: true })).toBeVisible({
+      await expect(desktop.page.getByText(/^已完成 · 耗时 /)).toBeVisible({
         timeout: 30_000,
       });
       return desktop;
@@ -53,7 +53,7 @@ test("launches, completes a Fake task, shows Diff, restarts, and resumes the Ses
       const second = await launchDesktop(scenario);
       await second.page.getByRole("button", { name: prompt }).click();
       await runPrompt(second.page, "Inspect workspace and report status.");
-      await expect(second.page.getByText("已完成", { exact: true })).toBeVisible({
+      await expect(second.page.getByText(/^已完成 · 耗时 /)).toBeVisible({
         timeout: 30_000,
       });
       await closeDesktopApplication(second.app);
@@ -82,7 +82,7 @@ for (const decision of ["允许", "拒绝"] as const) {
       const approval = desktop.page.getByRole("alertdialog", { name: "工具审批" });
       await expect(approval).toBeVisible();
       await approval.getByRole("button", { name: decision }).click();
-      await expect(desktop.page.getByText("已完成", { exact: true })).toBeVisible({
+      await expect(desktop.page.getByText(/^已完成 · 耗时 /)).toBeVisible({
         timeout: 30_000,
       });
       const updated = await readWorkspaceFile(scenario, "README.md");

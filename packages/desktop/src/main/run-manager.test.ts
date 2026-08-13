@@ -530,13 +530,7 @@ describe("DesktopRunManager", () => {
       expect(events.find((event) => event.event.type === "model.delta")?.event.payload).toEqual({
         text: "Progress remains readable.",
       });
-      expect(
-        (
-          events.find((event) => event.event.type === "session.summarized")?.event.payload as {
-            summary?: string;
-          }
-        ).summary,
-      ).toBe("[REDACTED]");
+      expect(events.some((event) => event.event.type === "session.summarized")).toBe(false);
       const failed = events.find((event) => event.event.type === "turn.failed")?.event.payload as {
         error?: string;
         summary?: { message?: string };
