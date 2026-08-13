@@ -8,6 +8,11 @@
     "rootDir": ".",
     "tsBuildInfoFile": ".tmp/tsconfig.typecheck.tsbuildinfo"
   },
-  "include": ["packages/*/src/**/*.ts", "vitest.config.ts"],
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx",
+    "packages/*/*.config.ts",
+    "vitest.config.ts"
+  ],
   "exclude": ["node_modules", "**/dist"]
 }

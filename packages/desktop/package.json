@@ -1,9 +1,45 @@
 {
   "name": "@dreamcode/desktop",
   "version": "0.1.0",
+  "author": "DreamCode Contributors",
+  "description": "DreamCode local coding agent for Windows",
   "private": true,
   "type": "module",
-  "scripts": {"dev": "tsx src/main.ts", "build": "tsup src/main.ts --format esm --clean"},
-  "dependencies": {"@dreamcode/models": "workspace:*", "@dreamcode/shared": "workspace:*", "electron": "^37.0.0"},
-  "devDependencies": {"tsup": "^8.5.0", "tsx": "^4.20.6", "typescript": "^5.9.3"}
+  "packageManager": "pnpm@11.7.0",
+  "main": "dist-main/main/index.js",
+  "scripts": {
+    "build": "pnpm run build:main && pnpm run build:renderer",
+    "build:contracts": "tsup",
+    "build:main": "tsup",
+    "build:renderer": "vite build",
+    "chain-test": "node scripts/packaged-chain-test.mjs",
+    "checksums": "node scripts/write-checksums.mjs",
+    "dev": "vite",
+    "dist": "pnpm run build && electron-builder --config electron-builder.yml --win --x64",
+    "e2e": "playwright test --config playwright.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dreamcode/core": "workspace:*",
+    "@dreamcode/models": "workspace:*",
+    "@dreamcode/shared": "workspace:*",
+    "@dreamcode/store": "workspace:*",
+    "@dreamcode/tools": "workspace:*",
+    "lucide-react": "1.31.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.5",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3",
+    "jsdom": "30.0.1",
+    "vite": "8.2.1"
+  }
 }

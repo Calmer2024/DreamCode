@@ -2,4 +2,9 @@ packages:
   - "packages/*"
 allowBuilds:
   electron: true
+  electron-winstaller: true
   esbuild: true
+minimumReleaseAgeExclude:
+  - lucide-react@1.31.0
+overrides:
+  "app-builder-lib>@electron/get": 5.1.0

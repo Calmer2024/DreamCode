@@ -10,6 +10,11 @@
   "scripts": {
     "build": "pnpm -r build",
     "check": "pnpm typecheck && pnpm test",
+    "desktop": "pnpm --filter @dreamcode/desktop dev",
+    "desktop:build": "pnpm --filter @dreamcode/desktop build",
+    "desktop:dev": "pnpm --filter @dreamcode/desktop dev",
+    "desktop:dist": "pnpm --filter @dreamcode/desktop dist",
+    "desktop:e2e": "pnpm --filter @dreamcode/desktop e2e",
     "dev": "tsx --conditions=development packages/cli/src/main.ts",
     "dreamcode": "tsx --conditions=development packages/cli/src/main.ts",
     "format": "biome format --write .",

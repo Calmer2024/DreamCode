@@ -1,1 +1,18 @@
-{"extends":"../../tsconfig.json","compilerOptions":{"noEmit":true,"types":["node"]},"include":["src"]}
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
+    "types": ["node", "react", "react-dom"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../store" },
+    { "path": "../models" },
+    { "path": "../tools" },
+    { "path": "../core" }
+  ]
+}

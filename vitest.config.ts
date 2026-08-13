@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [tsconfigPaths()],
   test: {
     environment: "node",
-    include: ["packages/**/*.test.ts"],
+    include: ["packages/**/*.test.{ts,tsx}"],
     testTimeout: 30000,
   },
 });
