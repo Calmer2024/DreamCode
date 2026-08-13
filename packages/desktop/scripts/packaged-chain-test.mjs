@@ -10,7 +10,7 @@ import { chromium } from "@playwright/test";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const releaseDirectory = path.join(packageRoot, "release");
-const executablePath = path.join(releaseDirectory, "DreamCode-Portable-0.1.0-x64.exe");
+const executablePath = path.join(releaseDirectory, "DreamCode-Portable-0.1.3-x64.exe");
 const reportPath = path.join(releaseDirectory, "chain-test-report.json");
 const startedAt = new Date().toISOString();
 const assertions = {
