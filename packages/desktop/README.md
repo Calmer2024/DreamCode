@@ -10,13 +10,14 @@ DreamCode 桌面端的唯一正式 Renderer 是 React + Vite 实现。
 - `src/renderer/state/desktop-state.ts`：Renderer 状态归约与选择器。
 - `src/renderer/main.tsx`：React 根节点入口。
 - `index.html`：仅提供 Vite 的 `#root` 挂载点和 CSP，不承载产品 UI。
+- `../../docs/component-guidelines.html`：受维护的组件规范与交互展示页，为 React UI 提供设计依据，但不参与运行时构建。
 
 ## 架构边界
 
 - 不要创建 `src/renderer.html` 或其他单文件 HTML 产品界面。
 - 不要把 UI 结构、交互脚本或产品样式写入 `index.html`。
 - UI/UX 变更应直接修改 React 组件和 `app.css`，并同步更新相应的 React Testing Library 测试。
-- 独立 HTML 原型不能作为正式实现或长期设计源；需要验证的设计应落实到 Renderer 组件并通过测试和桌面构建验证。
+- 组件规范可以使用独立 HTML 展示，但不能代替正式实现；确认后的设计需要落实到 Renderer 组件并通过测试和桌面构建验证。
 
 ## 验证
 
