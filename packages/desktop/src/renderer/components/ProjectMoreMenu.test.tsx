@@ -26,6 +26,7 @@ describe("ProjectMoreMenu", () => {
     const menu = await screen.findByRole("menu", { name: "DreamCode 项目操作" });
     await waitFor(() => expect(menu).toHaveAttribute("data-state", "open"));
     expect(menu).toHaveAttribute("data-direction", "down");
+    expect(menu).toHaveStyle({ left: "100px", width: "218px" });
 
     fireEvent.pointerDown(document.body);
     expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -41,6 +42,7 @@ describe("ProjectMoreMenu", () => {
     const menu = await screen.findByRole("menu", { name: "DreamCode 项目操作" });
     await waitFor(() => expect(menu).toHaveAttribute("data-state", "open"));
     expect(menu).toHaveAttribute("data-direction", "up");
+    expect(menu).toHaveStyle({ bottom: "154px" });
 
     fireEvent.click(screen.getByRole("menuitem", { name: "置顶项目" }));
     expect(callbacks.onTogglePin).toHaveBeenCalledOnce();

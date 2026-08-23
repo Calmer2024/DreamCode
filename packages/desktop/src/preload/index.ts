@@ -1,14 +1,18 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ApprovalResponse,
+  CreateProfileRequest,
   DesktopApi,
   DesktopBootstrap,
   DesktopIpcResponse,
   DesktopRunStatus,
+  DesktopTerminalOutput,
   QuestionResponse,
   RollbackRequest,
-  SaveProfileRequest,
   StartTurnRequest,
+  TestProfileRequest,
+  UpdateProfileRequest,
+  WebSearchCredentialRequest,
 } from "../shared/contracts";
 import { sanitizeDesktopError } from "../shared/contracts";
 
@@ -24,18 +28,37 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
     chooseWorkspace: () => invoke<string | undefined>(renderer, "desktop:choose-workspace"),
     openWorkspace: (workspaceRoot: string) =>
       invoke<void>(renderer, "desktop:open-workspace", workspaceRoot),
-    saveProfile: (request: SaveProfileRequest) =>
-      invoke<DesktopBootstrap>(renderer, "desktop:save-profile", request),
+    createProfile: (request: CreateProfileRequest) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:create-profile", request),
+    updateProfile: (request: UpdateProfileRequest) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:update-profile", request),
+    deleteProfile: (profileId: string) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:delete-profile", profileId),
+    setDefaultProfile: (profileId: string) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:set-default-profile", { profileId }),
+    testProfile: (request: TestProfileRequest) => invoke(renderer, "desktop:test-profile", request),
+    updateWebSearchCredential: (request: WebSearchCredentialRequest) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:update-web-search-credential", request),
     saveProject: (request) => invoke<DesktopBootstrap>(renderer, "desktop:save-project", request),
+    createProject: (request) => invoke(renderer, "desktop:create-project", request),
     deleteProject: (workspaceRoot) =>
       invoke<DesktopBootstrap>(renderer, "desktop:delete-project", workspaceRoot),
     deleteSession: (sessionId) =>
       invoke<DesktopBootstrap>(renderer, "desktop:delete-session", sessionId),
+    renameSession: (request) =>
+      invoke<DesktopBootstrap>(renderer, "desktop:rename-session", request),
     setSessionPinned: (request) =>
       invoke<DesktopBootstrap>(renderer, "desktop:set-session-pinned", request),
     startTurn: (request: StartTurnRequest) =>
       invoke<{ runId: string }>(renderer, "desktop:start-turn", request),
     stopTurn: (runId: string) => invoke<void>(renderer, "desktop:stop-turn", runId),
+    startTerminal: (cwd: string) => invoke(renderer, "desktop:terminal-start", cwd),
+    writeTerminal: (terminalId: string, data: string) =>
+      invoke<void>(renderer, "desktop:terminal-write", { terminalId, data }),
+    resizeTerminal: (terminalId: string, columns: number, rows: number) =>
+      invoke<void>(renderer, "desktop:terminal-resize", { terminalId, columns, rows }),
+    closeTerminal: (terminalId: string) =>
+      invoke<void>(renderer, "desktop:terminal-close", terminalId),
     readSession: (sessionId: string) => invoke(renderer, "desktop:read-session", sessionId),
     readDiff: (request: RollbackRequest) => invoke<string>(renderer, "desktop:read-diff", request),
     rollback: (request: RollbackRequest) => invoke(renderer, "desktop:rollback", request),
@@ -48,6 +71,8 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
     onQuestionRequest: (listener) => subscribe(renderer, "desktop:question-request", listener),
     onRunStatus: (listener) =>
       subscribe<DesktopRunStatus>(renderer, "desktop:run-status", listener),
+    onTerminalOutput: (listener) =>
+      subscribe<DesktopTerminalOutput>(renderer, "desktop:terminal-output", listener),
   } satisfies DesktopApi;
 }
 

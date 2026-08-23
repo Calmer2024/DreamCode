@@ -1,0 +1,26 @@
+{
+  "name": "@dreamcode/evals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "dreamcode-eval": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --clean",
+    "typecheck": "tsc -p ../../tsconfig.typecheck.json --noEmit",
+    "eval": "tsx --conditions=development src/cli.ts"
+  },
+  "dependencies": {
+    "@dreamcode/core": "workspace:*",
+    "@dreamcode/models": "workspace:*",
+    "@dreamcode/shared": "workspace:*",
+    "@dreamcode/store": "workspace:*",
+    "openai": "^6.7.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "tsup": "^8.5.0"
+  }
+}

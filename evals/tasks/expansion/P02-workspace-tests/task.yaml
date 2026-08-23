@@ -1,0 +1,11 @@
+id: P02-workspace-tests
+fixture: workspace-ops
+prompt: "运行 workspace-ops 测试并报告结果，不修改文件。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: command
+    command: npm test
+    expectedExitCode: 0
+

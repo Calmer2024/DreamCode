@@ -1,0 +1,8 @@
+{
+  "name": "taskboard-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test"
+  }
+}

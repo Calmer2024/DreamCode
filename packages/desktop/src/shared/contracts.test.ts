@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   approvalResponseSchema,
+  createProfileRequestSchema,
   questionResponseSchema,
   rollbackRequestSchema,
-  saveProfileRequestSchema,
   startTurnRequestSchema,
 } from "./contracts";
 
@@ -22,8 +22,28 @@ describe("desktop IPC contracts", () => {
     }
   });
 
+  it("accepts a temporary model override and rejects an empty one", () => {
+    expect(
+      startTurnRequestSchema.parse({
+        prompt: "Fix tests",
+        workspaceRoot: "D:/repo",
+        mode: "yolo",
+        profileId: "work",
+        model: "gpt-5.5",
+      }).model,
+    ).toBe("gpt-5.5");
+    expect(
+      startTurnRequestSchema.safeParse({
+        prompt: "Fix tests",
+        workspaceRoot: "D:/repo",
+        mode: "yolo",
+        model: " ",
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects a profile request without a provider", () => {
-    expect(saveProfileRequestSchema.safeParse({ name: "personal" }).success).toBe(false);
+    expect(createProfileRequestSchema.safeParse({ alias: "personal" }).success).toBe(false);
   });
 
   it("rejects malformed rollback and response requests", () => {

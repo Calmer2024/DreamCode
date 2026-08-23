@@ -1,0 +1,9 @@
+id: Q03-dirty-clarify
+fixture: dirty-worktree
+prompt: "用户要求“清理提交”，但未说明是否允许触碰 notes.md，先澄清范围，不修改文件。"
+mode: yolo
+fakeScenario: clarify
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

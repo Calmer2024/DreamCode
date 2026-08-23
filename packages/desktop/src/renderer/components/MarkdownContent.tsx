@@ -7,6 +7,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { CodeBlock } from "./CodeBlock";
 
 interface MarkdownContentProps {
   children: string;
@@ -23,6 +24,19 @@ export function MarkdownContent({ children }: MarkdownContentProps) {
               {linkChildren}
             </a>
           ),
+          pre: MarkdownPre,
+          code: ({ className, children, ...props }) => {
+            const language = /language-(\S+)/.exec(className ?? "")?.[1];
+            const value = String(children).replace(/\n$/, "");
+            const inline = !className && !value.includes("\n");
+            return inline ? (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            ) : (
+              <CodeBlock code={value} lang={language} />
+            );
+          },
           li: TaskListItem,
         }}
       >
@@ -30,6 +44,10 @@ export function MarkdownContent({ children }: MarkdownContentProps) {
       </ReactMarkdown>
     </div>
   );
+}
+
+function MarkdownPre({ children }: ComponentPropsWithoutRef<"pre">) {
+  return <>{children}</>;
 }
 
 function TaskListItem({ className, children, ...props }: ComponentPropsWithoutRef<"li">) {

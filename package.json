@@ -1,6 +1,6 @@
 {
   "name": "dreamcode",
-  "version": "0.1.3",
+  "version": "0.2.6",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -13,7 +13,7 @@
     "desktop": "pnpm --filter @dreamcode/desktop dev",
     "desktop:build": "pnpm --filter @dreamcode/desktop build",
     "desktop:dev": "pnpm --filter @dreamcode/desktop dev",
-    "desktop:dist": "pnpm --filter @dreamcode/desktop dist",
+    "desktop:dist": "pnpm --filter @dreamcode/desktop... build && pnpm --filter @dreamcode/desktop run dist:package",
     "desktop:e2e": "pnpm --filter @dreamcode/desktop e2e",
     "dev": "tsx --conditions=development packages/cli/src/main.ts",
     "dreamcode": "tsx --conditions=development packages/cli/src/main.ts",

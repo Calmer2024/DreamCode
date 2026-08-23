@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createDefaultToolRegistry } from "./index";
+import { createDefaultToolRegistry, validateShellCommand } from "./index";
 
 describe("builtin tools", () => {
   it("emits OpenAI-compatible object schemas for model tools", () => {
@@ -65,6 +65,86 @@ describe("builtin tools", () => {
     expect((result.data as { timedOut?: boolean }).timedOut).toBe(true);
   });
 
+  it("reports runtime facts and runs a structured process without a shell", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-process-"));
+    const registry = createDefaultToolRegistry();
+    const runtime = await registry.get("runtime.info")!.execute(
+      {},
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "runtime" },
+    );
+    expect(runtime.status).toBe("success");
+    expect((runtime.data as { execution?: { stateless?: boolean } }).execution?.stateless).toBe(true);
+
+    const result = await registry.get("process.run")!.execute(
+      {
+        program: process.execPath,
+        args: ["-e", "process.stdout.write(process.env.DREAMCODE_PROCESS_TEST || '')"],
+        env: { DREAMCODE_PROCESS_TEST: "structured" },
+      },
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "process" },
+    );
+    expect(result.status).toBe("success");
+    expect(result.execution).toMatchObject({ outcome: "exited_zero", started: true, exitCode: 0 });
+    expect(result.streams?.stdout.preview).toBe("structured");
+  });
+
+  it("returns structured process failures and bounded output previews", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-output-"));
+    const tool = createDefaultToolRegistry().get("process.run")!;
+    const failed = await tool.execute(
+      { program: process.execPath, args: ["-e", "process.exit(7)"] },
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "failed" },
+    );
+    expect(failed.status).toBe("error");
+    expect(failed.error).toMatchObject({
+      category: "execution",
+      reason: "nonzero_exit",
+      retryable: false,
+    });
+
+    const large = await tool.execute(
+      { program: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(9000))"] },
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "large" },
+    );
+    expect(Buffer.byteLength(large.streams!.stdout.preview)).toBeLessThanOrEqual(4096);
+    expect(large.streams?.stdout).toMatchObject({ bytes: 9000, truncated: true });
+    expect(large.streams?.stdout.artifactRef).toMatch(/^artifact:\/\//);
+  });
+
+  it("rejects multi-step and stateful shell expressions but permits pipelines", () => {
+    expect(validateShellCommand("git status | findstr main", "cmd")).toEqual([]);
+    expect(validateShellCommand("git status && git diff", "cmd")[0]?.code).toBe(
+      "multiple_shell_steps",
+    );
+    expect(validateShellCommand("cd packages", "powershell")[0]?.code).toBe(
+      "stateful_shell_construct",
+    );
+    expect(validateShellCommand('node -e "console.log(\'a;b\')"', "bash")).toEqual([]);
+  });
+
+  it("reads a bounded range from a session artifact reference", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-artifact-"));
+    const sessionDir = path.join(workspaceRoot, "session");
+    await mkdir(path.join(sessionDir, "artifacts"), { recursive: true });
+    await writeFile(path.join(sessionDir, "artifacts", "large.txt"), "0123456789", "utf8");
+    const tool = createDefaultToolRegistry().get("artifact.read");
+    expect(tool).toBeDefined();
+
+    const result = await tool!.execute(
+      { ref: "artifact://large.txt", offset: 3, maxBytes: 4 },
+      {
+        workspaceRoot,
+        sessionDir,
+        mode: "yolo",
+        toolCallId: "call_artifact",
+      },
+    );
+
+    expect(result.status).toBe("success");
+    expect((result.data as { content?: string }).content).toBe("3456");
+    expect((result.data as { nextOffset?: number }).nextOffset).toBe(7);
+  });
+
   it("fetches a web page and stores a source artifact", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-web-"));
     const server = createServer((_request, response) => {
@@ -98,6 +178,86 @@ describe("builtin tools", () => {
     } finally {
       server.close();
     }
+  });
+
+  it("searches the web through Exa and normalizes source candidates", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-exa-"));
+    let received: { method?: string; apiKey?: string; body?: unknown } = {};
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received = {
+        method: request.method,
+        apiKey: request.headers["x-api-key"] as string | undefined,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      };
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          results: [
+            {
+              title: "Exa result",
+              url: "https://example.com/result",
+              highlights: ["Useful highlighted passage."],
+            },
+          ],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Could not start Exa fixture.");
+    const tool = createDefaultToolRegistry({
+      webSearch: { exaApiKey: "exa-test-key", exaBaseUrl: `http://127.0.0.1:${address.port}` },
+    }).get("web.search");
+
+    try {
+      const result = await tool!.execute(
+        { query: "coding agents", maxResults: 3, domains: ["example.com"] },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "full", toolCallId: "call_exa" },
+      );
+      expect(result.status).toBe("success");
+      expect(received).toMatchObject({
+        method: "POST",
+        apiKey: "exa-test-key",
+        body: {
+          query: "coding agents",
+          numResults: 3,
+          type: "fast",
+          includeDomains: ["example.com"],
+        },
+      });
+      expect(result.data).toMatchObject({
+        results: [
+          {
+            title: "Exa result",
+            url: "https://example.com/result",
+            snippet: "Useful highlighted passage.",
+            source: "exa",
+          },
+        ],
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("returns an actionable error when the Exa API key is missing", async () => {
+    const tool = createDefaultToolRegistry({ webSearch: { exaApiKey: "" } }).get("web.search");
+    const result = await tool!.execute(
+      { query: "coding agents" },
+      {
+        workspaceRoot: process.cwd(),
+        sessionDir: process.cwd(),
+        mode: "full",
+        toolCallId: "call_exa_missing",
+      },
+    );
+    expect(result).toMatchObject({
+      status: "error",
+      error: { code: "exa_api_key_missing" },
+    });
+    expect(result.summary).toContain("EXA_API_KEY");
   });
 
   it("loads skill metadata and reads a skill on demand", async () => {

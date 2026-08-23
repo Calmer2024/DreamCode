@@ -16,10 +16,17 @@ describe("registerDesktopIpc", () => {
     const dialog = { showOpenDialog: vi.fn() };
     const service = {
       bootstrap: vi.fn(),
-      saveProfile: vi.fn(),
+      createProject: vi.fn(),
+      createProfile: vi.fn(),
+      updateProfile: vi.fn(),
+      deleteProfile: vi.fn(),
+      setDefaultProfile: vi.fn(),
+      testProfile: vi.fn(),
+      updateWebSearchCredential: vi.fn(),
       saveProject: vi.fn(),
       deleteProject: vi.fn(),
       deleteSession: vi.fn(),
+      renameSession: vi.fn(),
       setSessionPinned: vi.fn(),
       readSession: vi.fn(),
       readChangedFileDiff: vi.fn(),
@@ -31,12 +38,19 @@ describe("registerDesktopIpc", () => {
       respondApproval: vi.fn(),
       respondQuestion: vi.fn(),
     };
+    const terminalManager = {
+      start: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      close: vi.fn(),
+    };
 
     const dispose = registerDesktopIpc({
       ipcMain,
       dialog,
       service,
       runManager,
+      terminalManager,
       getWindow: () => undefined,
       openWorkspace: vi.fn(),
     });
@@ -45,10 +59,17 @@ describe("registerDesktopIpc", () => {
       "desktop:bootstrap",
       "desktop:choose-workspace",
       "desktop:open-workspace",
-      "desktop:save-profile",
+      "desktop:create-profile",
+      "desktop:update-profile",
+      "desktop:delete-profile",
+      "desktop:set-default-profile",
+      "desktop:test-profile",
+      "desktop:update-web-search-credential",
       "desktop:save-project",
+      "desktop:create-project",
       "desktop:delete-project",
       "desktop:delete-session",
+      "desktop:rename-session",
       "desktop:set-session-pinned",
       "desktop:read-session",
       "desktop:read-diff",
@@ -57,11 +78,15 @@ describe("registerDesktopIpc", () => {
       "desktop:stop-turn",
       "desktop:approval-response",
       "desktop:question-response",
+      "desktop:terminal-start",
+      "desktop:terminal-write",
+      "desktop:terminal-resize",
+      "desktop:terminal-close",
     ]);
 
     dispose();
 
-    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(15);
+    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(26);
   });
 
   it("serializes invalid object requests before calling a service", async () => {
@@ -69,10 +94,11 @@ describe("registerDesktopIpc", () => {
     register();
 
     const invalidRequests = [
-      ["desktop:save-profile", { name: "", provider: "openai" }],
+      ["desktop:create-profile", { alias: "", provider: "openai" }],
       ["desktop:save-project", { workspaceRoot: "", name: "Project" }],
       ["desktop:delete-project", ""],
       ["desktop:delete-session", ""],
+      ["desktop:rename-session", { sessionId: "sess_1", title: "" }],
       ["desktop:set-session-pinned", { sessionId: "", pinned: true }],
       ["desktop:open-workspace", ""],
       ["desktop:read-diff", { sessionId: "", filePath: "src/index.ts" }],
@@ -93,7 +119,7 @@ describe("registerDesktopIpc", () => {
       });
     }
 
-    expect(service.saveProfile).not.toHaveBeenCalled();
+    expect(service.createProfile).not.toHaveBeenCalled();
     expect(service.readChangedFileDiff).not.toHaveBeenCalled();
     expect(service.rollback).not.toHaveBeenCalled();
     expect(runManager.start).not.toHaveBeenCalled();
@@ -127,16 +153,18 @@ describe("registerDesktopIpc", () => {
 
   it("serializes sanitized structured errors from handlers", async () => {
     const { handlers, register, service } = createIpcFixture();
-    service.saveProfile.mockRejectedValueOnce(
+    service.createProfile.mockRejectedValueOnce(
       Object.assign(new Error("Configuration contains private-token."), { stack: "private stack" }),
     );
     register();
 
-    const response = await handlers.get("desktop:save-profile")?.(
+    const response = await handlers.get("desktop:create-profile")?.(
       {},
       {
-        name: "personal",
+        alias: "personal",
         provider: "openai",
+        model: "gpt-5.5",
+        credential: { mode: "clear" },
       },
     );
 
@@ -151,18 +179,20 @@ describe("registerDesktopIpc", () => {
   it("does not serialize secret messages from structurally matching errors", async () => {
     const secret = "secret-in-structured-error";
     const { handlers, register, service } = createIpcFixture();
-    service.saveProfile.mockRejectedValueOnce({
+    service.createProfile.mockRejectedValueOnce({
       code: "stale_run",
       message: secret,
       recoverable: true,
     });
     register();
 
-    const response = await handlers.get("desktop:save-profile")?.(
+    const response = await handlers.get("desktop:create-profile")?.(
       {},
       {
-        name: "personal",
+        alias: "personal",
         provider: "openai",
+        model: "gpt-5.5",
+        credential: { mode: "clear" },
       },
     );
 
@@ -192,23 +222,35 @@ describe("createDesktopApi", () => {
     expect(Object.keys(api).sort()).toEqual([
       "bootstrap",
       "chooseWorkspace",
+      "closeTerminal",
+      "createProfile",
+      "createProject",
+      "deleteProfile",
       "deleteProject",
       "deleteSession",
       "onApprovalRequest",
       "onQuestionRequest",
       "onRunEvent",
       "onRunStatus",
+      "onTerminalOutput",
       "openWorkspace",
       "readDiff",
       "readSession",
+      "renameSession",
+      "resizeTerminal",
       "respondApproval",
       "respondQuestion",
       "rollback",
-      "saveProfile",
       "saveProject",
+      "setDefaultProfile",
       "setSessionPinned",
+      "startTerminal",
       "startTurn",
       "stopTurn",
+      "testProfile",
+      "updateProfile",
+      "updateWebSearchCredential",
+      "writeTerminal",
     ]);
 
     api.onRunEvent(listener)();
@@ -269,16 +311,23 @@ describe("createDesktopApi", () => {
       api.bootstrap(),
       api.chooseWorkspace(),
       api.openWorkspace("D:/repo"),
-      api.saveProfile({ name: "personal", provider: "openai" }),
+      api.createProfile({
+        alias: "personal",
+        provider: "openai",
+        model: "gpt-5.5",
+        credential: { mode: "clear" },
+      }),
       api.saveProject({ workspaceRoot: "D:/repo", name: "repo" }),
       api.deleteProject("D:/repo"),
       api.deleteSession("sess_1"),
+      api.renameSession({ sessionId: "sess_1", title: "Renamed conversation" }),
       api.setSessionPinned({ sessionId: "sess_1", pinned: true }),
       api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" }),
       api.stopTurn("run_1"),
       api.readSession("sess_1"),
       api.readDiff({ sessionId: "sess_1", filePath: "src/index.ts" }),
       api.rollback({ sessionId: "sess_1", filePath: "src/index.ts" }),
+      api.resizeTerminal("terminal_1", 120, 40),
       api.respondApproval({ runId: "run_1", requestId: "approval_1", approved: true }),
       api.respondQuestion({ runId: "run_1", requestId: "question_1", answer: "yes" }),
     ]);
@@ -287,16 +336,18 @@ describe("createDesktopApi", () => {
       "desktop:bootstrap",
       "desktop:choose-workspace",
       "desktop:open-workspace",
-      "desktop:save-profile",
+      "desktop:create-profile",
       "desktop:save-project",
       "desktop:delete-project",
       "desktop:delete-session",
+      "desktop:rename-session",
       "desktop:set-session-pinned",
       "desktop:start-turn",
       "desktop:stop-turn",
       "desktop:read-session",
       "desktop:read-diff",
       "desktop:rollback",
+      "desktop:terminal-resize",
       "desktop:approval-response",
       "desktop:question-response",
     ]);
@@ -314,10 +365,16 @@ function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | un
   const dialog = { showOpenDialog: vi.fn() };
   const service = {
     bootstrap: vi.fn(),
-    saveProfile: vi.fn(),
+    createProject: vi.fn(),
+    createProfile: vi.fn(),
+    updateProfile: vi.fn(),
+    deleteProfile: vi.fn(),
+    setDefaultProfile: vi.fn(),
+    testProfile: vi.fn(),
     saveProject: vi.fn(),
     deleteProject: vi.fn(),
     deleteSession: vi.fn(),
+    renameSession: vi.fn(),
     setSessionPinned: vi.fn(),
     readSession: vi.fn(),
     readChangedFileDiff: vi.fn(),
@@ -328,6 +385,12 @@ function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | un
     stop: vi.fn(),
     respondApproval: vi.fn(),
     respondQuestion: vi.fn(),
+  };
+  const terminalManager = {
+    start: vi.fn(),
+    write: vi.fn(),
+    resize: vi.fn(),
+    close: vi.fn(),
   };
   const openWorkspace = vi.fn();
 
@@ -342,6 +405,7 @@ function createIpcFixture(options: { chooseWorkspace?: () => Promise<string | un
         dialog,
         service,
         runManager,
+        terminalManager,
         getWindow: () => undefined,
         openWorkspace,
         ...options,

@@ -1,0 +1,9 @@
+id: N02-release-dependency-audit
+fixture: release-cli
+prompt: "审计 Release CLI 的外部依赖和 Node 内置模块使用，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

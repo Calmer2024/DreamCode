@@ -1,0 +1,10 @@
+id: M04-taskboard-test-run
+fixture: taskboard-service
+prompt: "只运行 Taskboard 测试并报告结果，不修改文件。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: command
+    command: npm test
+    expectedExitCode: 1

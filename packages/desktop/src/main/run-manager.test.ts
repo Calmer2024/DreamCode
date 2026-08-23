@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ModelProvider } from "@dreamcode/shared";
-import type { DreamCodeConfig } from "@dreamcode/store";
+import type { DreamCodeConfig, DreamCodeLlmProfile } from "@dreamcode/store";
 import { describe, expect, it } from "vitest";
 import type {
   DesktopApprovalRequest,
@@ -14,9 +14,9 @@ import type {
 import { DesktopRunManager, type DesktopRunManagerOptions } from "./run-manager";
 
 const fakeConfig: DreamCodeConfig = {
-  version: 1,
-  currentProfile: "fake",
-  profiles: { fake: { provider: "fake" } },
+  version: 2,
+  currentProfileId: "fake",
+  profiles: { fake: { alias: "fake", provider: "fake" } },
 };
 
 describe("DesktopRunManager", () => {
@@ -34,7 +34,7 @@ describe("DesktopRunManager", () => {
     const { runId, completion } = await manager.start({
       prompt: "Inspect workspace",
       workspaceRoot,
-      profileName: "fake",
+      profileId: "fake",
       mode: "yolo",
     });
     await completion;
@@ -44,6 +44,41 @@ describe("DesktopRunManager", () => {
     expect(events.some((item) => item.event.type === "turn.completed")).toBe(true);
     expect(statuses.map((status) => status.status)).toEqual(["running", "completed"]);
     expect(manager.activeRunId).toBeUndefined();
+  });
+
+  it("uses the requested model without changing the stored profile connection", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-home-"));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-manager-workspace-"));
+    let receivedProfile: DreamCodeLlmProfile | undefined;
+    const provider: ModelProvider = {
+      name: "model-override",
+      async *stream() {
+        yield { type: "text_delta", text: "Done." };
+        yield { type: "done" };
+      },
+    };
+    const manager = createManager({
+      home,
+      createProvider: (_prompt, profile) => {
+        receivedProfile = profile;
+        return { provider, model: profile.model };
+      },
+    });
+
+    const { completion } = await manager.start({
+      prompt: "Use another model",
+      workspaceRoot,
+      profileId: "fake",
+      model: "temporary-model",
+      mode: "yolo",
+    });
+    await completion;
+
+    expect(receivedProfile).toEqual({
+      ...fakeConfig.profiles.fake,
+      model: "temporary-model",
+    });
+    expect(fakeConfig.profiles.fake?.model).toBeUndefined();
   });
 
   it("releases the active run before delivering a terminal status", async () => {
@@ -63,7 +98,7 @@ describe("DesktopRunManager", () => {
     const { completion } = await manager.start({
       prompt: "Inspect workspace",
       workspaceRoot,
-      profileName: "fake",
+      profileId: "fake",
       mode: "yolo",
     });
     await completion;
@@ -374,10 +409,11 @@ describe("DesktopRunManager", () => {
     const previousEnvironmentValue = process.env[environmentName];
     process.env[environmentName] = environmentSecret;
     const config: DreamCodeConfig = {
-      version: 1,
-      currentProfile: "secret",
+      version: 2,
+      currentProfileId: "secret",
       profiles: {
         secret: {
+          alias: "secret",
           provider: "secret-test",
           apiKey: storedSecret,
           apiKeyEnv: environmentName,
@@ -407,7 +443,7 @@ describe("DesktopRunManager", () => {
       const { completion } = await manager.start({
         prompt: "Inspect workspace",
         workspaceRoot,
-        profileName: "secret",
+        profileId: "secret",
         mode: "yolo",
       });
       await completion;
@@ -448,10 +484,11 @@ describe("DesktopRunManager", () => {
     const manager = createManager({
       home,
       loadConfig: async () => ({
-        version: 1,
-        currentProfile: "blank",
+        version: 2,
+        currentProfileId: "blank",
         profiles: {
           blank: {
+            alias: "blank",
             provider: "blank-secret-test",
             apiKey: "   ",
             apiKeyEnv: environmentName,
@@ -466,7 +503,7 @@ describe("DesktopRunManager", () => {
       const { completion } = await manager.start({
         prompt: "Inspect workspace",
         workspaceRoot,
-        profileName: "blank",
+        profileId: "blank",
         mode: "yolo",
       });
       await completion;
@@ -503,10 +540,11 @@ describe("DesktopRunManager", () => {
     const manager = createManager({
       home,
       loadConfig: async () => ({
-        version: 1,
-        currentProfile: "short",
+        version: 2,
+        currentProfileId: "short",
         profiles: {
           short: {
+            alias: "short",
             provider: "short-secret-test",
             apiKey: " q ",
             apiKeyEnv: environmentName,
@@ -522,7 +560,7 @@ describe("DesktopRunManager", () => {
       const { completion } = await manager.start({
         prompt: "Inspect workspace",
         workspaceRoot,
-        profileName: "short",
+        profileId: "short",
         mode: "yolo",
       });
       await completion;
@@ -573,7 +611,7 @@ async function createScriptedManager(
   const request: StartTurnRequest = {
     prompt: "Run scripted provider",
     workspaceRoot,
-    profileName: "fake",
+    profileId: "fake",
     mode: "yolo",
   };
   return { manager, request };

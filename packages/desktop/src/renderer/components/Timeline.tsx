@@ -1,28 +1,48 @@
+import type { ChangedFile } from "@dreamcode/shared";
 import {
   Activity,
+  Bug,
   ChevronDown,
   CircleCheck,
   CircleDot,
   CircleStop,
   CircleX,
   Clock,
+  Copy,
   FileCode2,
+  Hammer,
   Radio,
+  RefreshCw,
   SquareTerminal,
+  Telescope,
   Wrench,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import type { DesktopState, DesktopTimelineEntry, DesktopToolEvent } from "../state/desktop-state";
+import { type ReactNode, useState } from "react";
+import type {
+  DesktopState,
+  DesktopTimelineEntry,
+  DesktopToolEvent,
+  DesktopTurnUsage,
+} from "../state/desktop-state";
 import { MarkdownContent } from "./MarkdownContent";
 
 interface TimelineProps {
   state: DesktopState;
   profileUsable: boolean;
+  workspaceName?: string;
+  onPromptSuggestion?: (prompt: string) => void;
   onConfigure: () => void;
   onChooseWorkspace: () => void;
 }
 
-export function Timeline({ state, profileUsable, onConfigure, onChooseWorkspace }: TimelineProps) {
+export function Timeline({
+  state,
+  profileUsable,
+  workspaceName,
+  onPromptSuggestion = () => undefined,
+  onConfigure,
+  onChooseWorkspace,
+}: TimelineProps) {
   if (!profileUsable) {
     return (
       <div className="empty-state configuration-state">
@@ -51,11 +71,31 @@ export function Timeline({ state, profileUsable, onConfigure, onChooseWorkspace 
 
   const hasConversation = Boolean(state.request || state.timeline.length);
   if (!hasConversation) {
+    const suggestions = [
+      { icon: Telescope, tone: "explore", label: "探索并理解代码" },
+      { icon: Hammer, tone: "build", label: "构建新功能、应用或工具" },
+      { icon: RefreshCw, tone: "review", label: "审查代码并提出修改建议" },
+      { icon: Bug, tone: "fix", label: "修复问题和失败" },
+    ] as const;
     return (
       <div className="empty-state welcome-state">
-        <span className="empty-kicker">DreamCode Desktop</span>
-        <h1>准备好一起构建了吗？</h1>
-        <p>描述你想完成的任务，DreamCode 会展示思考、工具调用和文件变更。</p>
+        <img className="welcome-mark" src="./dreamcode-welcome-icon.png" alt="" />
+        <h1>
+          要在 <span>{workspaceName ?? "当前项目"}</span> 内开发什么？
+        </h1>
+        <div className="welcome-suggestions">
+          {suggestions.map(({ icon: Icon, tone, label }) => (
+            <button
+              type="button"
+              data-tone={tone}
+              key={label}
+              onClick={() => onPromptSuggestion(label)}
+            >
+              <Icon aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
       </div>
     );
   }
@@ -63,11 +103,10 @@ export function Timeline({ state, profileUsable, onConfigure, onChooseWorkspace 
   return (
     <section className="timeline" aria-label="任务时间线">
       {state.request && !state.timeline.some((entry) => entry.kind === "user") ? (
-        <article className="timeline-entry user-entry" data-testid="timeline-user">
-          <div className="user-bubble">{state.request.prompt}</div>
-        </article>
+        <UserMessage content={state.request.prompt} timestamp={state.requestTimestamp ?? ""} />
       ) : null}
-      {conversationBlocks(state.timeline, state.tools)}
+      {conversationBlocks(state.timeline, state.tools, state.turnUsage)}
+      {state.changedFiles.length ? <DiffSummaryCard files={state.changedFiles} /> : null}
     </section>
   );
 }
@@ -75,6 +114,7 @@ export function Timeline({ state, profileUsable, onConfigure, onChooseWorkspace 
 function conversationBlocks(
   entries: DesktopTimelineEntry[],
   tools: DesktopToolEvent[],
+  turnUsage: Record<string, DesktopTurnUsage>,
 ): ReactNode[] {
   const blocks: ReactNode[] = [];
   let execution: DesktopTimelineEntry[] = [];
@@ -84,6 +124,7 @@ function conversationBlocks(
       <ExecutionSegment
         entries={execution}
         tools={tools}
+        usage={execution[0]?.turnId ? turnUsage[execution[0].turnId] : undefined}
         key={`execution-${execution[0]?.id ?? blocks.length}`}
       />,
     );
@@ -105,17 +146,24 @@ function conversationBlocks(
 function ExecutionSegment({
   entries,
   tools,
+  usage,
 }: {
   entries: DesktopTimelineEntry[];
   tools: DesktopToolEvent[];
+  usage?: DesktopTurnUsage;
 }) {
   const turnId = entries.find((entry) => entry.turnId)?.turnId;
   const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
   const hasCanonicalTools = segmentTools.length > 0;
   const completed = entries.some((entry) => entry.title === "Turn completed");
   const processEntries = entries.filter(
-    (entry) => entry.kind !== "assistant" && entry.title !== "Turn completed",
+    (entry) =>
+      entry.kind !== "assistant" &&
+      entry.kind !== "file" &&
+      entry.title !== "Turn completed" &&
+      entry.title !== "上下文已压缩",
   );
+  const notices = entries.filter((entry) => entry.title === "上下文已压缩");
   const summaries = entries.filter((entry) => entry.kind === "assistant");
   let processRendered = false;
 
@@ -143,11 +191,84 @@ function ExecutionSegment({
           </div>
         </details>
       ) : null}
-      {summaries.map((entry) => (
+      {notices.map((entry) => (
         <TimelineItem entry={entry} key={entry.id} />
+      ))}
+      {summaries.map((entry, index) => (
+        <TimelineItem
+          entry={entry}
+          usage={index === summaries.length - 1 ? usage : undefined}
+          key={entry.id}
+        />
       ))}
     </>
   );
+}
+
+function DiffSummaryCard({ files }: { files: ChangedFile[] }) {
+  const [reviewing, setReviewing] = useState(false);
+  const totals = files.reduce(
+    (sum, file) => {
+      const stats = diffStats(file.diff);
+      return {
+        additions: sum.additions + stats.additions,
+        deletions: sum.deletions + stats.deletions,
+      };
+    },
+    { additions: 0, deletions: 0 },
+  );
+
+  return (
+    <section className="diff-summary-card" aria-label={`已编辑 ${files.length} 个文件`}>
+      <header>
+        <span className="diff-summary-icon">
+          <FileCode2 aria-hidden="true" />
+        </span>
+        <div>
+          <h3>{`已编辑 ${files.length} 个文件`}</h3>
+          <p>
+            <span className="diff-additions">+{totals.additions}</span>{" "}
+            <span className="diff-deletions">-{totals.deletions}</span>
+          </p>
+        </div>
+        <button type="button" onClick={() => setReviewing((current) => !current)}>
+          {reviewing ? "收起" : "审核"}
+        </button>
+      </header>
+      <div className="diff-file-list">
+        {files.map((file) => {
+          const stats = diffStats(file.diff);
+          return (
+            <div className="diff-file" key={file.path}>
+              <span data-tooltip={file.path}>{file.path}</span>
+              <span>
+                <b className="diff-additions">+{stats.additions}</b>{" "}
+                <b className="diff-deletions">-{stats.deletions}</b>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="diff-review" data-expanded={reviewing}>
+        <div>
+          {files.map((file) => (
+            <pre key={file.path}>{file.diff || `${file.operation}: ${file.path}`}</pre>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function diffStats(diff?: string): { additions: number; deletions: number } {
+  if (!diff) return { additions: 0, deletions: 0 };
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+  }
+  return { additions, deletions };
 }
 
 function ToolProcess({ tools }: { tools: DesktopToolEvent[] }) {
@@ -185,19 +306,16 @@ function CommandRow({ tool }: { tool: DesktopToolEvent }) {
   );
 }
 
-function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
+function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: DesktopTurnUsage }) {
   if (entry.kind === "user") {
-    return (
-      <article className="timeline-entry user-entry" data-testid="timeline-user">
-        <div className="user-bubble">{entry.detail}</div>
-      </article>
-    );
+    return <UserMessage content={entry.detail ?? ""} timestamp={entry.timestamp} />;
   }
 
   if (entry.kind === "assistant") {
     return (
       <article className="timeline-entry assistant-entry" data-testid="timeline-assistant">
         {entry.detail ? <MarkdownContent>{entry.detail}</MarkdownContent> : null}
+        {usage?.totalTokens !== undefined ? <TokenUsage usage={usage} /> : null}
       </article>
     );
   }
@@ -269,6 +387,46 @@ function TimelineItem({ entry }: { entry: DesktopTimelineEntry }) {
   );
 }
 
+function UserMessage({ content, timestamp }: { content: string; timestamp: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(content).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    });
+  };
+  return (
+    <article className="timeline-entry user-entry" data-testid="timeline-user">
+      <div className="user-bubble">{content}</div>
+      <div className="user-bubble-actions">
+        <time dateTime={timestamp}>{formatTime(timestamp)}</time>
+        <button
+          type="button"
+          aria-label={copied ? "已复制用户消息" : "复制用户消息"}
+          onClick={copy}
+        >
+          <Copy aria-hidden="true" />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function TokenUsage({ usage }: { usage: DesktopTurnUsage }) {
+  const parts = [`${usage.estimated ? "约 " : ""}${formatTokens(usage.totalTokens)} tokens`];
+  if (usage.inputTokens !== undefined) parts.push(`输入 ${formatTokens(usage.inputTokens)}`);
+  if (usage.outputTokens !== undefined) parts.push(`输出 ${formatTokens(usage.outputTokens)}`);
+  return (
+    <div className="assistant-token-usage" role="status" aria-label="本轮 Token 用量">
+      {parts.join(" · ")}
+    </div>
+  );
+}
+
+function formatTokens(value: number | undefined): string {
+  return new Intl.NumberFormat("en-US").format(value ?? 0);
+}
+
 function statusPresentation(tone: DesktopTimelineEntry["tone"]) {
   if (tone === "success") {
     return { Icon: CircleCheck, iconName: "circle-check", label: "运行成功" } as const;
@@ -289,7 +447,7 @@ function TimelineTime({ timestamp }: { timestamp: string }) {
 function formatTime(timestamp: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.valueOf())) return "";
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(date);
+  return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function formatElapsed(entries: DesktopTimelineEntry[]): string {

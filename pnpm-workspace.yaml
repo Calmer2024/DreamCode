@@ -4,6 +4,7 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
+  node-pty: true
 minimumReleaseAgeExclude:
   - lucide-react@1.31.0
 overrides:

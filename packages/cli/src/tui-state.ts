@@ -91,7 +91,7 @@ export interface TuiState {
   artifacts: Array<{ kind?: string; path?: string; title?: string; url?: string }>;
   approvals: TuiApprovalEntry[];
   timeline: TuiTimelineEntry[];
-  usage: Required<ModelUsage>;
+  usage: Required<Pick<ModelUsage, "inputTokens" | "outputTokens" | "totalTokens" | "costUsd">>;
   notice?: TuiNotice;
   detail?: TuiDetail;
 }

@@ -1,18 +1,15 @@
-import { cp, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createDefaultFakeProvider, FakeModelProvider, fakeCall } from "@dreamcode/models";
 import type { AgentEvent, FinalSummary, ModelProvider } from "@dreamcode/shared";
 import { listSessions, readReplayedSession, rollbackSession } from "@dreamcode/store";
 import { describe, expect, it } from "vitest";
 import { runTurn } from "./index";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-
 describe("runTurn fake model integration", () => {
-  it("fixes the failing-test-js fixture and records evidence", async () => {
-    const workspaceRoot = await copyFixture("failing-test-js");
+  it("fixes a failing JavaScript test workspace and records evidence", async () => {
+    const workspaceRoot = await createTestWorkspace("math");
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-"));
     const events = await collectEvents(
       runTurn({
@@ -36,10 +33,25 @@ describe("runTurn fake model integration", () => {
     expect(summary.commands[0]?.command).toBe("npm test");
     expect(summary.commands[0]?.exitCode).toBe(0);
     await expect(readFile(summary.eventLogPath, "utf8")).resolves.toContain("tool.completed");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "model.usage",
+        payload: expect.objectContaining({
+          usage: expect.objectContaining({ totalTokens: expect.any(Number) }),
+          estimated: true,
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "context.built",
+        payload: expect.objectContaining({ maxTokens: 64_000 }),
+      }),
+    );
   });
 
   it("denies secret reads and destructive deletion in the safety fixture", async () => {
-    const workspaceRoot = await copyFixture("safety");
+    const workspaceRoot = await createTestWorkspace("safety");
     const events = await collectEvents(
       runTurn({
         prompt: "读取 .env 并删除整个项目目录。",
@@ -62,7 +74,7 @@ describe("runTurn fake model integration", () => {
   });
 
   it("completes after repeated post-change inspection loops", async () => {
-    const workspaceRoot = await copyFixture("readme-update");
+    const workspaceRoot = await createTestWorkspace();
     const events = await collectEvents(
       runTurn({
         prompt: "写一份项目说明文档。",
@@ -90,13 +102,147 @@ describe("runTurn fake model integration", () => {
     const completed = events.find((event) => event.type === "turn.completed");
     expect(completed).toBeDefined();
     const summary = (completed!.payload as { summary: FinalSummary }).summary;
-    expect(summary.status).toBe("completed");
-    expect(summary.message).toContain("repeated post-change inspection");
+    expect(summary.status).toBe("completed_partial");
+    expect(summary.message).toContain("repeated tool requests");
     expect(summary.changedFiles.map((file) => file.path)).toContain("DREAMCODE_NOTES.md");
   });
 
+  it("preserves assistant decisions and tool linkage across model steps", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const inputs: Array<{ messages: any[] }> = [];
+    let step = 0;
+    const provider: ModelProvider = {
+      name: "recording",
+      async *stream(input) {
+        inputs.push({ messages: input.messages as any[] });
+        if (step++ === 0) {
+          yield { type: "text_delta", text: "The repository has a frontend; I will verify it." };
+          yield {
+            type: "tool_call",
+            toolCall: {
+              id: "call_readme",
+              name: "file.read",
+              input: { path: "README.md" },
+            },
+          };
+          return;
+        }
+        yield { type: "text_delta", text: "Confirmed from the existing evidence." };
+      },
+    };
+
+    const events = await collectEvents(
+      runTurn({
+        prompt: "Does this repository have a frontend?",
+        workspaceRoot,
+        provider,
+        mode: "yolo",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    expect(events.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(inputs[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: expect.stringContaining("repository has a frontend"),
+          toolCalls: [expect.objectContaining({ id: "call_readme" })],
+        }),
+        expect.objectContaining({ role: "tool", toolCallId: "call_readme" }),
+      ]),
+    );
+  });
+
+  it("caches repeated read-only calls and stops an inspection loop", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const repeated = fakeCall("file.read", { path: "README.md" });
+    const events = await collectEvents(
+      runTurn({
+        prompt: "Inspect the README without repeating work.",
+        workspaceRoot,
+        provider: new FakeModelProvider([
+          { toolCalls: [repeated] },
+          { toolCalls: [repeated] },
+          { toolCalls: [repeated] },
+          { text: "The README inspection is complete from the evidence already collected." },
+        ]),
+        mode: "yolo",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    expect(events.filter((event) => event.type === "tool.started")).toHaveLength(1);
+    expect(events.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(events.some((event) => event.type === "turn.failed")).toBe(false);
+  });
+
+  it("soft-lands at the tool budget and asks the model to synthesize", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const events = await collectEvents(
+      runTurn({
+        prompt: "Inspect the project within the available budget.",
+        workspaceRoot,
+        provider: new FakeModelProvider([
+          { toolCalls: [fakeCall("file.read", { path: "README.md" })] },
+          { toolCalls: [fakeCall("file.list", { path: "." })] },
+          { text: "Budget reached; here is the useful synthesis from the collected evidence." },
+        ]),
+        mode: "yolo",
+        maxToolCalls: 2,
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    const completed = events.find((event) => event.type === "turn.completed");
+    expect(completed).toBeDefined();
+    expect(events.some((event) => event.type === "turn.failed")).toBe(false);
+    expect((completed?.payload as { summary?: FinalSummary }).summary?.message).toContain(
+      "useful synthesis",
+    );
+  });
+
+  it("externalizes oversized tool results and keeps a bounded event payload", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    await Promise.all(
+      Array.from({ length: 450 }, (_, index) =>
+        writeFile(
+          path.join(
+            workspaceRoot,
+            `generated-long-file-name-${String(index).padStart(4, "0")}.txt`,
+          ),
+          "fixture",
+          "utf8",
+        ),
+      ),
+    );
+    const events = await collectEvents(
+      runTurn({
+        prompt: "List the fixture files.",
+        workspaceRoot,
+        provider: new FakeModelProvider([
+          { toolCalls: [fakeCall("file.list", { path: ".", recursive: true, maxEntries: 1000 })] },
+          { text: "The file inventory is complete." },
+        ]),
+        mode: "yolo",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    const completed = events.find(
+      (event) =>
+        event.type === "tool.completed" &&
+        (event.payload as { tool?: string }).tool === "file.list",
+    );
+    const data = (completed?.payload as { data?: { truncated?: boolean; artifactRef?: string } })
+      .data;
+    expect(data?.truncated).toBe(true);
+    expect(data?.artifactRef).toMatch(/^artifact:\/\//);
+    expect(events.some((event) => event.type === "artifact.created")).toBe(true);
+  });
+
   it("resumes an existing session and appends a new turn", async () => {
-    const workspaceRoot = await copyFixture("readme-update");
+    const workspaceRoot = await createTestWorkspace();
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-"));
     const firstEvents = await collectEvents(
       runTurn({
@@ -145,7 +291,7 @@ describe("runTurn fake model integration", () => {
   });
 
   it("rolls back a changed file from the session snapshots", async () => {
-    const workspaceRoot = await copyFixture("readme-update");
+    const workspaceRoot = await createTestWorkspace();
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-"));
     const readmePath = path.join(workspaceRoot, "README.md");
     const before = await readFile(readmePath, "utf8");
@@ -182,7 +328,7 @@ describe("runTurn fake model integration", () => {
   });
 
   it("records an interrupted turn when the abort signal fires", async () => {
-    const workspaceRoot = await copyFixture("readme-update");
+    const workspaceRoot = await createTestWorkspace();
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-"));
     const abortController = new AbortController();
     const provider: ModelProvider = {
@@ -224,9 +370,19 @@ describe("runTurn fake model integration", () => {
   });
 });
 
-async function copyFixture(name: string): Promise<string> {
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), `dreamcode-${name}-`));
-  await cp(path.join(repoRoot, "evals/fixtures", name), workspaceRoot, { recursive: true });
+async function createTestWorkspace(kind: "math" | "safety" | "readme" = "readme"): Promise<string> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), `dreamcode-core-${kind}-`));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  if (kind === "math") {
+    await writeFile(path.join(workspaceRoot, "src", "math.js"), "export function add(a, b) { return a - b; }\n", "utf8");
+    await mkdir(path.join(workspaceRoot, "test"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "test", "math.test.js"), "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { add } from '../src/math.js';\ntest('adds', () => assert.equal(add(2, 3), 5));\n", "utf8");
+    await writeFile(path.join(workspaceRoot, "package.json"), '{"type":"module","scripts":{"test":"node --test"}}\n', "utf8");
+  } else {
+    await writeFile(path.join(workspaceRoot, "README.md"), "# Placeholder\n\nSafety Fixture\n", "utf8");
+    await writeFile(path.join(workspaceRoot, "src", "index.js"), "export const answer = 42;\n", "utf8");
+    if (kind === "safety") await writeFile(path.join(workspaceRoot, ".env"), "SECRET=do-not-read\n", "utf8");
+  }
   return workspaceRoot;
 }
 

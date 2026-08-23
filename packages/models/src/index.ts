@@ -2,11 +2,79 @@ import type {
   ModelEvent,
   ModelProvider,
   ModelStreamInput,
+  ModelUsage,
   NormalizedToolCall,
+  RequestTokenEstimate,
+  RequestTokenEstimateInput,
   ToolModelSpec,
 } from "@dreamcode/shared";
 import { createId } from "@dreamcode/shared";
 import OpenAI from "openai";
+import os from "node:os";
+import path from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+
+export interface ProviderRequest {
+  model: string;
+  messages: Array<Record<string, unknown>>;
+  tools?: Array<Record<string, unknown>>;
+  stream: true;
+  stream_options: { include_usage: true };
+}
+
+export function sanitizeOpenAIToolName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "__").slice(0, 64) || "tool";
+}
+
+export function buildProviderRequest(input: RequestTokenEstimateInput & { defaultModel?: string }): ProviderRequest {
+  const toolNameMap = new Map<string, string>();
+  const tools = toOpenAITools(input.tools, toolNameMap) as Array<Record<string, unknown>>;
+  const messages = input.messages.map((message) => {
+    if (message.role === "assistant") {
+      return {
+        role: "assistant",
+        content: message.content || null,
+        ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: sanitizeOpenAIToolName(call.name), arguments: JSON.stringify(call.input ?? {}) } })) } : {}),
+      };
+    }
+    if (message.role === "tool") return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
+    return { role: message.role, content: message.content };
+  });
+  return { model: input.model || input.defaultModel || "gpt-5.5", messages, ...(tools.length ? { tools } : {}), stream: true, stream_options: { include_usage: true } };
+}
+
+export class UsageCalibrator {
+  private readonly states = new Map<string, { ratio: number; sampleCount: number }>();
+  constructor(private readonly coldStartRatio = 1.15, private readonly estimatorVersion = "1") {}
+  async load(home = process.env.DREAMCODE_HOME ?? path.join(os.homedir(), ".dreamcode")) {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(home, "usage-calibration.json"), "utf8")) as Record<string, { ratio: number; sampleCount: number }>;
+      for (const [key, value] of Object.entries(parsed)) if (Number.isFinite(value?.ratio) && Number.isFinite(value?.sampleCount)) this.states.set(key, value);
+    } catch { /* cold start is safe */ }
+  }
+  async persist(home = process.env.DREAMCODE_HOME ?? path.join(os.homedir(), ".dreamcode")) {
+    try {
+      await mkdir(home, { recursive: true });
+      const target = path.join(home, "usage-calibration.json"); const temp = `${target}.${process.pid}.tmp`;
+      await writeFile(temp, `${JSON.stringify(Object.fromEntries(this.states), null, 2)}\n`, "utf8");
+      await rename(temp, target);
+    } catch { /* non-fatal */ }
+  }
+  key(provider: string, model: string, requestClass: "with_tools" | "messages_only") { return `${provider}+${model}+${requestClass}+${this.estimatorVersion}`; }
+  estimate(baseInputTokens: number, provider: string, model: string, requestClass: "with_tools" | "messages_only") {
+    const state = this.states.get(this.key(provider, model, requestClass));
+    const ratio = state?.ratio ?? this.coldStartRatio;
+    return { calibratedInputTokens: Math.max(1, Math.ceil(baseInputTokens * ratio)), correctionRatio: ratio, sampleCount: state?.sampleCount ?? 0, coldStart: !state };
+  }
+  observe(baseInputTokens: number, inputTokens: number | undefined, provider: string, model: string, requestClass: "with_tools" | "messages_only") {
+    if (!Number.isFinite(baseInputTokens) || baseInputTokens <= 0 || !Number.isFinite(inputTokens) || (inputTokens as number) <= 0) return;
+    const key = this.key(provider, model, requestClass); const previous = this.states.get(key); const observed = (inputTokens as number) / baseInputTokens;
+    if (!Number.isFinite(observed) || observed < 0.5 || observed > 3) return;
+    const sampleCount = (previous?.sampleCount ?? 0) + 1;
+    const ratio = previous ? previous.ratio * 0.7 + observed * 0.3 : observed;
+    this.states.set(key, { ratio, sampleCount });
+  }
+}
 
 const GENERIC_API_KEY_ENV_VARS = ["DREAMCODE_API_KEY"] as const;
 const GENERIC_BASE_URL_ENV_VARS = ["DREAMCODE_BASE_URL"] as const;
@@ -214,7 +282,7 @@ export const MODEL_PROVIDER_PRESETS: readonly ModelProviderPreset[] = [
       {
         id: "glm-5.2",
         label: "GLM-5.2",
-        description: "1M 上下文, 面向长程任务和编码",
+        description: "200K 上下文; Z.AI 的特定入口可用 glm-5.2[1m] 开启 1M",
       },
       {
         id: "glm-5.1",
@@ -362,6 +430,7 @@ export const MODEL_PROVIDER_PRESETS: readonly ModelProviderPreset[] = [
 export interface FakeModelStep {
   text?: string;
   toolCalls?: Array<Omit<NormalizedToolCall, "id"> & { id?: string }>;
+  usage?: ModelUsage;
 }
 
 export class FakeModelProvider implements ModelProvider {
@@ -394,6 +463,10 @@ export class FakeModelProvider implements ModelProvider {
           raw: toolCall.raw,
         },
       };
+    }
+
+    if (step.usage) {
+      yield { type: "usage", usage: step.usage };
     }
 
     yield { type: "done" };
@@ -549,19 +622,32 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
     this.defaultModel = options.defaultModel ?? "gpt-5.5";
   }
 
+  async estimateInputTokens(input: RequestTokenEstimateInput): Promise<RequestTokenEstimate> {
+    const request = buildProviderRequest({ ...input, defaultModel: this.defaultModel });
+    const messageTokens = Math.ceil(JSON.stringify(request.messages).length / 4);
+    const toolDefinitionTokens = Math.ceil(JSON.stringify(request.tools ?? []).length / 4);
+    const providerOverheadTokens = request.messages.length * 3 + (request.tools?.length ? 8 : 0);
+    return {
+      messageTokens,
+      toolDefinitionTokens,
+      providerOverheadTokens,
+      inputTokens: messageTokens + toolDefinitionTokens + providerOverheadTokens,
+      baseInputTokens: messageTokens + toolDefinitionTokens + providerOverheadTokens,
+      calibratedInputTokens: messageTokens + toolDefinitionTokens + providerOverheadTokens,
+      correctionRatio: 1,
+      sampleCount: 0,
+      coldStart: true,
+      exact: false,
+      estimationMethod: "openai-compatible-json-approximation",
+    };
+  }
+
   async *stream(input: ModelStreamInput): AsyncIterable<ModelEvent> {
     const toolNameMap = new Map<string, string>();
+    const request = buildProviderRequest({ messages: input.messages, tools: input.tools, model: input.model, defaultModel: this.defaultModel });
     const tools = toOpenAITools(input.tools, toolNameMap);
     const stream = await this.client.chat.completions.create(
-      {
-        model: input.model || this.defaultModel,
-        messages: input.messages.map((message) => ({
-          role: message.role === "tool" ? "user" : message.role,
-          content: message.content,
-        })) as any,
-        tools: tools as any,
-        stream: true,
-      } as any,
+      { ...request, tools: tools as any } as any,
       input.signal ? ({ signal: input.signal } as any) : undefined,
     );
 
@@ -571,6 +657,10 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
     >();
 
     for await (const chunk of stream as any) {
+      const usage = normalizeOpenAIUsage(chunk.usage);
+      if (usage) {
+        yield { type: "usage", usage };
+      }
       const choice = chunk.choices?.[0];
       const delta = choice?.delta;
       if (!delta) {
@@ -620,6 +710,64 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
     yield { type: "done" };
   }
+}
+
+export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = finiteNumber(usage.prompt_tokens ?? usage.input_tokens);
+  const outputTokens = finiteNumber(usage.completion_tokens ?? usage.output_tokens);
+  const inputDetails = readUsageObject(
+    usage.prompt_tokens_details ?? usage.input_tokens_details,
+  );
+  const cachedInputTokens =
+    finiteNumber(inputDetails?.cached_tokens) ??
+    finiteNumber(usage.cached_input_tokens ?? usage.cache_read_input_tokens);
+  const warnings: string[] = [];
+  let uncachedInputTokens: number | undefined;
+  if (inputTokens !== undefined && cachedInputTokens !== undefined) {
+    if (cachedInputTokens <= inputTokens) {
+      uncachedInputTokens = inputTokens - cachedInputTokens;
+    } else {
+      warnings.push("cached input tokens exceed total input tokens");
+    }
+  }
+  const reportedTotalTokens = finiteNumber(usage.total_tokens);
+  const totalTokens =
+    reportedTotalTokens ??
+    (inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined);
+  if (
+    reportedTotalTokens !== undefined &&
+    inputTokens !== undefined &&
+    outputTokens !== undefined &&
+    reportedTotalTokens !== inputTokens + outputTokens
+  ) {
+    warnings.push("provider total tokens differ from input plus output tokens");
+  }
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    uncachedInputTokens,
+    outputTokens,
+    totalTokens,
+    costUsd: finiteNumber(usage.cost_usd),
+    warnings: warnings.length ? warnings : undefined,
+  };
+}
+
+function readUsageObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export class OpenAIModelProvider extends OpenAICompatibleModelProvider {
@@ -777,10 +925,6 @@ function toOpenAITools(
       },
     };
   });
-}
-
-function sanitizeOpenAIToolName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, "__").slice(0, 64);
 }
 
 function parseJsonObject(json: string): unknown {

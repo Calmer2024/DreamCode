@@ -142,6 +142,11 @@
     .quiet-button { border: 1px solid var(--border-soft); border-radius: 10px; background: #fff; padding: 7px 12px; cursor: pointer; }
     .quiet-button:hover { background: #f7f7f7; }
     .content { min-height: 0; overflow: auto; scroll-behavior: smooth; }
+    :where(.sidebar, .content, .settings-content, .scrollbar-demo) { scrollbar-color: #ededed transparent; scrollbar-width: thin; }
+    :where(.sidebar, .content, .settings-content, .scrollbar-demo)::-webkit-scrollbar { width: 10px; height: 10px; }
+    :where(.sidebar, .content, .settings-content, .scrollbar-demo)::-webkit-scrollbar-track { background: transparent; }
+    :where(.sidebar, .content, .settings-content, .scrollbar-demo)::-webkit-scrollbar-thumb { min-height: 44px; border: 3px solid transparent; border-radius: 999px; background: #ededed; background-clip: padding-box; }
+    :where(.sidebar, .content, .settings-content, .scrollbar-demo)::-webkit-scrollbar-thumb:hover { background: #aaa; background-clip: padding-box; }
     .guide { width: min(1050px, calc(100% - 80px)); margin: 0 auto; padding: 64px 0 110px; }
     .intro { margin-bottom: 66px; }
     .implementation-note {
@@ -171,20 +176,25 @@
     .more-button { width: 34px; height: 34px; border: 0; border-radius: 9px; background: #f2f2f2; cursor: pointer; font-size: 18px; letter-spacing: 2px; }
     .more-button:hover, .more-button[aria-expanded="true"] { background: #e5e5e5; }
     .context-menu {
-      position: absolute; left: 267px; top: 93px; z-index: 3;
-      width: 246px; padding: 8px; border: 1px solid #d9d9d9; border-radius: 18px;
+      position: absolute; left: 268px; top: 133px; z-index: 3;
+      width: 218px; padding: 6px; border: 1px solid #d9d9d9; border-radius: 14px;
       background: rgba(255,255,255,.98); box-shadow: var(--shadow-menu);
       transform-origin: top left; transition: opacity 120ms ease, transform 120ms ease;
     }
     .context-menu[hidden] { display: block; pointer-events: none; opacity: 0; transform: translateY(-4px) scale(.985); }
     .menu-item {
-      width: 100%; height: 42px; display: flex; align-items: center; gap: 12px;
-      padding: 0 11px; border: 0; border-radius: 10px; background: transparent;
-      font-size: 15px; text-align: left; cursor: pointer;
+      width: 100%; height: 36px; display: flex; align-items: center; gap: 10px;
+      padding: 0 9px; border: 0; border-radius: 8px; background: transparent;
+      font-size: 13px; text-align: left; cursor: pointer;
     }
     .menu-item:hover, .menu-item:focus-visible { outline: 0; background: #f0f0f0; }
-    .menu-item svg { width: 19px; height: 19px; flex: 0 0 auto; color: #5f6267; stroke-width: 1.65; }
+    .menu-item svg { width: 17px; height: 17px; flex: 0 0 auto; color: #5f6267; stroke-width: 1.65; }
     .menu-item.danger:hover { color: var(--danger); background: #fff1f1; }
+
+    .scrollbar-stage { min-height: 340px; display: grid; place-items: center; padding: 34px; background: #f7f7f7; }
+    .scrollbar-demo { width: min(620px, 100%); height: 250px; overflow-y: scroll; border: 1px solid var(--border-soft); border-radius: 16px; padding: 18px 20px; background: #fff; }
+    .scrollbar-row { height: 42px; display: flex; align-items: center; border-bottom: 1px solid #ededed; color: var(--text-secondary); font-size: 13px; }
+    .scrollbar-row:last-child { border-bottom: 0; }
 
     .list-stage { min-height: 570px; padding: 30px; background: #f7f7f7; }
     .desktop-list-demo { position: relative; min-height: 508px; overflow: hidden; border: 1px solid #dedede; border-radius: 18px; background: #fff; }
@@ -192,8 +202,10 @@
     .new-conversation { height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; cursor: pointer; font-size: 15px; }
     .new-conversation:hover { background: #e9e9e9; }
     .new-conversation svg { width: 21px; height: 21px; color: #4f5054; stroke-width: 1.9; }
-    .project-heading { height: 44px; margin-top: 15px; display: flex; align-items: center; gap: 7px; padding: 0 10px; color: #5e5f64; font-size: 15px; font-weight: 700; }
-    .project-heading svg { width: 16px; height: 16px; color: #8b8c91; stroke-width: 2; }
+    .sidebar-section-heading { height: 40px; margin-top: 9px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 10px; color: #3f4044; font-size: 15px; font-weight: 500; }
+    .sidebar-section-heading button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #85868a; }
+    .sidebar-section-heading button:hover { background: #e5e5e5; }
+    .sidebar-section-heading svg { width: 16px; height: 16px; stroke-width: 2; }
     .project-row { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 10px; }
     .project-row:hover { background: #e9e9e9; }
     .project-row > svg { width: 24px; height: 24px; color: #74757a; stroke-width: 1.8; }
@@ -206,7 +218,7 @@
     .conversation-delete.is-confirming { color: var(--danger); background: var(--danger-soft); }
     .conversation-delete.is-confirming:hover { color: var(--danger); background: #f9dada; }
     .conversation-actions.is-confirming .conversation-pin { display: none; }
-    .conversation-list { margin-top: 2px; padding-left: 10px; }
+    .conversation-list { margin-top: 1px; padding-left: 10px; }
     .conversation-row { position: relative; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 32px; border-radius: 11px; cursor: pointer; }
     .conversation-row:hover { background: #e9e9e9; }
     .conversation-row.selected { background: var(--purple-soft); color: var(--purple); }
@@ -227,8 +239,8 @@
     .dialog-stage { min-height: 410px; display: grid; place-items: center; background: #e7e7e7; }
     .dialog-stage::before { content: ""; position: absolute; inset: 0; background: linear-gradient(#0000,#00000003); }
     .dialog {
-      position: relative; z-index: 2; width: min(630px, calc(100% - 70px)); padding: 28px 30px 30px;
-      border: 1px solid #d7d7d7; border-radius: 25px; background: #fff; box-shadow: var(--shadow-dialog);
+      position: relative; z-index: 2; width: min(510px, calc(100% - 70px)); padding: 23px 25px 24px;
+      border: 1px solid #d7d7d7; border-radius: 20px; background: #fff; box-shadow: var(--shadow-dialog);
     }
     .dialog h4 { margin: 0 38px 6px 0; font-size: 25px; line-height: 1.35; letter-spacing: -.025em; }
     .dialog p { margin: 0; color: #919297; font-size: 17px; line-height: 1.65; }
@@ -242,6 +254,13 @@
     .button.danger { color: var(--danger); background: var(--danger-soft); }
     .button.danger:hover { background: #f9dada; }
     .open-dialog { position: absolute; inset: auto auto 26px 26px; }
+
+    .tooltip-stage { min-height: 280px; display: grid; place-items: center; background: #f8f8f8; }
+    .tooltip-demo { position: relative; display: flex; align-items: center; gap: 18px; }
+    .tooltip-trigger { width: 38px; height: 38px; display: grid; place-items: center; border: 0; border-radius: 9px; background: #ececef; color: #55565b; }
+    .tooltip-trigger svg { width: 19px; height: 19px; }
+    .tooltip-bubble { position: relative; border-radius: 10px; padding: 9px 13px; background: #24272d; box-shadow: 0 7px 18px rgba(0,0,0,.18); color: #fff; font-size: 13px; font-weight: 500; }
+    .tooltip-bubble::before { position: absolute; right: 100%; top: 50%; transform: translateY(-50%); border-width: 6px 7px 6px 0; border-style: solid; border-color: transparent #24272d transparent transparent; content: ""; }
 
     .layout-demo { height: 470px; display: grid; grid-template-columns: 220px 1fr; background: #f2f2f2; }
     .layout-demo-sidebar { padding: 22px 12px; }
@@ -269,7 +288,7 @@
     .settings-inner { width: min(650px, calc(100% - 54px)); margin: 0 auto; padding: 54px 0 80px; }
     .settings-inner > h4 { margin: 0 0 50px; font-size: 25px; }
     .settings-group-title { margin: 0 0 18px; font-size: 15px; }
-    .settings-card { margin-bottom: 44px; padding: 0 16px; border: 1px solid #e5e5e5; border-radius: 17px; }
+    .settings-card { margin-bottom: 72px; padding: 0 16px; border: 1px solid #e5e5e5; border-radius: 17px; }
     .setting-row { min-height: 67px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #e9e9e9; }
     .setting-row:last-child { border-bottom: 0; }
     .setting-copy strong { display: block; margin-bottom: 3px; font-size: 13px; }
@@ -292,7 +311,7 @@
     @media (max-width: 1120px) {
       :root { --sidebar-width: 254px; }
       .guide { width: calc(100% - 48px); }
-      .context-menu { left: 240px; }
+      .context-menu { left: 226px; }
       .menu-trigger { left: 48px; }
       .tokens { grid-template-columns: repeat(3, 1fr); }
       .desktop-list-sidebar { width: 46%; min-width: 280px; }
@@ -353,6 +372,8 @@
       <div class="nav-group">
         <div class="nav-label">组件</div>
         <button class="nav-item" data-target="menu"><svg><use href="#i-folder" /></svg>右键 / 下拉菜单</button>
+        <button class="nav-item" data-target="scrollbar"><svg><use href="#i-list" /></svg>滚动条</button>
+        <button class="nav-item" data-target="tooltip"><svg><use href="#i-cursor" /></svg>ToolTip</button>
         <button class="nav-item" data-target="dialog"><svg><use href="#i-grid" /></svg>弹窗</button>
         <button class="nav-item" data-target="lists"><svg><use href="#i-list" /></svg>列表</button>
         <button class="nav-item" data-target="settings"><svg><use href="#i-settings" /></svg>设置页面</button>
@@ -388,8 +409,15 @@
             <div class="rules-grid">
               <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-components" /></svg></span><div><strong>图标只能来自 Icon 组件库</strong><p>不使用任何 Unicode 字符图标或 Emoji 图标。箭头、更多、关闭、窗口控制等也必须通过统一的 <code>Icon</code> 组件渲染。</p></div></article>
               <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-list" /></svg></span><div><strong>禁止用文本模拟图标</strong><p>不可使用符号字体、字符实体或特殊字符拼出图标。图标需共享尺寸、描边、颜色与无障碍标签。</p></div></article>
-              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-user" /></svg></span><div><strong>统一使用 Noto Sans SC</strong><p>中文与界面文字使用 Google Fonts 的 <code>Noto Sans SC</code>，正文 400、强调 500、标题 600 或 700。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-user" /></svg></span><div><strong>统一使用 Noto Sans SC</strong><p>正文、按钮、输入框及其他普通 UI 组件统一使用 Google Fonts 的 <code>Noto Sans SC</code>，正文 400、强调 500、标题 600 或 700。桌面端通过 Fontsource 内置字体文件，确保离线与严格 CSP 下仍真实加载；仅代码块、终端及明确的技术文本允许使用等宽字体。</p></div></article>
               <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-palette" /></svg></span><div><strong>只引用语义 Token</strong><p>颜色、间距、边框、圆角和阴影应通过 Token 复用，交互状态不得创建无意义的近似值。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-components" /></svg></span><div><strong>设置页操作使用轻量文字按钮</strong><p>“保存”“测试连接”“设为默认”“删除”等设置页动作默认使用 Icon + 文本，不添加胶囊背景容器，不使用大圆角；字号保持 12px，通过语义文字颜色区分主操作、普通操作与危险操作。只有需要强确认的弹窗操作或独立主流程按钮才允许使用有背景按钮。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-list" /></svg></span><div><strong>折叠与展开必须有过渡动画</strong><p>所有详情、分组、抽屉和内容区域的展开与折叠统一使用 180ms ease 过渡，同时为 <code>prefers-reduced-motion</code> 提供无动画降级。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-components" /></svg></span><div><strong>Agent 代码块统一使用 Shiki</strong><p>完整遵循 DeepSeek 单表面结构：不得由 Markdown 默认 <code>pre</code> 在外层再次包裹，不使用 border；仅保留一个 12px 圆角、<code>rgb(249 250 251)</code> 背景的代码块。左上角显示语言，右上角显示复制按钮，正文 13px/22px；已识别语言必须显示 CSS Variables Token 高亮。生产环境不得依赖 CSP 会阻止的 inline style，应转换为由外部 CSS 着色的语义 Token；未知语言回退为相同尺寸的纯文本代码块。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-grid" /></svg></span><div><strong>底部终端必须是真实系统终端</strong><p>Windows 优先启动 PowerShell 7 并加载用户配置，回退到 Windows PowerShell；终端继承当前项目目录、支持 ANSI、持续输入、快捷键和交互式 CLI。使用 <code>Ctrl+`</code> 打开或关闭终端。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-components" /></svg></span><div><strong>设置页章节必须保持清晰分隔</strong><p>同一设置页面内，相邻一级章节标题之间保留 <code>72px</code> 垂直间距；标题与所属卡片保持 <code>18px</code>。例如“网页搜索 API”与“权限”必须形成清晰的独立信息组。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-user" /></svg></span><div><strong>用户消息操作按需显现</strong><p>用户气泡默认只展示正文；悬停或键盘聚焦时，在气泡下方显示本地时刻（仅小时与分钟）和复制按钮。操作区不得改变气泡宽度，也不得造成对话内容跳动。</p></div></article>
+              <article class="rule-card"><span class="rule-icon"><svg class="icon-component"><use href="#i-folder" /></svg></span><div><strong>任务顶部项目操作必须直达</strong><p>文件夹按钮直接在系统资源管理器中打开当前工作区；更多按钮展开与侧栏一致的项目菜单，复用置顶、打开、编辑与移除操作，不创建第二套交互语义。</p></div></article>
             </div>
           </section>
 
@@ -404,7 +432,7 @@
           </section>
 
           <section class="section" id="menu" data-search="右键 下拉 菜单 context dropdown">
-            <div class="section-heading"><div><h3>右键菜单 / 下拉菜单</h3><p>同一浮层组件承载右键菜单和按钮下拉菜单。菜单项高 42px，图标 19px，浮层圆角 18px。</p></div><span class="spec-chip">Width 246 · Radius 18</span></div>
+            <div class="section-heading"><div><h3>右键菜单 / 下拉菜单</h3><p>按钮下拉菜单的左边缘与触发按钮左边缘对齐，间距 6px。菜单项高 36px，图标 17px，浮层圆角 14px。</p></div><span class="spec-chip">Width 218 · Radius 14</span></div>
             <div class="stage" id="menuStage">
               <div class="stage-grid"></div>
               <div class="menu-trigger"><div><strong>GithubProjects</strong><br><span>示例项目</span></div><button class="more-button" id="moreButton" aria-label="更多操作" aria-expanded="true" aria-haspopup="menu"><svg class="icon-component"><use href="#i-more" /></svg></button></div>
@@ -419,8 +447,24 @@
             </div>
           </section>
 
+          <section class="section" id="scrollbar" data-search="滚动条 scrollbar scroll 滚动区域">
+            <div class="section-heading"><div><h3>滚动条</h3><p>轨道保持透明；滑块使用 10px 容器和 3px 透明内边框，得到克制的 4px 可见宽度。悬停时只加深滑块，不改变布局。底部日志与终端面板沿用此规范；拖动顶部把手时，面板、对话滚动区和输入框使用同一高度变量逐帧联动，拖动期间不得使用过渡动画造成迟滞。</p></div><span class="spec-chip">Track 10 · Thumb 4 · Live Resize</span></div>
+            <div class="stage scrollbar-stage">
+              <div class="scrollbar-demo" aria-label="滚动条规范示例">
+                <div class="scrollbar-row">对话记录 · 用户消息</div><div class="scrollbar-row">执行过程 · 读取文件</div><div class="scrollbar-row">执行过程 · 修改代码</div><div class="scrollbar-row">执行过程 · 运行测试</div><div class="scrollbar-row">对话记录 · Agent 回复</div><div class="scrollbar-row">继续滚动查看更多内容</div><div class="scrollbar-row">滚动条轨道始终透明</div><div class="scrollbar-row">悬停滑块颜色加深</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="tooltip" data-search="tooltip tool tip 提示 气泡 悬停">
+            <div class="section-heading"><div><h3>ToolTip</h3><p>使用深色圆角气泡、左侧三角指针和高对比白字。正式实现必须使用挂载到 body 的 fixed 顶层浮层，不得把气泡放进侧栏滚动容器，也不得依靠横向滚动条显示。</p></div><span class="spec-chip">Fixed · Z 1000</span></div>
+            <div class="stage tooltip-stage">
+              <div class="tooltip-demo"><button class="tooltip-trigger" aria-label="示例提示"><svg class="icon-component"><use href="#i-cursor" /></svg></button><span class="tooltip-bubble">DreamCode - 飞书云文档</span></div>
+            </div>
+          </section>
+
           <section class="section" id="dialog" data-search="弹窗 modal dialog 确认 删除 移除">
-            <div class="section-heading"><div><h3>弹窗</h3><p>标题先说明动作对象，正文解释影响；取消使用弱按钮，破坏性确认使用淡红底与红色文字。</p></div><span class="spec-chip">630px · Radius 25</span></div>
+            <div class="section-heading"><div><h3>弹窗</h3><p>标题先说明动作对象，正文解释影响；取消使用弱按钮，破坏性确认使用淡红底与红色文字。</p></div><span class="spec-chip">510px · Radius 20</span></div>
             <div class="stage dialog-stage">
               <article class="dialog" role="dialog" aria-labelledby="demoDialogTitle" aria-describedby="demoDialogDescription">
                 <button class="dialog-close" aria-label="关闭"><svg class="icon-component"><use href="#i-x" /></svg></button>
@@ -432,15 +476,16 @@
           </section>
 
           <section class="section" id="lists" data-search="列表 对话列表 项目列表 条目 选中 hover">
-            <div class="section-heading"><div><h3>列表</h3><p>还原桌面端左侧栏层级、选中态、线性 Icon 与对话详情浮层；删除仍采用原地二次确认。</p></div><span class="spec-chip">Row 44 · Radius 11</span></div>
+            <div class="section-heading"><div><h3>列表</h3><p>“置顶”和“项目”与“新对话”字号一致，标题仅展示文本，折叠按钮固定在右侧；“置顶”仅在存在置顶对话时显示。删除采用原地二次确认，未确认时应自动恢复。</p></div><span class="spec-chip">Title 15 · Right Toggle</span></div>
             <div class="stage list-stage">
               <div class="desktop-list-demo">
                 <aside class="desktop-list-sidebar">
                   <button class="new-conversation"><svg class="icon-component"><use href="#i-edit-square" /></svg>新对话</button>
-                  <div class="project-heading">项目<svg class="icon-component"><use href="#i-chevron-down" /></svg></div>
+                  <div class="sidebar-section-heading"><span>置顶</span><button aria-label="折叠置顶"><svg class="icon-component"><use href="#i-chevron-down" /></svg></button></div>
+                  <div class="conversation-list"><div class="conversation-row selected" tabindex="0"><span class="conversation-title">你是谁？</span><div class="conversation-actions"><button class="list-icon-button conversation-pin" aria-label="取消置顶对话"><svg class="icon-component"><use href="#i-pin" /></svg></button><button class="list-icon-button conversation-delete" aria-label="删除对话"><svg class="icon-component"><use href="#i-trash" /></svg></button></div></div></div>
+                  <div class="sidebar-section-heading"><span>项目</span><button aria-label="折叠项目"><svg class="icon-component"><use href="#i-chevron-down" /></svg></button></div>
                   <div class="project-row"><svg class="icon-component"><use href="#i-folder" /></svg><span class="project-name">FreeTime</span></div>
                   <div class="conversation-list">
-                    <div class="conversation-row selected" tabindex="0"><span class="conversation-title">你是谁？</span><div class="conversation-actions"><button class="list-icon-button conversation-pin" aria-label="置顶对话"><svg class="icon-component"><use href="#i-pin" /></svg></button><button class="list-icon-button conversation-delete" aria-label="删除对话"><svg class="icon-component"><use href="#i-trash" /></svg></button></div></div>
                     <div class="conversation-row" tabindex="0"><span class="conversation-title">介绍当前仓库</span><div class="conversation-actions"><button class="list-icon-button conversation-pin" aria-label="置顶对话"><svg class="icon-component"><use href="#i-pin" /></svg></button><button class="list-icon-button conversation-delete" aria-label="删除对话"><svg class="icon-component"><use href="#i-trash" /></svg></button></div></div>
                   </div>
                 </aside>
@@ -455,7 +500,7 @@
           </section>
 
           <section class="section" id="settings" data-search="设置页面 常规 权限 开关 下拉 侧栏">
-            <div class="section-heading"><div><h3>设置页面</h3><p>设置拥有独立二级侧栏；内容按主题分组，相关设置放入有描边的圆角卡片，每行仅保留一个主操作。</p></div><span class="spec-chip">Card Radius 17 · Row 67+</span></div>
+            <div class="section-heading"><div><h3>设置页面</h3><p>设置拥有独立二级侧栏；内容按主题分组，相关设置卡片按单列上下排列并保持等宽。章节之间使用 72px 间距，章节标题与所属卡片使用 18px 间距。卡片可使用统一圆角，但卡片内部操作按钮优先使用无背景的 Icon + 文本样式，避免重复使用胶囊形圆角按钮。</p></div><span class="spec-chip">Section Gap 72 · Card Radius 17</span></div>
             <div class="stage settings-demo">
               <aside class="settings-sidebar">
                 <div class="settings-back"><svg class="icon-component"><use href="#i-arrow-left" /></svg>返回应用</div><div class="settings-search"><svg class="icon-component"><use href="#i-search" /></svg>搜索设置...</div>
@@ -463,7 +508,9 @@
                 <div class="settings-nav-title" style="margin-top:16px">集成</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-plugin" /></svg>插件</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-browser" /></svg>浏览器</div><div class="settings-nav-item"><svg class="icon-component"><use href="#i-cursor" /></svg>电脑操控</div>
               </aside>
               <div class="settings-content"><div class="settings-inner">
-                <h4>常规</h4><h5 class="settings-group-title">权限</h5>
+                <h4>常规</h4><h5 class="settings-group-title">网页搜索 API</h5>
+                <div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Exa API Key</strong><span>为网页搜索工具配置 Exa 凭证</span></div><span>已配置</span></div></div>
+                <h5 class="settings-group-title">权限</h5>
                 <div class="settings-card">
                   <div class="setting-row"><div class="setting-copy"><strong>默认权限</strong><span>允许读取和编辑工作空间中的文件</span></div><button class="switch" role="switch" aria-checked="true"></button></div>
                   <div class="setting-row"><div class="setting-copy"><strong>自动审核</strong><span>自动审查额外访问权限请求</span></div><button class="switch" role="switch" aria-checked="true"></button></div>
@@ -472,7 +519,7 @@
                 <h5 class="settings-group-title">常规</h5>
                 <div class="settings-card">
                   <div class="setting-row"><div class="setting-copy"><strong>默认文件打开目标</strong><span>默认打开文件和文件夹的位置</span></div><select class="select-control"><option>VS Code</option></select></div>
-                  <div class="setting-row"><div class="setting-copy"><strong>集成终端 Shell</strong><span>选择要在集成终端中打开的 Shell</span></div><select class="select-control"><option>PowerShell</option></select></div>
+                  <div class="setting-row"><div class="setting-copy"><strong>集成终端 Shell</strong><span>在当前项目目录启动真实系统终端，优先 PowerShell 7，支持持续输入、ANSI 与实时输出</span></div><select class="select-control"><option>PowerShell 7（自动回退）</option></select></div>
                   <div class="setting-row"><div class="setting-copy"><strong>语言</strong><span>应用 UI 语言</span></div><select class="select-control"><option>简体中文</option></select></div>
                 </div>
               </div></div>
@@ -530,6 +577,8 @@
         button.setAttribute('aria-label', '确认删除对话');
         $('use', button).setAttribute('href', '#i-check');
         button.focus();
+        clearTimeout(button.confirmTimer);
+        button.confirmTimer = setTimeout(() => resetConversationDelete(), 3000);
         return;
       }
       const row = button.closest('.conversation-row');
@@ -548,7 +597,7 @@
       if (query && match) match.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     content.addEventListener('scroll', () => {
-      const sections = ['overview','rules','tokens','menu','dialog','lists','settings'].map(id => document.getElementById(id));
+      const sections = ['overview','rules','tokens','menu','scrollbar','tooltip','dialog','lists','settings'].map(id => document.getElementById(id));
       const current = [...sections].reverse().find(section => section.getBoundingClientRect().top < 170) || sections[0];
       $$('.nav-item[data-target]').forEach(item => item.classList.toggle('active', item.dataset.target === current.id));
     }, { passive: true });

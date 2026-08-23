@@ -1,0 +1,13 @@
+id: I01-long-context-noise
+fixture: long-context
+prompt: "在包含历史噪声报告的项目中，定位 normalizePort 的真实实现和测试约束，修复一个端口边界问题：端口 0 和 65536 应回退到 3000，并运行测试。"
+mode: yolo
+fakeScenario: long-context-fix
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: file-contains
+    path: src/target.ts
+    text: "port > 0"
+  - type: command
+    command: npm test
+    expectedExitCode: 0

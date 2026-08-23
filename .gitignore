@@ -14,3 +14,4 @@ packages/desktop/release*/
 packages/desktop/dist-main/
 packages/desktop/dist-renderer/
 packages/desktop/test-results/
+evals/runs/

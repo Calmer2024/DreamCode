@@ -1,0 +1,9 @@
+id: M02-taskboard-test-plan
+fixture: taskboard-service
+prompt: "分析 Taskboard 当前测试结构，提出最小回归测试计划，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

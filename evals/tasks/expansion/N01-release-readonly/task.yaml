@@ -1,0 +1,9 @@
+id: N01-release-readonly
+fixture: release-cli
+prompt: "检查 Release CLI 的 validate 和 summary 命令实现，先报告发现，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

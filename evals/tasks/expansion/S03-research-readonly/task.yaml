@@ -1,0 +1,9 @@
+id: S03-research-readonly
+fixture: research-mini
+prompt: "读取本地 API 资料并报告 fixture 的只读限制，不写入研究文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

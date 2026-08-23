@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDirectory = path.join(packageRoot, "release");
-const artifactNames = ["DreamCode-Portable-0.1.3-x64.exe", "DreamCode-Setup-0.1.3-x64.exe"];
+const { version } = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+const artifactNames = [
+  `DreamCode-Portable-${version}-x64.exe`,
+  `DreamCode-Setup-${version}-x64.exe`,
+];
 
 const lines = [];
 for (const name of artifactNames) {

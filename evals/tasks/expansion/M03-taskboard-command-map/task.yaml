@@ -1,0 +1,9 @@
+id: M03-taskboard-command-map
+fixture: taskboard-service
+prompt: "梳理 Taskboard 服务入口、命令和数据流，输出分析结论但不修改代码。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

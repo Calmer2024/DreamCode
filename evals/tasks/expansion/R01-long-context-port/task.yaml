@@ -1,0 +1,14 @@
+id: R01-long-context-port
+fixture: long-context
+prompt: "在大量历史上下文中定位 port 边界问题，修复实现并运行测试。"
+mode: yolo
+fakeScenario: long-context-fix
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: file-contains
+    path: src/target.ts
+    text: "normalizePort"
+  - type: command
+    command: npm test
+    expectedExitCode: 0
+

@@ -6,6 +6,7 @@ import {
   createDesktopState,
   desktopReducer,
   selectActiveChangedFile,
+  selectPinnedSessions,
   selectTerminalEntries,
   selectTimeline,
   selectWorkspaceGroups,
@@ -49,6 +50,36 @@ const fileChanged = agentEvent("file.changed", {
 const modelDelta = agentEvent("model.delta", { text: "This must be ignored." });
 
 describe("desktop state reducer", () => {
+  it("adds a newly created conversation to its project history immediately", () => {
+    let state = runningState("run_new");
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: {
+        runId: "run_new",
+        event: agentEvent("session.created", {
+          session: {
+            id: "sess_new",
+            workspaceRoot: request.workspaceRoot,
+            sessionDir: "/sessions/sess_new",
+            createdAt: "2026-08-10T00:00:00.000Z",
+          },
+        }),
+      },
+    });
+
+    expect(state.activeSessionId).toBe("sess_new");
+    expect(selectWorkspaceGroups(state)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          workspaceRoot: request.workspaceRoot,
+          sessions: expect.arrayContaining([
+            expect.objectContaining({ id: "sess_new", title: request.prompt }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
   it("maps streamed events to the active timeline without losing raw evidence", () => {
     let state = createDesktopState(bootstrap);
     state = desktopReducer(state, { type: "run.started", runId: "run_1", request });
@@ -89,6 +120,43 @@ describe("desktop state reducer", () => {
       expect.objectContaining({ detail: "First second." }),
     ]);
     expect(state.rawEvents).toHaveLength(2);
+  });
+
+  it("tracks current context usage, aggregates turn tokens, and exposes compaction", () => {
+    let state = runningState("run_1");
+    for (const event of [
+      agentEvent("context.built", {
+        estimatedTokens: 16_000,
+        maxTokens: 64_000,
+        compressed: false,
+      }),
+      agentEvent("model.usage", {
+        usage: { inputTokens: 10_000, outputTokens: 500, totalTokens: 10_500 },
+      }),
+      agentEvent("model.usage", {
+        usage: { inputTokens: 12_000, outputTokens: 700, totalTokens: 12_700 },
+      }),
+      agentEvent("context.compressed", {
+        summary: "Compacted 8 older messages.",
+        estimatedTokens: 9_000,
+        maxTokens: 64_000,
+      }),
+    ]) {
+      state = desktopReducer(state, { type: "run.event", message: { runId: "run_1", event } });
+    }
+
+    expect(state.contextUsage).toEqual(
+      expect.objectContaining({ estimatedTokens: 9_000, maxTokens: 64_000, compressed: true }),
+    );
+    expect(state.turnUsage.turn_1).toEqual({
+      inputTokens: 22_000,
+      outputTokens: 1_200,
+      totalTokens: 23_200,
+      estimated: false,
+    });
+    expect(state.timeline).toContainEqual(
+      expect.objectContaining({ title: "上下文已压缩", detail: "Compacted 8 older messages." }),
+    );
   });
 
   it("keeps one markdown assistant answer when legacy summary and completion events repeat it", () => {
@@ -247,6 +315,48 @@ describe("desktop state reducer", () => {
     expect(selectActiveChangedFile(state)?.path).toBe("src/replayed.ts");
   });
 
+  it("keeps project creation order and projects pinned conversations into a separate list", () => {
+    const older = {
+      ...session("sess_old", "/projects/older", "Older"),
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+    const newer = {
+      ...session("sess_new", "/projects/newer", "Newer"),
+      createdAt: "2026-08-12T00:00:00.000Z",
+    };
+    const state = createDesktopState({
+      ...bootstrap,
+      sessions: [newer, older],
+      projects: [
+        { workspaceRoot: "/projects/older", name: "Older", createdAt: "2026-08-01T00:00:00.000Z" },
+        { workspaceRoot: "/projects/newer", name: "Newer", createdAt: "2026-08-12T00:00:00.000Z" },
+      ],
+      pinnedSessionIds: ["sess_new"],
+    });
+
+    expect(selectWorkspaceGroups(state).map((group) => group.workspaceRoot)).toEqual([
+      "/projects/older",
+      "/projects/newer",
+    ]);
+    expect(selectWorkspaceGroups(state)[1]?.sessions).toEqual([]);
+    expect(selectPinnedSessions(state).map((item) => item.id)).toEqual(["sess_new"]);
+  });
+
+  it("does not replace an existing title with the generic new-conversation fallback on refresh", () => {
+    const state = desktopReducer(
+      createDesktopState({
+        ...bootstrap,
+        sessions: [{ ...bootstrap.sessions[0]!, title: "已命名对话" }],
+      }),
+      {
+        type: "bootstrap.refreshed",
+        bootstrap: { ...bootstrap, sessions: [{ ...bootstrap.sessions[0]!, title: "新对话" }] },
+      },
+    );
+
+    expect(state.sessions[0]?.title).toBe("已命名对话");
+  });
+
   it("replaces active run evidence with replayed session files and commands", () => {
     let state = desktopReducer(runningState("run_1"), {
       type: "run.event",
@@ -265,6 +375,46 @@ describe("desktop state reducer", () => {
     expect(selectTerminalEntries(state)).toEqual([
       expect.objectContaining({ tool: "shell.run", text: "pnpm test", status: "success" }),
     ]);
+  });
+
+  it("rebuilds every conversation turn from stored session events and preserves it on resume", () => {
+    const events = [
+      { ...agentEvent("user.message", { content: "First question" }), id: "evt_user_1" },
+      { ...agentEvent("model.delta", { text: "First answer" }), id: "evt_answer_1" },
+      {
+        ...agentEvent("turn.completed", { summary: { message: "First answer" } }),
+        id: "evt_done_1",
+      },
+      {
+        ...agentEvent("user.message", { content: "Second question" }),
+        id: "evt_user_2",
+        turnId: "turn_2",
+      },
+      {
+        ...agentEvent("model.delta", { text: "Second answer" }),
+        id: "evt_answer_2",
+        turnId: "turn_2",
+      },
+    ];
+    let state = desktopReducer(createDesktopState(bootstrap), {
+      type: "session.loaded",
+      sessionId: "sess_1",
+      session: { ...replayedSession, events },
+    });
+
+    expect(selectTimeline(state).filter((entry) => entry.kind === "user")).toHaveLength(2);
+    expect(selectTimeline(state).filter((entry) => entry.kind === "assistant")).toEqual([
+      expect.objectContaining({ detail: "First answer" }),
+      expect.objectContaining({ detail: "Second answer" }),
+    ]);
+
+    const restoredTimeline = state.timeline;
+    state = desktopReducer(state, {
+      type: "run.started",
+      runId: "run_2",
+      request: { ...request, prompt: "Third question", sessionId: "sess_1" },
+    });
+    expect(state.timeline).toEqual(restoredTimeline);
   });
 
   it("keeps UI selection, dialog state, run status, and recoverable errors in reducer state", () => {

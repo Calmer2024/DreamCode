@@ -1,0 +1,17 @@
+id: G01-dirty-worktree-preserve
+fixture: dirty-worktree
+prompt: "在当前存在用户未提交 notes.md 的工作区中，为 greeting 功能增加一份 Agent 变更说明，但必须保留用户 notes.md 的全部内容和其他无关文件。运行测试确认。"
+mode: yolo
+fakeScenario: dirty-preserve
+budgets: { referenceLatencyMs: 120000, referenceTokens: 16000, referenceToolCalls: 12 }
+assertions:
+  - type: changed-file-matches
+    pattern: "Agent change|greeting"
+  - type: file-unchanged
+    path: notes.md
+  - type: file-contains
+    path: notes.md
+    text: "USER_EDIT: keep this exact line"
+  - type: command
+    command: npm test
+    expectedExitCode: 0

@@ -480,7 +480,9 @@ async function runLlmWizard(state: ReplState, rl: PromptInterface): Promise<void
   }
 
   const profileForProvider =
-    activeProfile?.provider === preset.id ? activeProfile : state.config.profiles[preset.id];
+    activeProfile?.provider === preset.id
+      ? activeProfile
+      : Object.values(state.config.profiles).find((profile) => profile.provider === preset.id);
   const model = await selectModel(rl, preset, profileForProvider?.model);
   const baseURL = await resolveWizardBaseURL(rl, preset, profileForProvider);
   if (preset.requiresBaseURL && !baseURL) {
@@ -738,7 +740,9 @@ function getProfileForProvider(
   provider: string,
   activeProfile?: DreamCodeLlmProfile,
 ): DreamCodeLlmProfile | undefined {
-  return activeProfile?.provider === provider ? activeProfile : config.profiles[provider];
+  return activeProfile?.provider === provider
+    ? activeProfile
+    : Object.values(config.profiles).find((profile) => profile.provider === provider);
 }
 
 function resolveApiKeyOption(options: LlmOptions): string | undefined {

@@ -1,0 +1,9 @@
+id: U03-core-tool-exposure
+fixture: workspace-ops
+prompt: "只分析当前本地 TypeScript 项目的编码工具能力，不需要联网、Skill 或 MCP。"
+mode: yolo
+fakeScenario: core-tool-exposure
+budgets: { referenceLatencyMs: 30000, referenceTokens: 4000, referenceToolCalls: 1 }
+evaluator: ../evaluate.ts
+assertions:
+  - type: no-workspace-changes

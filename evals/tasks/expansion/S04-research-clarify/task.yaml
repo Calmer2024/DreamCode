@@ -1,0 +1,9 @@
+id: S04-research-clarify
+fixture: research-mini
+prompt: "研究请求没有说明事实与建议是否分栏，先澄清输出结构，不修改文件。"
+mode: yolo
+fakeScenario: clarify
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

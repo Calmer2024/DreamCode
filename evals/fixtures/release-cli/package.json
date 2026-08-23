@@ -1,0 +1,11 @@
+{
+  "name": "release-cli",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "release": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test"
+  }
+}

@@ -10,7 +10,8 @@ import { chromium } from "@playwright/test";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(packageRoot, "../..");
 const releaseDirectory = path.join(packageRoot, "release");
-const executablePath = path.join(releaseDirectory, "DreamCode-Portable-0.1.3-x64.exe");
+const { version } = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+const executablePath = path.join(releaseDirectory, `DreamCode-Portable-${version}-x64.exe`);
 const reportPath = path.join(releaseDirectory, "chain-test-report.json");
 const startedAt = new Date().toISOString();
 const assertions = {
@@ -188,7 +189,7 @@ async function waitForCdpEndpoint(port, processExit) {
 
 async function chooseWorkspace(page) {
   await page.getByLabel("选择工作区", { exact: true }).click();
-  await page.getByRole("button", { name: /选择工作区：workspace/ }).waitFor();
+  await page.getByRole("button", { name: /在资源管理器中打开：workspace/ }).waitFor();
 }
 
 async function runPrompt(page, prompt) {

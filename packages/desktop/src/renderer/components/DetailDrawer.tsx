@@ -1,279 +1,438 @@
-import type { AgentEvent, ChangedFile } from "@dreamcode/shared";
-import type { ReplayedSessionState } from "@dreamcode/store";
-import { Braces, CheckCircle2, FileDiff, RotateCcw, SquareTerminal, X } from "lucide-react";
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { AgentEvent } from "@dreamcode/shared";
+import {
+  ChevronDown,
+  CircleAlert,
+  FileText,
+  Plus,
+  ScrollText,
+  SquareTerminal,
+  X,
+} from "lucide-react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { DesktopApi } from "../../shared/contracts";
 import type { DesktopTerminalEntry } from "../state/desktop-state";
+import { TerminalView } from "./TerminalView";
 
-export type DetailTab = "diff" | "terminal" | "event" | "session";
+export type DetailTab = "logs" | "terminal";
 
 interface DetailDrawerProps {
-  api: DesktopApi;
-  sessionId?: string;
-  session?: ReplayedSessionState;
-  changedFile?: ChangedFile;
   terminalEntries?: DesktopTerminalEntry[];
   events?: AgentEvent[];
   initialTab?: DetailTab;
   onClose: () => void;
-  onSessionRefresh?: (session: ReplayedSessionState) => void;
+  api?: DesktopApi;
+  workspaceRoot?: string;
 }
 
 const outputLimit = 200 * 1024;
-const tabs: Array<{ id: DetailTab; label: string }> = [
-  { id: "diff", label: "Diff" },
-  { id: "terminal", label: "终端" },
-  { id: "event", label: "事件" },
-  { id: "session", label: "会话" },
+const tabs: Array<{ id: DetailTab; label: string; Icon: typeof FileText }> = [
+  { id: "logs", label: "日志", Icon: ScrollText },
+  { id: "terminal", label: "终端", Icon: SquareTerminal },
 ];
 
 export function DetailDrawer({
-  api,
-  sessionId: activeSessionId,
-  session,
-  changedFile,
   terminalEntries = [],
   events = [],
-  initialTab = "diff",
+  initialTab = "logs",
   onClose,
-  onSessionRefresh,
+  api,
+  workspaceRoot,
 }: DetailDrawerProps) {
   const [tab, setTab] = useState<DetailTab>(initialTab);
-  const [selectedPath, setSelectedPath] = useState(
-    changedFile?.path ?? session?.changedFiles[0]?.path,
-  );
-  const availableFiles = session?.changedFiles ?? (changedFile ? [changedFile] : []);
-  const selectedFile =
-    availableFiles.find((file) => file.path === selectedPath) ??
-    (changedFile?.path === selectedPath ? changedFile : undefined);
-  const sessionId = activeSessionId ?? session?.session?.id;
-  const [diff, setDiff] = useState(selectedFile?.diff ?? "");
-  const [loadingDiff, setLoadingDiff] = useState(false);
-  const [confirmingRollback, setConfirmingRollback] = useState(false);
-  const [rollingBack, setRollingBack] = useState(false);
-  const [evidence, setEvidence] = useState<{ tone: "success" | "error"; text: string }>();
-
+  const [terminalId, setTerminalId] = useState<string>();
+  const [liveTerminalOutput, setLiveTerminalOutput] = useState("");
+  const [terminalError, setTerminalError] = useState<string>();
+  const [terminalGeneration, setTerminalGeneration] = useState(0);
+  const dragPointerRef = useRef<number | undefined>(undefined);
+  const resizeFrameRef = useRef<number | undefined>(undefined);
+  const pendingHeightRef = useRef(360);
   useEffect(() => setTab(initialTab), [initialTab]);
-  useEffect(() => {
-    setSelectedPath(changedFile?.path ?? session?.changedFiles[0]?.path);
-  }, [changedFile?.path, session?.changedFiles]);
 
   useEffect(() => {
-    if (!sessionId || !selectedFile) {
-      setDiff(selectedFile?.diff ?? "");
-      return;
-    }
-    let current = true;
-    setLoadingDiff(true);
+    void terminalGeneration;
+    if (tab !== "terminal" || !api || !workspaceRoot) return;
+    let disposed = false;
+    let activeTerminalId: string | undefined;
+    const pendingOutput = new Map<string, string>();
+    setTerminalError(undefined);
+    const unsubscribe = api.onTerminalOutput((output) => {
+      if (activeTerminalId) {
+        if (output.terminalId === activeTerminalId) {
+          setLiveTerminalOutput((current) => `${current}${output.text}`);
+        }
+        return;
+      }
+      pendingOutput.set(
+        output.terminalId,
+        `${pendingOutput.get(output.terminalId) ?? ""}${output.text}`,
+      );
+    });
     void api
-      .readDiff({ sessionId, filePath: selectedFile.path })
-      .then((nextDiff) => {
-        if (current) setDiff(nextDiff);
+      .startTerminal(workspaceRoot)
+      .then(({ terminalId: nextId }) => {
+        if (disposed) {
+          void api.closeTerminal(nextId);
+          return;
+        }
+        activeTerminalId = nextId;
+        setLiveTerminalOutput(pendingOutput.get(nextId) ?? "");
+        setTerminalId(nextId);
       })
-      .catch(() => {
-        if (current) setEvidence({ tone: "error", text: `无法读取 ${selectedFile.path} 的 Diff` });
-      })
-      .finally(() => {
-        if (current) setLoadingDiff(false);
+      .catch((error) => {
+        if (!disposed) setTerminalError(readErrorMessage(error));
       });
     return () => {
-      current = false;
+      disposed = true;
+      unsubscribe();
+      if (activeTerminalId) void api.closeTerminal(activeTerminalId);
+      setTerminalId(undefined);
+      setLiveTerminalOutput("");
     };
-  }, [api, selectedFile, sessionId]);
+  }, [api, tab, workspaceRoot, terminalGeneration]);
 
-  const terminalOutput = useMemo(() => stringify(terminalEntries), [terminalEntries]);
-  const eventOutput = useMemo(() => stringify(events), [events]);
-  const sessionOutput = useMemo(() => stringify(session), [session]);
+  useEffect(() => {
+    document.documentElement.style.setProperty("--drawer-height", `${pendingHeightRef.current}px`);
+    return () => {
+      if (resizeFrameRef.current !== undefined) cancelAnimationFrame(resizeFrameRef.current);
+      document.documentElement.removeAttribute("data-drawer-resizing");
+      document.documentElement.style.removeProperty("--drawer-height");
+    };
+  }, []);
 
-  const rollback = async () => {
-    if (!sessionId || !selectedFile) return;
-    setRollingBack(true);
-    setEvidence(undefined);
-    try {
-      const result = await api.rollback({ sessionId, filePath: selectedFile.path });
-      const refreshed = await api.readSession(sessionId);
-      onSessionRefresh?.(refreshed);
-      const refreshedDiff = await api.readDiff({ sessionId, filePath: selectedFile.path });
-      setDiff(refreshedDiff);
-      if (result.failedFiles.length > 0) {
-        setEvidence({
-          tone: "error",
-          text: result.failedFiles.map((file) => `${file.path}: ${file.reason}`).join("\n"),
-        });
-      } else {
-        setEvidence({ tone: "success", text: `已回滚 ${selectedFile.path}` });
-      }
-    } catch {
-      setEvidence({ tone: "error", text: `回滚 ${selectedFile.path} 失败` });
-    } finally {
-      setConfirmingRollback(false);
-      setRollingBack(false);
-    }
+  const updateHeight = (clientY: number) => {
+    pendingHeightRef.current = Math.max(
+      220,
+      Math.min(Math.round(window.innerHeight * 0.72), window.innerHeight - clientY),
+    );
+    if (resizeFrameRef.current !== undefined) return;
+    resizeFrameRef.current = requestAnimationFrame(() => {
+      resizeFrameRef.current = undefined;
+      document.documentElement.style.setProperty(
+        "--drawer-height",
+        `${pendingHeightRef.current}px`,
+      );
+    });
   };
+
+  const finishResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (dragPointerRef.current !== event.pointerId) return;
+    updateHeight(event.clientY);
+    dragPointerRef.current = undefined;
+    document.documentElement.removeAttribute("data-drawer-resizing");
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const terminalOutput = useMemo(
+    () => terminalEntries.map(formatTerminalEntry).join("\n"),
+    [terminalEntries],
+  );
 
   return (
     <div className="drawer-backdrop">
-      <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label="任务证据">
-        <header className="drawer-header">
-          <div>
-            <p className="dialog-kicker">审查与证据</p>
-            <h2>任务证据</h2>
+      <aside className="detail-drawer" role="dialog" aria-modal="false" aria-label="底部面板">
+        <button
+          type="button"
+          className="drawer-resize-handle"
+          aria-label="调整底部栏高度"
+          onPointerDown={(event) => {
+            dragPointerRef.current = event.pointerId;
+            document.documentElement.setAttribute("data-drawer-resizing", "true");
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (dragPointerRef.current === event.pointerId) updateHeight(event.clientY);
+          }}
+          onPointerUp={finishResize}
+          onPointerCancel={finishResize}
+        />
+        <header className="drawer-tabbar">
+          <div className="drawer-tabs" role="tablist" aria-label="底部面板类型">
+            {tabs.map(({ id, label, Icon }) => (
+              <button
+                type="button"
+                role="tab"
+                aria-label={label}
+                aria-selected={tab === id}
+                className="drawer-tab"
+                key={id}
+                onClick={() => setTab(id)}
+              >
+                <Icon aria-hidden="true" />
+                <span
+                  className="drawer-tab-label"
+                  title={id === "terminal" ? workspaceRoot : undefined}
+                >
+                  {id === "terminal" && workspaceRoot ? workspaceRoot : label}
+                </span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className="drawer-new-tab"
+              aria-label="新建终端"
+              data-tooltip="新建终端"
+              disabled={!api || !workspaceRoot}
+              onClick={() => {
+                setTab("terminal");
+                setTerminalGeneration((generation) => generation + 1);
+              }}
+            >
+              <Plus aria-hidden="true" />
+            </button>
           </div>
-          <button type="button" className="icon-button" aria-label="关闭详情" onClick={onClose}>
+          <button
+            type="button"
+            className="drawer-close"
+            aria-label="关闭详情"
+            data-tooltip="关闭"
+            onClick={onClose}
+          >
             <X aria-hidden="true" />
           </button>
         </header>
 
-        <div className="drawer-tabs" role="tablist" aria-label="证据类型">
-          {tabs.map((item) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === item.id}
-              className="drawer-tab"
-              key={item.id}
-              onClick={() => setTab(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
         <div className="drawer-body">
-          {tab === "diff" ? (
-            <section className="drawer-panel" role="tabpanel">
-              <div className="drawer-toolbar">
-                <label>
-                  <span className="sr-only">变更文件</span>
-                  <select
-                    aria-label="变更文件"
-                    value={selectedPath ?? ""}
-                    disabled={availableFiles.length === 0}
-                    onChange={(event) => setSelectedPath(event.target.value)}
-                  >
-                    {!selectedPath ? <option value="">没有变更文件</option> : null}
-                    {availableFiles.map((file) => (
-                      <option value={file.path} key={file.path}>
-                        {file.path}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className="danger-button rollback-button"
-                  disabled={!sessionId || !selectedFile || rollingBack}
-                  onClick={() => setConfirmingRollback(true)}
-                >
-                  <RotateCcw aria-hidden="true" />
-                  回滚文件
-                </button>
+          {tab === "logs" ? (
+            <LogEventList events={events} />
+          ) : terminalError ? (
+            <div className="terminal-error" role="alert">
+              <CircleAlert aria-hidden="true" />
+              <div>
+                <strong>终端启动失败</strong>
+                <span>{terminalError}</span>
               </div>
-              {loadingDiff ? (
-                <p className="drawer-empty">正在读取 Diff</p>
-              ) : (
-                <EvidenceOutput
-                  icon={<FileDiff aria-hidden="true" />}
-                  text={diff}
-                  empty="没有可显示的 Diff"
-                />
-              )}
-            </section>
-          ) : null}
-          {tab === "terminal" ? (
-            <section className="drawer-panel" role="tabpanel">
-              <EvidenceOutput
-                icon={<SquareTerminal aria-hidden="true" />}
-                text={terminalOutput}
-                empty="没有终端输出"
-              />
-            </section>
-          ) : null}
-          {tab === "event" ? (
-            <section className="drawer-panel" role="tabpanel">
-              <EvidenceOutput
-                icon={<Braces aria-hidden="true" />}
-                text={eventOutput}
-                empty="没有事件记录"
-              />
-            </section>
-          ) : null}
-          {tab === "session" ? (
-            <section className="drawer-panel" role="tabpanel">
-              <EvidenceOutput
-                icon={<CheckCircle2 aria-hidden="true" />}
-                text={sessionOutput}
-                empty="尚未选择会话"
-              />
-            </section>
-          ) : null}
-          {evidence ? (
-            <p
-              className={`rollback-evidence tone-${evidence.tone}`}
-              role={evidence.tone === "success" ? "status" : "alert"}
-            >
-              {evidence.text}
-            </p>
-          ) : null}
+            </div>
+          ) : api && terminalId ? (
+            <TerminalView
+              api={api}
+              terminalId={terminalId}
+              output={boundOutput(`${terminalOutput}${liveTerminalOutput}`)}
+            />
+          ) : (
+            <pre className="drawer-output" data-testid="detail-output">
+              {boundOutput(terminalOutput) || "终端正在启动…"}
+            </pre>
+          )}
         </div>
       </aside>
-
-      {confirmingRollback && selectedFile ? (
-        <div className="modal-backdrop modal-priority">
-          <section
-            className="dialog-card rollback-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label="确认回滚文件"
-          >
-            <header className="dialog-header">
-              <div>
-                <p className="dialog-kicker">不可自动撤销</p>
-                <h2>确认回滚文件</h2>
-              </div>
-            </header>
-            <p>将使用会话快照恢复以下精确路径：</p>
-            <code className="rollback-path">{selectedFile.path}</code>
-            <footer className="dialog-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={rollingBack}
-                onClick={() => setConfirmingRollback(false)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                disabled={rollingBack}
-                onClick={() => void rollback()}
-              >
-                {rollingBack ? "正在回滚" : "确认回滚"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      ) : null}
     </div>
   );
 }
 
-function EvidenceOutput({ icon, text, empty }: { icon: ReactNode; text: string; empty: string }) {
-  if (!text) return <p className="drawer-empty">{empty}</p>;
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return "无法在当前项目目录启动系统终端。";
+}
+
+function LogEventList({ events }: { events: AgentEvent[] }) {
+  if (!events.length) {
+    return (
+      <div className="drawer-empty">
+        <FileText aria-hidden="true" />
+        <span>暂无日志</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="evidence-output-wrap">
-      <span className="evidence-output-icon">{icon}</span>
-      <pre className="evidence-output" data-testid="detail-output">
-        {boundOutput(text)}
-      </pre>
+    <div className="log-event-list" data-testid="detail-output">
+      {groupLogEvents(events).map((event) => {
+        const presentation = eventPresentation(event);
+        const detail = compactJson(event.payload);
+        const preview = eventPreview(event);
+        const collapsible = detail.length > 120 || detail.includes("\n");
+        const rowClassName = `log-line tone-${presentation.tone}`;
+        return (
+          <details className={rowClassName} key={event.id}>
+            <summary className="log-line-summary">
+              <time className="log-line-time" dateTime={event.timestamp}>
+                {formatTime(event.timestamp)}
+              </time>
+              <span className="log-line-module">{presentation.module}</span>
+              <code className="log-line-type">{event.type}</code>
+              <span className="log-line-status">{presentation.label}</span>
+              <span className="log-line-message">{preview || presentation.label}</span>
+              {detail && collapsible ? (
+                <span className="log-line-detail-toggle">
+                  详情
+                  <ChevronDown aria-hidden="true" />
+                </span>
+              ) : null}
+            </summary>
+            {detail && collapsible ? (
+              <div className="log-line-detail-content">{boundOutput(detail)}</div>
+            ) : null}
+          </details>
+        );
+      })}
     </div>
   );
 }
 
-function stringify(value: unknown): string {
-  if (value === undefined || (Array.isArray(value) && value.length === 0)) return "";
+function groupLogEvents(events: AgentEvent[]): AgentEvent[] {
+  const grouped: AgentEvent[] = [];
+  for (const event of events) {
+    const previous = grouped.at(-1);
+    if (event.type !== "model.delta" || previous?.type !== "model.delta") {
+      grouped.push(event);
+      continue;
+    }
+
+    const previousPayload = previous.payload;
+    const currentPayload = event.payload;
+    if (
+      previous.turnId !== event.turnId ||
+      !previousPayload ||
+      typeof previousPayload !== "object" ||
+      !currentPayload ||
+      typeof currentPayload !== "object"
+    ) {
+      grouped.push(event);
+      continue;
+    }
+
+    const previousText = stringPayload(previousPayload, "text");
+    const currentText = stringPayload(currentPayload, "text");
+    if (previousText === undefined || currentText === undefined) {
+      grouped.push(event);
+      continue;
+    }
+
+    grouped[grouped.length - 1] = {
+      ...previous,
+      timestamp: event.timestamp,
+      payload: {
+        ...(previousPayload as Record<string, unknown>),
+        text: previousText + currentText,
+        chunkCount:
+          numberPayload(previousPayload, "chunkCount") +
+          numberPayload(currentPayload, "chunkCount"),
+      },
+    };
+  }
+  return grouped;
+}
+
+function stringPayload(value: object, key: string): string | undefined {
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === "string" ? item : undefined;
+}
+
+function numberPayload(value: object, key: string): number {
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === "number" && Number.isFinite(item) ? item : 1;
+}
+
+function eventPresentation(event: AgentEvent) {
+  if (event.type.includes("failed") || event.type.includes("error")) {
+    return {
+      label: "执行失败",
+      module: "runtime",
+      tone: "danger",
+    } as const;
+  }
+  if (event.type.includes("completed") || event.type.includes("saved")) {
+    return {
+      label: "执行完成",
+      module: "runtime",
+      tone: "success",
+    } as const;
+  }
+  if (event.type.startsWith("tool.") || event.type === "model.tool_call") {
+    return { label: "工具调用", module: "tool", tone: "tool" } as const;
+  }
+  if (event.type.startsWith("file.") || event.type.includes("artifact")) {
+    return {
+      label: "文件变更",
+      module: "files",
+      tone: "file",
+    } as const;
+  }
+  if (event.type.startsWith("model.")) {
+    return { label: "模型输出", module: "model", tone: "model" } as const;
+  }
+  if (event.type === "user.message") {
+    return {
+      label: "用户输入",
+      module: "user",
+      tone: "message",
+    } as const;
+  }
+  if (event.type.startsWith("permission.")) {
+    return {
+      label: "权限决策",
+      module: "policy",
+      tone: "warning",
+    } as const;
+  }
+  if (event.type.includes("question")) {
+    return {
+      label: "交互问题",
+      module: "user",
+      tone: "warning",
+    } as const;
+  }
+  return {
+    label: "运行事件",
+    module: "runtime",
+    symbol: "·",
+    tone: "info",
+  } as const;
+}
+
+function eventPreview(event: AgentEvent): string {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload))
+    return "";
+  const payload = event.payload as Record<string, unknown>;
+  for (const key of [
+    "summary",
+    "content",
+    "message",
+    "reason",
+    "command",
+    "path",
+    "tool",
+    "model",
+    "status",
+  ]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return truncate(value.trim(), 180);
+  }
+  const toolCall = payload.toolCall;
+  if (toolCall && typeof toolCall === "object" && !Array.isArray(toolCall)) {
+    const name = (toolCall as Record<string, unknown>).name;
+    if (typeof name === "string") return name;
+  }
+  return "";
+}
+
+function truncate(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}…`;
+}
+
+function formatTerminalEntry(entry: DesktopTerminalEntry): string {
+  const prefix = entry.stream === "stderr" ? "[stderr] " : "";
+  return `${prefix}${entry.text}`;
+}
+
+function formatTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.valueOf())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
+
+function compactJson(value: unknown): string {
+  if (value === undefined) return "";
   try {
     return JSON.stringify(value, null, 2) ?? "";
   } catch {
@@ -290,11 +449,8 @@ export function boundOutput(value: string): string {
   let high = value.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (encoder.encode(value.slice(0, middle)).byteLength <= byteBudget) {
-      low = middle;
-    } else {
-      high = middle - 1;
-    }
+    if (encoder.encode(value.slice(0, middle)).byteLength <= byteBudget) low = middle;
+    else high = middle - 1;
   }
   const safeEnd = low > 0 && isHighSurrogate(value.charCodeAt(low - 1)) ? low - 1 : low;
   return `${value.slice(0, safeEnd)}${marker}`;

@@ -1,0 +1,8 @@
+id: L01-task-report
+fixture: workspace-ops
+prompt: "查看当前 workspace 的项目规则和文件状态，输出一份简短任务状态报告。只读，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 60000, referenceTokens: 10000, referenceToolCalls: 6 }
+assertions:
+  - type: no-workspace-changes

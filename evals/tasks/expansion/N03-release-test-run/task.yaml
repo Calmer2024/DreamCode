@@ -1,0 +1,11 @@
+id: N03-release-test-run
+fixture: release-cli
+prompt: "只运行 Release CLI 测试并报告结果，不修改文件。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: command
+    command: npm test
+    expectedExitCode: 0
+

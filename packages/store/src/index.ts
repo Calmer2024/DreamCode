@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentEvent, ChangedFile, FinalSummary, Session, TodoItem } from "@dreamcode/shared";
 import { createId, makeEvent, nowIso } from "@dreamcode/shared";
+
+const configWriteQueues = new Map<string, Promise<void>>();
 
 export function getDreamCodeHome(): string {
   return process.env.DREAMCODE_HOME ?? path.join(os.homedir(), ".dreamcode");
@@ -30,6 +32,10 @@ export interface DreamCodeLlmProfile {
   baseURL?: string;
 }
 
+export interface DreamCodeStoredLlmProfile extends DreamCodeLlmProfile {
+  alias: string;
+}
+
 export interface DreamCodeMcpServerConfig {
   command: string;
   args?: string[];
@@ -38,12 +44,14 @@ export interface DreamCodeMcpServerConfig {
 }
 
 export interface DreamCodeConfig {
-  version: 1;
-  currentProfile?: string;
-  profiles: Record<string, DreamCodeLlmProfile>;
+  version: 2;
+  currentProfileId?: string;
+  profiles: Record<string, DreamCodeStoredLlmProfile>;
+  exaApiKey?: string;
   mcpServers?: Record<string, DreamCodeMcpServerConfig>;
   projects?: DreamCodeProject[];
   pinnedSessionIds?: string[];
+  sessionTitles?: Record<string, string>;
 }
 
 export interface DreamCodeProject {
@@ -81,15 +89,103 @@ export async function saveDreamCodeConfig(
 ): Promise<string> {
   await mkdir(home, { recursive: true });
   const configPath = getConfigPath(home);
-  await writeFile(configPath, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, "utf8");
+  const previous = configWriteQueues.get(configPath) ?? Promise.resolve();
+  const write = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const temporaryPath = `${configPath}.${process.pid}.${createId("write")}.tmp`;
+      await writeFile(
+        temporaryPath,
+        `${JSON.stringify(normalizeConfig(config), null, 2)}\n`,
+        "utf8",
+      );
+      try {
+        await rename(temporaryPath, configPath);
+      } catch (error) {
+        await rm(temporaryPath, { force: true });
+        throw error;
+      }
+    });
+  configWriteQueues.set(configPath, write);
+  try {
+    await write;
+  } finally {
+    if (configWriteQueues.get(configPath) === write) configWriteQueues.delete(configPath);
+  }
   return configPath;
 }
 
 export function getActiveLlmProfile(config: DreamCodeConfig): DreamCodeLlmProfile | undefined {
-  if (!config.currentProfile) {
+  if (!config.currentProfileId) {
     return undefined;
   }
-  return config.profiles[config.currentProfile];
+  return config.profiles[config.currentProfileId];
+}
+
+export function findLlmProfile(
+  config: DreamCodeConfig,
+  selector: string,
+  provider?: string,
+): { id: string; profile: DreamCodeStoredLlmProfile } | undefined {
+  const direct = config.profiles[selector];
+  if (direct && (!provider || direct.provider === provider))
+    return { id: selector, profile: direct };
+  const normalized = selector.trim().toLocaleLowerCase();
+  const matches = Object.entries(config.profiles).filter(
+    ([, profile]) =>
+      profile.alias.toLocaleLowerCase() === normalized &&
+      (!provider || profile.provider === provider),
+  );
+  return matches.length === 1 ? { id: matches[0]![0], profile: matches[0]![1] } : undefined;
+}
+
+export function createLlmProfile(
+  config: DreamCodeConfig,
+  profile: DreamCodeLlmProfile & { alias: string },
+): { config: DreamCodeConfig; profileId: string } {
+  assertUniqueProfileAlias(config, profile.provider, profile.alias);
+  const profileId = createId("profile");
+  return {
+    profileId,
+    config: normalizeConfig({
+      ...config,
+      profiles: { ...config.profiles, [profileId]: normalizeStoredProfile(profile, profile.alias) },
+    }),
+  };
+}
+
+export function updateLlmProfile(
+  config: DreamCodeConfig,
+  profileId: string,
+  profile: DreamCodeLlmProfile & { alias: string },
+): DreamCodeConfig {
+  if (!config.profiles[profileId]) throw new Error("Model profile does not exist.");
+  assertUniqueProfileAlias(config, profile.provider, profile.alias, profileId);
+  return normalizeConfig({
+    ...config,
+    profiles: { ...config.profiles, [profileId]: normalizeStoredProfile(profile, profile.alias) },
+  });
+}
+
+export function deleteLlmProfile(config: DreamCodeConfig, profileId: string): DreamCodeConfig {
+  const profileIds = Object.keys(config.profiles);
+  const index = profileIds.indexOf(profileId);
+  if (index < 0) throw new Error("Model profile does not exist.");
+  const profiles = { ...config.profiles };
+  delete profiles[profileId];
+  let currentProfileId = config.currentProfileId;
+  if (currentProfileId === profileId) {
+    currentProfileId = profileIds[index + 1] ?? profileIds[index - 1];
+  }
+  return normalizeConfig({ ...config, currentProfileId, profiles });
+}
+
+export function setCurrentLlmProfile(
+  config: DreamCodeConfig,
+  profileId: string | undefined,
+): DreamCodeConfig {
+  if (profileId && !config.profiles[profileId]) throw new Error("Model profile does not exist.");
+  return normalizeConfig({ ...config, currentProfileId: profileId });
 }
 
 export function upsertLlmProfile(
@@ -97,15 +193,16 @@ export function upsertLlmProfile(
   name: string,
   profile: DreamCodeLlmProfile,
 ): DreamCodeConfig {
-  const normalizedName = name.trim() || profile.provider;
-  return normalizeConfig({
-    ...config,
-    currentProfile: normalizedName,
-    profiles: {
-      ...config.profiles,
-      [normalizedName]: normalizeProfile(profile),
-    },
-  });
+  const alias = name.trim() || profile.provider;
+  const existing = findLlmProfile(config, alias, profile.provider);
+  if (existing) {
+    return setCurrentLlmProfile(
+      updateLlmProfile(config, existing.id, { ...profile, alias }),
+      existing.id,
+    );
+  }
+  const created = createLlmProfile(config, { ...profile, alias });
+  return setCurrentLlmProfile(created.config, created.profileId);
 }
 
 export async function upsertProject(
@@ -121,10 +218,10 @@ export async function upsertProject(
     pinned: project.pinned ?? existing?.pinned,
     createdAt: existing?.createdAt ?? project.createdAt ?? nowIso(),
   };
-  const projects = [
-    ...(config.projects ?? []).filter((item) => item.workspaceRoot !== workspaceRoot),
-    next,
-  ];
+  const projects = [...(config.projects ?? [])];
+  const existingIndex = projects.findIndex((item) => item.workspaceRoot === workspaceRoot);
+  if (existingIndex >= 0) projects[existingIndex] = next;
+  else projects.push(next);
   const updated = normalizeConfig({ ...config, projects });
   await saveDreamCodeConfig(updated, home);
   return updated;
@@ -158,12 +255,28 @@ export async function setSessionPinned(
   return updated;
 }
 
+export async function renameSession(
+  sessionId: string,
+  title: string,
+  home = getDreamCodeHome(),
+): Promise<DreamCodeConfig> {
+  const config = await loadDreamCodeConfig(home);
+  const cleanTitle = title.trim().slice(0, 80);
+  const sessionTitles = { ...(config.sessionTitles ?? {}) };
+  if (cleanTitle) sessionTitles[sessionId] = cleanTitle;
+  else delete sessionTitles[sessionId];
+  const updated = normalizeConfig({ ...config, sessionTitles });
+  await saveDreamCodeConfig(updated, home);
+  return updated;
+}
+
 export async function deleteSession(sessionId: string, home = getDreamCodeHome()): Promise<void> {
   const resolved = path.resolve(getSessionDir(sessionId, home));
   const sessionsRoot = path.resolve(getSessionsRoot(home));
   if (path.dirname(resolved) !== sessionsRoot) throw new Error("Invalid session ID.");
   await rm(resolved, { recursive: true, force: true });
   await setSessionPinned(sessionId, false, home);
+  await renameSession(sessionId, "", home);
   await rebuildSessionIndex(home);
 }
 
@@ -182,6 +295,7 @@ export async function deleteSessionsForWorkspace(
 
 export class JsonlEventLog {
   readonly filePath: string;
+  private pendingModelDelta?: AgentEvent<{ text?: string; chunkCount?: number }>;
 
   constructor(readonly sessionDir: string) {
     this.filePath = path.join(sessionDir, "events.jsonl");
@@ -197,10 +311,41 @@ export class JsonlEventLog {
   }
 
   async append(event: AgentEvent): Promise<void> {
+    if (event.type === "model.delta" && isModelDeltaPayload(event.payload)) {
+      if (
+        this.pendingModelDelta &&
+        this.pendingModelDelta.sessionId === event.sessionId &&
+        this.pendingModelDelta.turnId === event.turnId
+      ) {
+        const previous = this.pendingModelDelta.payload.text ?? "";
+        this.pendingModelDelta = {
+          ...this.pendingModelDelta,
+          payload: {
+            ...this.pendingModelDelta.payload,
+            text: previous + event.payload.text,
+            chunkCount: (this.pendingModelDelta.payload.chunkCount ?? 1) + 1,
+          },
+        };
+        return;
+      }
+
+      await this.flushPendingModelDelta();
+      this.pendingModelDelta = {
+        ...event,
+        payload: {
+          ...event.payload,
+          chunkCount: event.payload.chunkCount ?? 1,
+        },
+      };
+      return;
+    }
+
+    await this.flushPendingModelDelta();
     await writeFile(this.filePath, `${JSON.stringify(event)}\n`, { flag: "a" });
   }
 
   async readAll(): Promise<AgentEvent[]> {
+    await this.flushPendingModelDelta();
     try {
       const content = await readFile(this.filePath, "utf8");
       return content
@@ -214,6 +359,22 @@ export class JsonlEventLog {
       throw error;
     }
   }
+
+  private async flushPendingModelDelta(): Promise<void> {
+    if (!this.pendingModelDelta) return;
+    const event = this.pendingModelDelta;
+    this.pendingModelDelta = undefined;
+    await writeFile(this.filePath, `${JSON.stringify(event)}\n`, { flag: "a" });
+  }
+}
+
+function isModelDeltaPayload(value: unknown): value is { text: string; chunkCount?: number } {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "text" in value &&
+      typeof (value as { text?: unknown }).text === "string",
+  );
 }
 
 export interface CreateSessionInput {
@@ -489,8 +650,13 @@ export async function listSessions(input: ListSessionsInput = {}): Promise<Sessi
     sessions = sessions.filter((session) => session.status === input.status);
   }
 
+  const config = await loadDreamCodeConfig(input.home);
   return sessions
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .map((session) => ({
+      ...session,
+      title: config.sessionTitles?.[session.id] ?? session.title,
+    }))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, input.limit ?? 50);
 }
 
@@ -641,7 +807,7 @@ async function rollbackChangedFile(input: {
 
 function createEmptyConfig(): DreamCodeConfig {
   return {
-    version: 1,
+    version: 2,
     profiles: {},
   };
 }
@@ -651,24 +817,33 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
     return createEmptyConfig();
   }
 
-  const input = raw as Partial<DreamCodeConfig>;
-  const profiles: Record<string, DreamCodeLlmProfile> = {};
-  if (input.profiles && typeof input.profiles === "object" && !Array.isArray(input.profiles)) {
-    for (const [name, profile] of Object.entries(input.profiles)) {
+  const input = raw as Record<string, unknown>;
+  const profiles: Record<string, DreamCodeStoredLlmProfile> = {};
+  const rawProfiles = input.profiles;
+  const isVersion2 = input.version === 2;
+  if (rawProfiles && typeof rawProfiles === "object" && !Array.isArray(rawProfiles)) {
+    for (const [key, profile] of Object.entries(rawProfiles)) {
       if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
         continue;
       }
-      const normalized = normalizeProfile(profile as Partial<DreamCodeLlmProfile>);
-      if (normalized.provider) {
-        profiles[name] = normalized;
-      }
+      const candidate = profile as Partial<DreamCodeStoredLlmProfile>;
+      const provider = normalizeString(candidate.provider) ?? "fake";
+      const requestedAlias = normalizeString(candidate.alias) ?? key;
+      const alias = uniqueMigratedAlias(profiles, provider, requestedAlias);
+      const profileId = isVersion2 ? key : legacyProfileId(key);
+      profiles[profileId] = normalizeStoredProfile(candidate, alias);
     }
   }
 
-  const currentProfile =
-    typeof input.currentProfile === "string" && profiles[input.currentProfile]
-      ? input.currentProfile
-      : Object.keys(profiles)[0];
+  const requestedCurrentProfileId = isVersion2
+    ? normalizeString(input.currentProfileId)
+    : normalizeString(input.currentProfile)
+      ? legacyProfileId(normalizeString(input.currentProfile)!)
+      : undefined;
+  const currentProfileId =
+    requestedCurrentProfileId && profiles[requestedCurrentProfileId]
+      ? requestedCurrentProfileId
+      : undefined;
 
   const mcpServers = normalizeMcpServers(input.mcpServers);
   const projects = normalizeProjects(input.projects);
@@ -681,13 +856,17 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
         ),
       ]
     : [];
+  const sessionTitles = normalizeStringRecord(input.sessionTitles) ?? {};
+  const exaApiKey = normalizeString(input.exaApiKey);
   return {
-    version: 1,
-    currentProfile,
+    version: 2,
+    currentProfileId,
     profiles,
+    ...(exaApiKey ? { exaApiKey } : {}),
     ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
     ...(projects.length ? { projects } : {}),
     ...(pinnedSessionIds.length ? { pinnedSessionIds } : {}),
+    ...(Object.keys(sessionTitles).length ? { sessionTitles } : {}),
   };
 }
 
@@ -710,15 +889,64 @@ function normalizeProjects(input: unknown): DreamCodeProject[] {
   return [...projects.values()];
 }
 
-function normalizeProfile(profile: Partial<DreamCodeLlmProfile>): DreamCodeLlmProfile {
+function normalizeStoredProfile(
+  profile: Partial<DreamCodeStoredLlmProfile>,
+  alias: string,
+): DreamCodeStoredLlmProfile {
   const provider = normalizeString(profile.provider) ?? "fake";
   return {
+    alias: normalizeString(alias) ?? provider,
     provider,
     model: normalizeString(profile.model),
     apiKey: normalizeString(profile.apiKey),
     apiKeyEnv: normalizeString(profile.apiKeyEnv),
     baseURL: normalizeString(profile.baseURL),
   };
+}
+
+function legacyProfileId(name: string): string {
+  return `profile_legacy_${createHash("sha256").update(name, "utf8").digest("hex")}`;
+}
+
+function uniqueMigratedAlias(
+  profiles: Record<string, DreamCodeStoredLlmProfile>,
+  provider: string,
+  requestedAlias: string,
+): string {
+  const base = requestedAlias.trim() || provider;
+  let alias = base;
+  for (let suffix = 2; hasProfileAlias(profiles, provider, alias); suffix += 1) {
+    alias = `${base} (${suffix})`;
+  }
+  return alias;
+}
+
+function assertUniqueProfileAlias(
+  config: DreamCodeConfig,
+  provider: string,
+  alias: string,
+  ignoredProfileId?: string,
+): void {
+  const normalizedAlias = alias.trim().toLocaleLowerCase();
+  if (!normalizedAlias) throw new Error("Model profile alias is required.");
+  for (const [profileId, profile] of Object.entries(config.profiles)) {
+    if (profileId === ignoredProfileId || profile.provider !== provider) continue;
+    if (profile.alias.toLocaleLowerCase() === normalizedAlias) {
+      throw new Error("A model profile with this alias already exists for the provider.");
+    }
+  }
+}
+
+function hasProfileAlias(
+  profiles: Record<string, DreamCodeStoredLlmProfile>,
+  provider: string,
+  alias: string,
+): boolean {
+  const normalizedAlias = alias.toLocaleLowerCase();
+  return Object.values(profiles).some(
+    (profile) =>
+      profile.provider === provider && profile.alias.toLocaleLowerCase() === normalizedAlias,
+  );
 }
 
 function normalizeMcpServers(input: unknown): Record<string, DreamCodeMcpServerConfig> {

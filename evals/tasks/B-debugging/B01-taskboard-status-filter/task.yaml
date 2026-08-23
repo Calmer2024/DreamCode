@@ -1,0 +1,20 @@
+id: B01-taskboard-status-filter
+fixture: taskboard-service
+prompt: "修复当前 Taskboard service 中按状态筛选任务的 bug。请先阅读相关实现和测试，完成修改后运行测试确认。不要修改无关文件。"
+mode: yolo
+fakeScenario: taskboard-fix
+budgets:
+  referenceLatencyMs: 120000
+  referenceTokens: 15000
+  referenceToolCalls: 12
+assertions:
+  - type: file-contains
+    path: src/services/task-service.ts
+    text: "task.status === status"
+  - type: file-unchanged
+    path: src/domain/task-rules.ts
+  - type: file-unchanged
+    path: src/README.md
+  - type: command
+    command: node --experimental-strip-types --test
+    expectedExitCode: 0

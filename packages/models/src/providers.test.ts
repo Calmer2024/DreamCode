@@ -4,6 +4,7 @@ import {
   detectConfiguredProvider,
   findModelProviderPreset,
   listModelProviderPresets,
+  normalizeOpenAIUsage,
   resolveModelProviderConfig,
 } from "./index";
 
@@ -85,5 +86,29 @@ describe("模型 provider preset", () => {
     });
 
     expect(() => createModelProvider(config)).toThrow(/API key/);
+  });
+
+  it("标准化 OpenAI-compatible 流式 token usage", () => {
+    expect(
+      normalizeOpenAIUsage({ prompt_tokens: 1200, completion_tokens: 80, total_tokens: 1280 }),
+    ).toEqual({ inputTokens: 1200, outputTokens: 80, totalTokens: 1280 });
+  });
+
+  it("保留缓存命中的输入 token，并区分未缓存输入", () => {
+    expect(
+      normalizeOpenAIUsage({
+        prompt_tokens: 1200,
+        completion_tokens: 80,
+        total_tokens: 1280,
+        prompt_tokens_details: { cached_tokens: 900 },
+      }),
+    ).toMatchObject({
+      inputTokens: 1200,
+      cachedInputTokens: 900,
+      uncachedInputTokens: 300,
+      outputTokens: 80,
+      totalTokens: 1280,
+    });
+    expect(normalizeOpenAIUsage({ prompt_tokens: 12 })?.cachedInputTokens).toBeUndefined();
   });
 });

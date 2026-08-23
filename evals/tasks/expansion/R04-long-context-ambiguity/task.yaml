@@ -1,0 +1,9 @@
+id: R04-long-context-ambiguity
+fixture: long-context
+prompt: "面对相互冲突的历史要求，先澄清当前应遵循的行为，不修改文件。"
+mode: yolo
+fakeScenario: clarify
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

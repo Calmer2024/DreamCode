@@ -4,6 +4,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { DesktopAppService } from "./app-service";
 import { registerDesktopIpc } from "./ipc";
 import { DesktopRunManager } from "./run-manager";
+import { DesktopTerminalManager } from "./terminal-manager";
 import { type BrowserWindowConstructor, createMainWindow, type DesktopWindow } from "./window";
 
 interface CloseRunManager {
@@ -119,11 +120,13 @@ export async function startDesktopApplication(): Promise<void> {
     emitQuestion: (request) => send("desktop:question-request", request),
     emitStatus: (status) => send("desktop:run-status", status),
   });
+  const terminalManager = new DesktopTerminalManager();
   const disposeIpc = registerDesktopIpc({
     ipcMain,
     dialog,
     service,
     runManager,
+    terminalManager,
     getWindow: () => mainWindow,
     openWorkspace: async (workspaceRoot) => {
       const error = await shell.openPath(workspaceRoot);
@@ -163,6 +166,7 @@ export async function startDesktopApplication(): Promise<void> {
     createWindow: openWindow,
     dispose: async () => {
       disposeIpc();
+      terminalManager.dispose();
       await runManager.dispose();
     },
   });

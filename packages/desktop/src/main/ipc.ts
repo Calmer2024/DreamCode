@@ -1,21 +1,29 @@
 import type { z } from "zod";
 import {
   approvalResponseSchema,
+  createProfileRequestSchema,
+  createProjectRequestSchema,
   type DesktopError,
   type DesktopIpcResponse,
+  profileIdSchema,
   projectRequestSchema,
   questionResponseSchema,
   rollbackRequestSchema,
   runIdSchema,
   sanitizeDesktopError,
-  saveProfileRequestSchema,
   sessionIdSchema,
   sessionPinRequestSchema,
+  sessionRenameRequestSchema,
+  setDefaultProfileRequestSchema,
   startTurnRequestSchema,
+  testProfileRequestSchema,
+  updateProfileRequestSchema,
+  webSearchCredentialRequestSchema,
   workspaceRootSchema,
 } from "../shared/contracts";
 import type { DesktopAppService } from "./app-service";
 import type { DesktopRunManager } from "./run-manager";
+import type { DesktopTerminalManager } from "./terminal-manager";
 
 type IpcHandler = (...arguments_: unknown[]) => Promise<DesktopIpcResponse<unknown>>;
 
@@ -37,16 +45,24 @@ export interface DesktopIpcDependencies {
   service: Pick<
     DesktopAppService,
     | "bootstrap"
-    | "saveProfile"
+    | "createProfile"
+    | "updateProfile"
+    | "deleteProfile"
+    | "setDefaultProfile"
+    | "testProfile"
+    | "updateWebSearchCredential"
+    | "createProject"
     | "saveProject"
     | "deleteProject"
     | "deleteSession"
+    | "renameSession"
     | "setSessionPinned"
     | "readSession"
     | "readChangedFileDiff"
     | "rollback"
   >;
   runManager: Pick<DesktopRunManager, "start" | "stop" | "respondApproval" | "respondQuestion">;
+  terminalManager: Pick<DesktopTerminalManager, "start" | "write" | "resize" | "close">;
   getWindow: () => unknown;
   chooseWorkspace?: () => Promise<string | undefined>;
   openWorkspace: (workspaceRoot: string) => Promise<void>;
@@ -69,16 +85,52 @@ const handlers = {
     dependencies: DesktopIpcDependencies,
     workspaceRoot: unknown,
   ) => dependencies.openWorkspace(parseRequest(workspaceRootSchema, workspaceRoot)),
-  "desktop:save-profile": async (
+  "desktop:create-profile": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,
     request: unknown,
-  ) => dependencies.service.saveProfile(parseRequest(saveProfileRequestSchema, request)),
+  ) => dependencies.service.createProfile(parseRequest(createProfileRequestSchema, request)),
+  "desktop:update-profile": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.updateProfile(parseRequest(updateProfileRequestSchema, request)),
+  "desktop:delete-profile": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    profileId: unknown,
+  ) => dependencies.service.deleteProfile(parseRequest(profileIdSchema, profileId)),
+  "desktop:set-default-profile": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) =>
+    dependencies.service.setDefaultProfile(
+      parseRequest(setDefaultProfileRequestSchema, request).profileId,
+    ),
+  "desktop:test-profile": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.testProfile(parseRequest(testProfileRequestSchema, request)),
+  "desktop:update-web-search-credential": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) =>
+    dependencies.service.updateWebSearchCredential(
+      parseRequest(webSearchCredentialRequestSchema, request),
+    ),
   "desktop:save-project": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,
     request: unknown,
   ) => dependencies.service.saveProject(parseRequest(projectRequestSchema, request)),
+  "desktop:create-project": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.createProject(parseRequest(createProjectRequestSchema, request)),
   "desktop:delete-project": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,
@@ -89,6 +141,11 @@ const handlers = {
     dependencies: DesktopIpcDependencies,
     request: unknown,
   ) => dependencies.service.deleteSession(parseRequest(sessionIdSchema, request)),
+  "desktop:rename-session": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.renameSession(parseRequest(sessionRenameRequestSchema, request)),
   "desktop:set-session-pinned": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,
@@ -137,6 +194,48 @@ const handlers = {
     dependencies: DesktopIpcDependencies,
     response: unknown,
   ) => dependencies.runManager.respondQuestion(parseRequest(questionResponseSchema, response)),
+  "desktop:terminal-start": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    cwd: unknown,
+  ) =>
+    dependencies.terminalManager.start(parseRequest(workspaceRootSchema, cwd), (output) => {
+      const window = dependencies.getWindow() as
+        | { webContents?: { send?: (channel: string, payload: unknown) => void } }
+        | undefined;
+      window?.webContents?.send?.("desktop:terminal-output", output);
+    }),
+  "desktop:terminal-write": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => {
+    const value = request as { terminalId?: unknown; data?: unknown };
+    if (typeof value.terminalId !== "string" || typeof value.data !== "string")
+      throw { code: "invalid_request", recoverable: true };
+    dependencies.terminalManager.write(value.terminalId, value.data);
+  },
+  "desktop:terminal-resize": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => {
+    const value = request as { terminalId?: unknown; columns?: unknown; rows?: unknown };
+    if (
+      typeof value.terminalId !== "string" ||
+      typeof value.columns !== "number" ||
+      typeof value.rows !== "number"
+    )
+      throw { code: "invalid_request", recoverable: true };
+    dependencies.terminalManager.resize(value.terminalId, value.columns, value.rows);
+  },
+  "desktop:terminal-close": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    terminalId: unknown,
+  ) => {
+    dependencies.terminalManager.close(parseRequest(sessionIdSchema, terminalId));
+  },
 } as const;
 
 const channels = Object.keys(handlers) as Array<keyof typeof handlers>;

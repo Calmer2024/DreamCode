@@ -1,0 +1,9 @@
+id: U02-read-cache
+fixture: workspace-ops
+prompt: "读取 notes.md 两次以验证相同只读调用复用当前回合缓存，不要修改文件。"
+mode: yolo
+fakeScenario: repeat-cache
+budgets: { referenceLatencyMs: 30000, referenceTokens: 6000, referenceToolCalls: 3 }
+evaluator: ../evaluate.ts
+assertions:
+  - type: no-workspace-changes

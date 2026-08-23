@@ -17,7 +17,7 @@ test.afterEach(async () => {
   await closeAllDesktopApplications();
 });
 
-test("launches, completes a Fake task, shows Diff, restarts, and resumes the Session", async () => {
+test("launches, completes a Fake task, reviews inline changes, restarts, and resumes the Session", async () => {
   test.slow();
   const scenario = await prepareScenario("failing-test-js");
   const prompt = "修复当前项目的测试失败, 并运行测试确认。";
@@ -36,16 +36,25 @@ test("launches, completes a Fake task, shows Diff, restarts, and resumes the Ses
       await expect(desktop.page.getByText(/^已完成 · 耗时 /)).toBeVisible({
         timeout: 30_000,
       });
+      await expect(desktop.page.getByText("DreamCode", { exact: true })).toBeVisible();
+      await expect(desktop.page.getByRole("heading", { level: 2, name: prompt })).toBeVisible();
+      await expect(desktop.page.getByRole("status", { name: /上下文已用 \d+%/ })).toBeVisible();
+      await expect(desktop.page.getByRole("status", { name: "本轮 Token 用量" })).toContainText(
+        /tokens · 输入 .* · 输出 /,
+      );
+      expect(await desktop.page.evaluate(() => window.scrollY)).toBe(0);
+      const conversationScroll = desktop.page.locator(".conversation-scroll");
+      await expect(conversationScroll).toHaveCSS("overflow-y", "scroll");
+      await expect(conversationScroll).toHaveCSS("scrollbar-gutter", "stable");
       return desktop;
     });
     expect(await readWorkspaceFile(scenario, "src/math.js")).toContain("return a + b;");
 
-    await test.step("inspect the recorded Diff and close the completed app", async () => {
-      await first.page.getByRole("button", { name: "文件变更" }).click();
-      await expect(first.page.getByRole("combobox", { name: "变更文件" })).toHaveValue(
-        "src/math.js",
-      );
-      await expect(first.page.getByText("+  return a + b;", { exact: false })).toBeVisible();
+    await test.step("inspect the inline change card and close the completed app", async () => {
+      const changes = first.page.getByLabel("已编辑 1 个文件");
+      await expect(changes).toContainText("src/math.js");
+      await changes.getByRole("button", { name: "审核" }).click();
+      await expect(changes.getByText("+  return a + b;", { exact: false })).toBeVisible();
       await closeDesktopApplication(first.app);
     });
 
@@ -56,6 +65,9 @@ test("launches, completes a Fake task, shows Diff, restarts, and resumes the Ses
       await expect(second.page.getByText(/^已完成 · 耗时 /)).toBeVisible({
         timeout: 30_000,
       });
+      await expect(second.page.getByText("DreamCode", { exact: true })).toBeVisible();
+      await expect(second.page.getByRole("heading", { level: 2, name: prompt })).toBeVisible();
+      expect(await second.page.evaluate(() => window.scrollY)).toBe(0);
       await closeDesktopApplication(second.app);
     });
 
@@ -108,6 +120,139 @@ test("stops an E2E-only blocking Fake Provider", async () => {
       await expect(desktop.page.getByText("已停止", { exact: true })).toBeVisible();
     });
     await test.step("close the stopped app", () => closeDesktopApplication(desktop.app));
+  } finally {
+    await cleanupScenario(scenario);
+  }
+});
+
+// biome-ignore lint/correctness/noEmptyPattern: Playwright requires an object-destructured fixture argument.
+test("keeps model profile settings aligned and responsive", async ({}, testInfo) => {
+  const scenario = await prepareScenario("failing-test-js", "fake");
+  try {
+    const desktop = await launchDesktop(scenario);
+    await desktop.page.setViewportSize({ width: 1280, height: 800 });
+    await desktop.page.getByRole("button", { name: "设置", exact: true }).click();
+    await desktop.page.getByRole("button", { name: "模型", exact: true }).click();
+
+    await expect
+      .poll(() =>
+        desktop.page.evaluate(async () => {
+          await document.fonts.ready;
+          return document.fonts.check('14px "Noto Sans SC"', "中文界面");
+        }),
+      )
+      .toBe(true);
+    for (const locator of [
+      desktop.page.locator("body"),
+      desktop.page.getByRole("button", { name: "返回应用", exact: true }),
+      desktop.page.getByLabel("配置别名"),
+    ]) {
+      await expect(locator).toHaveCSS("font-family", /Noto Sans SC/);
+    }
+
+    const contentHeader = desktop.page.locator(".settings-content-header");
+    const modelGroup = desktop.page.locator(".model-settings-group");
+    const modelHeaderBox = await contentHeader.boundingBox();
+    const modelGroupBox = await modelGroup.boundingBox();
+    expect(modelHeaderBox && modelGroupBox).toBeTruthy();
+    const modelGap = modelGroupBox!.y - (modelHeaderBox!.y + modelHeaderBox!.height);
+
+    await expect(modelGroup.getByRole("heading", { name: "模型配置" })).toHaveCSS(
+      "font-weight",
+      /^(6[0-9]{2}|bold)$/,
+    );
+    await expect(desktop.page.getByLabel("配置别名")).toHaveCSS("font-weight", "400");
+    await expect(desktop.page.getByRole("button", { name: "提供商选项" })).toHaveCSS(
+      "font-weight",
+      "400",
+    );
+    await expect(desktop.page.getByRole("button", { name: "模型选项" })).toHaveCSS(
+      "font-weight",
+      "400",
+    );
+    const profileListBox = await desktop.page.locator(".profile-list").boundingBox();
+    const profileEditorBox = await desktop.page.locator(".profile-editor").boundingBox();
+    expect(profileListBox && profileEditorBox).toBeTruthy();
+    expect(profileEditorBox!.y).toBeGreaterThanOrEqual(profileListBox!.y + profileListBox!.height);
+    expect(Math.abs(profileListBox!.width - profileEditorBox!.width)).toBeLessThanOrEqual(1);
+    for (const action of ["测试连接", "保存"] as const) {
+      const button = desktop.page.getByRole("button", { name: action, exact: true });
+      await expect(button).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      await expect(button).toHaveCSS("font-size", "12px");
+    }
+    await desktop.page.screenshot({ path: testInfo.outputPath("model-config-standard.png") });
+    await desktop.page.getByRole("button", { name: "保存", exact: true }).scrollIntoViewIfNeeded();
+    await desktop.page.screenshot({ path: testInfo.outputPath("model-config-actions.png") });
+
+    await desktop.page.getByRole("button", { name: "常规", exact: true }).click();
+    const generalGroup = desktop.page.locator(".settings-group");
+    const generalHeaderBox = await contentHeader.boundingBox();
+    const generalGroupBox = await generalGroup.boundingBox();
+    expect(generalHeaderBox && generalGroupBox).toBeTruthy();
+    const generalGap = generalGroupBox!.y - (generalHeaderBox!.y + generalHeaderBox!.height);
+    expect(Math.abs(modelGap - generalGap)).toBeLessThanOrEqual(1);
+
+    await desktop.page.getByRole("button", { name: "模型", exact: true }).click();
+    await desktop.page.setViewportSize({ width: 820, height: 720 });
+    await expect(desktop.page.locator(".profile-manager")).toHaveCSS(
+      "grid-template-columns",
+      /^\d+(\.\d+)?px$/,
+    );
+    expect(
+      await desktop.page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+    await desktop.page.screenshot({ path: testInfo.outputPath("model-config-narrow.png") });
+    await closeDesktopApplication(desktop.app);
+  } finally {
+    await cleanupScenario(scenario);
+  }
+});
+
+test("opens an interactive project terminal with Ctrl+backtick and resizes the workspace", async () => {
+  const scenario = await prepareScenario("failing-test-js", "fake");
+  try {
+    const desktop = await launchDesktop(scenario);
+    await selectWorkspace(desktop.page);
+
+    await desktop.page.keyboard.press("Control+Backquote");
+    const panel = desktop.page.getByRole("dialog", { name: "底部面板" });
+    const terminal = desktop.page.getByRole("application", { name: "系统终端" });
+    await expect(panel).toBeVisible();
+    await expect(desktop.page.getByRole("tab", { name: "终端" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(terminal).toHaveCSS("background-color", "rgb(255, 255, 255)");
+
+    await terminal.click();
+    await desktop.page.keyboard.type("Write-Output DREAMCODE_TERMINAL_READY; (Get-Location).Path");
+    await desktop.page.keyboard.press("Enter");
+    await expect(terminal).toContainText("DREAMCODE_TERMINAL_READY", { timeout: 15_000 });
+    await expect(terminal).toContainText(scenario.workspace);
+
+    const composer = desktop.page.locator(".composer-stack");
+    const conversation = desktop.page.locator(".conversation-scroll");
+    const handle = desktop.page.getByRole("button", { name: "调整底部栏高度" });
+    const beforeComposer = await composer.boundingBox();
+    const beforeConversation = await conversation.boundingBox();
+    const handleBox = await handle.boundingBox();
+    expect(beforeComposer && beforeConversation && handleBox).toBeTruthy();
+    await desktop.page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + 5);
+    await desktop.page.mouse.down();
+    await desktop.page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y - 100, {
+      steps: 8,
+    });
+    await desktop.page.mouse.up();
+    const afterComposer = await composer.boundingBox();
+    const afterConversation = await conversation.boundingBox();
+    expect(afterComposer!.y).toBeLessThan(beforeComposer!.y - 70);
+    expect(afterConversation!.height).toBeLessThan(beforeConversation!.height - 70);
+
+    await desktop.page.keyboard.press("Control+Backquote");
+    await expect(panel).toBeHidden();
+    await closeDesktopApplication(desktop.app);
   } finally {
     await cleanupScenario(scenario);
   }

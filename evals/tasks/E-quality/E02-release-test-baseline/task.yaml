@@ -1,0 +1,11 @@
+id: E02-release-test-baseline
+fixture: release-cli
+prompt: "运行 release CLI 的测试，确认当前测试状态，并简要解释测试覆盖了什么。不要修改文件。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 60000, referenceTokens: 10000, referenceToolCalls: 6 }
+assertions:
+  - type: no-workspace-changes
+  - type: command
+    command: npm test
+    expectedExitCode: 0

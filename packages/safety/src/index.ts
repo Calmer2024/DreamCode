@@ -6,6 +6,8 @@ import type {
   PermissionDecisionKind,
   RiskTag,
   RunMode,
+  PermissionCapabilityContract,
+  PermissionCapabilityCategory,
 } from "@dreamcode/shared";
 
 export interface ResolvedWorkspacePath {
@@ -184,6 +186,73 @@ export function classifyCommand(command: string): CommandClassification {
   };
 }
 
+export const PERMISSION_RULES_VERSION = "catalog-1";
+
+export const PermissionRuleCatalog = {
+  classify(command: string): CommandClassification {
+    return classifyCommand(command);
+  },
+  categories: [
+    { id: "workspace_read", summary: "Read workspace files and inspect repository state.", examples: ["rg pattern .", "git status"] },
+    { id: "tests_checks", summary: "Run tests, lint, typecheck, and builds.", examples: ["pnpm test", "npm run typecheck"] },
+    { id: "dependency_install", summary: "Install or update dependencies and package metadata.", examples: ["pnpm install"] },
+    { id: "network", summary: "Access public network resources.", examples: ["curl https://example.com"] },
+    { id: "workspace_write", summary: "Write or patch files inside the workspace.", examples: ["file.write README.md"] },
+    { id: "external_read", summary: "Read paths outside the workspace.", examples: ["file.read C:/temp/report.txt"] },
+    { id: "mcp", summary: "Call configured external MCP tools.", examples: ["mcp.call"] },
+    { id: "destructive", summary: "Destructive deletion, history rewrite, or system commands.", examples: ["rm -rf /", "Remove-Item -Recurse -Force"] },
+    { id: "other_command", summary: "Commands not covered by the safe allowlist.", examples: [] },
+  ] as PermissionCapabilityCategory[],
+};
+
+export function buildPermissionCapabilityContract(
+  mode: RunMode,
+  platform = process.platform,
+): PermissionCapabilityContract {
+  const categories = PermissionRuleCatalog.categories.map((category) => ({
+    ...category,
+    examples: category.examples?.filter((example) => platform !== "win32" || !example.startsWith("rm ")),
+  }));
+  const byId = (id: string) => categories.find((category) => category.id === id)!;
+  const category = (id: string, summary?: string) => ({ ...byId(id), ...(summary ? { summary } : {}) });
+  const modes: PermissionCapabilityContract["modes"] = {
+    plan: {
+      allow: [category("workspace_read"), category("tests_checks")],
+      ask: [category("network", "Web/network reads require approval in plan mode."), category("mcp", "MCP tools require approval in plan mode."), category("external_read", "Workspace-external reads require approval in plan mode.")].filter(Boolean),
+      deny: [category("workspace_write"), category("dependency_install"), category("destructive"), category("other_command")],
+    },
+    guided: {
+      allow: [category("workspace_read"), category("tests_checks")],
+      ask: [category("workspace_write"), category("dependency_install"), category("network"), category("mcp"), category("external_read"), category("other_command")].filter(Boolean),
+      deny: [category("destructive")],
+    },
+    yolo: {
+      allow: [category("workspace_read"), category("tests_checks"), category("workspace_write")],
+      ask: [category("dependency_install"), category("network"), category("mcp"), category("external_read"), category("other_command")].filter(Boolean),
+      deny: [category("destructive")],
+    },
+    full: {
+      allow: [category("workspace_read"), category("tests_checks"), category("workspace_write"), category("dependency_install"), category("network"), category("mcp"), category("external_read"), category("other_command")].filter(Boolean),
+      ask: [],
+      deny: [category("destructive")],
+    },
+  };
+  const currentModeSummary = modes[mode];
+  return {
+    schemaVersion: 2,
+    rulesVersion: PERMISSION_RULES_VERSION,
+    generatedFor: { platform, currentMode: mode },
+    defaultDecision: "ask",
+    modes,
+    currentModeSummary,
+    shellRun: {
+      allowPipelines: true,
+      allowMultipleSteps: false,
+      guidance: mode === "plan" ? "Commands are not executed in plan mode." : "Use one bounded command or a single pipeline; permission is checked for every call.",
+    },
+  };
+}
+
 export interface PermissionEngineInput {
   mode: RunMode;
   workspaceRoot: string;
@@ -196,7 +265,7 @@ export class PermissionEngine {
     const toolName = toolCall.name;
     const toolInput = readObject(toolCall.input);
 
-    if (toolName === "todo.write" || toolName === "question.ask") {
+    if (toolName === "runtime.info" || toolName === "todo.write" || toolName === "question.ask") {
       return allow("Planning and user-question tools are always safe.", []);
     }
 
@@ -249,14 +318,32 @@ export class PermissionEngine {
       return this.decideFileTool({ mode, workspaceRoot, toolName, toolInput });
     }
 
-    if (toolName === "shell.run") {
-      const command = stringField(toolInput, "command");
+    if (toolName === "shell.run" || toolName === "process.run") {
+      const command =
+        toolName === "shell.run"
+          ? stringField(toolInput, "command")
+          : processCommand(toolInput);
       if (!command) {
-        return deny("shell.run requires a command.", ["shell_mutating"]);
+        return deny(`${toolName} requires a command.`, ["shell_mutating"]);
       }
-      const classified = classifyCommand(command);
+      const classified = PermissionRuleCatalog.classify(command);
       if (mode === "plan" && classified.risk.includes("shell_mutating")) {
         return deny("Plan mode does not allow mutating shell commands.", classified.risk);
+      }
+      const cwd = stringField(toolInput, "cwd") ?? ".";
+      const externalCwd = !resolveWorkspacePath(workspaceRoot, cwd).isInside;
+      if (externalCwd) {
+        const externalRisk = [...new Set([...classified.risk, "read_external_path" as const])];
+        if (classified.decision === "deny") {
+          return deny(classified.reason, externalRisk);
+        }
+        if (mode === "full") {
+          return allow("Full mode allows this command with an external cwd.", externalRisk);
+        }
+        if (mode === "yolo" && classified.decision === "allow") {
+          return allow("Safe YOLO policy allows this command with an external cwd.", externalRisk);
+        }
+        return ask("Using a cwd outside the workspace requires approval in this mode.", externalRisk);
       }
       if (mode === "guided" && classified.decision === "allow") {
         return allow(classified.reason, classified.risk);
@@ -321,6 +408,15 @@ export class PermissionEngine {
       [isWrite ? "write_workspace" : "read_workspace"],
     );
   }
+}
+
+function processCommand(input: Record<string, unknown>): string | undefined {
+  const program = stringField(input, "program");
+  if (!program) return undefined;
+  const args = Array.isArray(input.args)
+    ? input.args.filter((value): value is string => typeof value === "string")
+    : [];
+  return [program, ...args].join(" ");
 }
 
 function readObject(input: unknown): Record<string, unknown> {

@@ -1,0 +1,11 @@
+id: Q04-dirty-test
+fixture: dirty-worktree
+prompt: "在不改变工作区的前提下运行测试并报告结果。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: command
+    command: npm test
+    expectedExitCode: 0
+

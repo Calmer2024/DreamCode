@@ -14,14 +14,16 @@ import { ApprovalDialog, QuestionDialog } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
 import { ConfigDialog } from "../components/ConfigDialog";
 import { DetailDrawer, type DetailTab } from "../components/DetailDrawer";
+import { ProjectCreationDialog } from "../components/ProjectCreationDialog";
 import { ProjectRemovalDialog } from "../components/ProjectRemovalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { TaskHeader } from "../components/TaskHeader";
 import { Timeline } from "../components/Timeline";
+import { TooltipLayer } from "../components/TooltipLayer";
 import {
   createDesktopState,
   desktopReducer,
-  selectActiveChangedFile,
+  selectPinnedSessions,
   selectTimeline,
   selectWorkspaceGroups,
 } from "../state/desktop-state";
@@ -37,10 +39,13 @@ export function App({ api = window.dreamcode }: AppProps) {
   const [starting, setStarting] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<RunMode>("guided");
-  const [profileName, setProfileName] = useState("");
+  const [profileId, setProfileId] = useState("");
+  const [modelId, setModelId] = useState("");
   const [approvalRequest, setApprovalRequest] = useState<DesktopApprovalRequest>();
   const [questionRequest, setQuestionRequest] = useState<DesktopQuestionRequest>();
   const [workspacePendingRemoval, setWorkspacePendingRemoval] = useState<string>();
+  const [projectCreationOpen, setProjectCreationOpen] = useState(false);
+  const [workspacePendingRename, setWorkspacePendingRename] = useState<string>();
   const startingRef = useRef(false);
   const pendingRunEvents = useRef<DesktopRunEvent[]>([]);
   const pendingRunStatuses = useRef<DesktopRunStatus[]>([]);
@@ -60,10 +65,11 @@ export function App({ api = window.dreamcode }: AppProps) {
         workspaceRoot: bootstrap.sessions[0]?.workspaceRoot,
       });
       const currentProfile = bootstrap.profiles.find(
-        (profile) => profile.name === bootstrap.currentProfile && isProfileUsable(profile),
+        (profile) => profile.id === bootstrap.currentProfileId && isProfileUsable(profile),
       );
       const availableProfile = currentProfile ?? bootstrap.profiles.find(isProfileUsable);
-      setProfileName(availableProfile?.name ?? bootstrap.profiles[0]?.name ?? "");
+      setProfileId(availableProfile?.id ?? bootstrap.profiles[0]?.id ?? "");
+      setModelId(modelForProfile(bootstrap, availableProfile ?? bootstrap.profiles[0]));
     } catch (error) {
       dispatch({ type: "error", error: desktopError(error) });
     } finally {
@@ -74,6 +80,20 @@ export function App({ api = window.dreamcode }: AppProps) {
   useEffect(() => {
     void loadBootstrap();
   }, [loadBootstrap]);
+
+  useEffect(() => {
+    const toggleTerminal = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.code !== "Backquote") return;
+      event.preventDefault();
+      dispatch(
+        state.drawer === "terminal"
+          ? { type: "drawer.close" }
+          : { type: "drawer.open", drawer: "terminal" },
+      );
+    };
+    window.addEventListener("keydown", toggleTerminal);
+    return () => window.removeEventListener("keydown", toggleTerminal);
+  }, [state.drawer]);
 
   useEffect(() => {
     const unsubscribeRunEvent = api.onRunEvent((message) => {
@@ -89,6 +109,12 @@ export function App({ api = window.dreamcode }: AppProps) {
         return;
       }
       dispatch({ type: "run.status", status });
+      if (status.status !== "running") {
+        void api
+          .bootstrap()
+          .then((bootstrap) => dispatch({ type: "bootstrap.refreshed", bootstrap }))
+          .catch(() => undefined);
+      }
     });
     const unsubscribeApproval = api.onApprovalRequest(setApprovalRequest);
     const unsubscribeQuestion = api.onQuestionRequest(setQuestionRequest);
@@ -101,28 +127,31 @@ export function App({ api = window.dreamcode }: AppProps) {
   }, [api]);
 
   const groups = useMemo(() => selectWorkspaceGroups(state), [state]);
+  const pinnedSessions = useMemo(() => selectPinnedSessions(state), [state]);
   const timeline = selectTimeline(state);
-  const activeChangedFile = selectActiveChangedFile(state);
   const running = state.runStatus === "running" && Boolean(state.activeRunId);
   const busy = running || starting;
-  const selectedProfile = state.profiles.find((profile) => profile.name === profileName);
+  const selectedProfile = state.profiles.find((profile) => profile.id === profileId);
+  const selectedPreset = state.presets.find((preset) => preset.id === selectedProfile?.provider);
+  const displayedContextUsage = contextUsageForModel(selectedPreset, modelId, state.contextUsage);
   const profileUsable = Boolean(selectedProfile && isProfileUsable(selectedProfile));
-  const canSubmit = Boolean(prompt.trim() && state.workspaceRoot?.trim() && profileUsable && !busy);
+  const canSubmit = Boolean(
+    prompt.trim() && state.workspaceRoot?.trim() && profileUsable && modelId.trim() && !busy,
+  );
 
   const taskTitle =
     state.sessions.find((session) => session.id === state.activeSessionId)?.title ??
     state.request?.prompt ??
     "新对话";
+  const activeProject = state.bootstrap?.projects?.find(
+    (project) => project.workspaceRoot === state.workspaceRoot,
+  );
   const timelineRevision = `${timeline.length}:${timeline.at(-1)?.detail ?? ""}:${state.request?.prompt ?? ""}`;
 
   useEffect(() => {
-    const end = timelineEndRef.current;
-    if (
-      timelineRevision &&
-      shouldFollowTimeline.current &&
-      typeof end?.scrollIntoView === "function"
-    ) {
-      end.scrollIntoView({ block: "end" });
+    const container = scrollContainerRef.current;
+    if (timelineRevision && shouldFollowTimeline.current && container) {
+      container.scrollTop = container.scrollHeight;
     }
   }, [timelineRevision]);
 
@@ -158,7 +187,8 @@ export function App({ api = window.dreamcode }: AppProps) {
       prompt: cleanPrompt,
       workspaceRoot: state.workspaceRoot,
       mode,
-      profileName,
+      profileId,
+      model: modelId,
       ...(state.activeSessionId ? { sessionId: state.activeSessionId } : {}),
     };
     startingRef.current = true;
@@ -172,7 +202,15 @@ export function App({ api = window.dreamcode }: AppProps) {
         if (message.runId === runId) dispatch({ type: "run.event", message });
       }
       for (const status of pendingRunStatuses.current) {
-        if (status.runId === runId) dispatch({ type: "run.status", status });
+        if (status.runId === runId) {
+          dispatch({ type: "run.status", status });
+          if (status.status !== "running") {
+            void api
+              .bootstrap()
+              .then(applyBootstrap)
+              .catch(() => undefined);
+          }
+        }
       }
       setPrompt((current) => (current === submittedInput ? "" : current));
     } catch (error) {
@@ -208,9 +246,11 @@ export function App({ api = window.dreamcode }: AppProps) {
     }
   };
 
-  const newConversation = () => {
+  const newConversation = (workspaceRoot?: string) => {
     sessionLoadSequence.current += 1;
-    dispatch({ type: "conversation.new" });
+    dispatch(
+      workspaceRoot ? { type: "workspace.selected", workspaceRoot } : { type: "conversation.new" },
+    );
   };
 
   const saveProject = async (project: {
@@ -245,168 +285,221 @@ export function App({ api = window.dreamcode }: AppProps) {
       container.scrollHeight - container.scrollTop - container.clientHeight <= 120;
   };
 
-  const drawerTab: DetailTab =
-    state.drawer === "terminal"
-      ? "terminal"
-      : state.drawer === "sessions" || state.drawer === "details"
-        ? "session"
-        : "diff";
+  const drawerTab: DetailTab = state.drawer === "terminal" ? "terminal" : "logs";
+
+  if ((state.dialog?.type === "profile" || state.dialog?.type === "settings") && state.bootstrap) {
+    return (
+      <ConfigDialog
+        api={api}
+        bootstrap={state.bootstrap}
+        open
+        initialSection={state.dialog.type === "settings" ? "general" : "model"}
+        activeProfileId={profileId}
+        onClose={() => dispatch({ type: "dialog.set" })}
+        onApplyProfile={(nextProfileId) => {
+          const nextProfile = state.bootstrap?.profiles.find(
+            (profile) => profile.id === nextProfileId && isProfileUsable(profile),
+          );
+          if (!nextProfile || !state.bootstrap) return;
+          setProfileId(nextProfile.id);
+          setModelId(modelForProfile(state.bootstrap, nextProfile));
+        }}
+        onSaved={(bootstrap) => {
+          dispatch({ type: "bootstrap.refreshed", bootstrap });
+          const retained = bootstrap.profiles.find(
+            (profile) => profile.id === profileId && isProfileUsable(profile),
+          );
+          const currentDefault = bootstrap.profiles.find(
+            (profile) => profile.id === bootstrap.currentProfileId && isProfileUsable(profile),
+          );
+          const nextProfile =
+            retained ?? currentDefault ?? bootstrap.profiles.find(isProfileUsable);
+          setProfileId(nextProfile?.id ?? "");
+          setModelId(modelForProfile(bootstrap, nextProfile));
+        }}
+      />
+    );
+  }
 
   return (
-    <div className="app-shell">
-      <Sidebar
-        groups={groups}
-        activeSessionId={state.activeSessionId}
-        navigationDisabled={busy}
-        onNewConversation={newConversation}
-        onOpenHistory={() => dispatch({ type: "drawer.open", drawer: "sessions" })}
-        onOpenConfiguration={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
-        onOpenSettings={() => dispatch({ type: "dialog.set", dialog: { type: "settings" } })}
-        pinnedSessionIds={state.bootstrap?.pinnedSessionIds}
-        onSaveProject={(project) => void saveProject(project)}
-        onOpenWorkspace={(workspaceRoot) => {
-          void api.openWorkspace(workspaceRoot).catch((error) => {
-            dispatch({ type: "error", error: desktopError(error) });
-          });
-        }}
-        onRemoveWorkspace={setWorkspacePendingRemoval}
-        onDeleteSession={(sessionId) => {
-          void api
-            .deleteSession(sessionId)
-            .then((bootstrap) => {
-              applyBootstrap(bootstrap);
-              if (state.activeSessionId === sessionId) dispatch({ type: "conversation.new" });
-            })
-            .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
-        }}
-        onSetSessionPinned={(sessionId, pinned) => {
-          void api
-            .setSessionPinned({ sessionId, pinned })
-            .then(applyBootstrap)
-            .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
-        }}
-        onSelectSession={(sessionId) => void selectSession(sessionId)}
-      />
-      <main className="main-pane">
-        <TaskHeader
-          taskTitle={taskTitle}
-          workspaceRoot={state.workspaceRoot}
-          workspaceSelectionDisabled={busy}
-          onChooseWorkspace={() => void chooseWorkspace()}
-          onOpenDetails={() => dispatch({ type: "drawer.open", drawer: "details" })}
-          onOpenFiles={() => dispatch({ type: "drawer.open", drawer: "files" })}
-          onOpenTerminal={() => dispatch({ type: "drawer.open", drawer: "terminal" })}
+    <>
+      <TooltipLayer />
+      <div className="app-shell">
+        <Sidebar
+          groups={groups}
+          pinnedSessions={pinnedSessions}
+          activeSessionId={state.activeSessionId}
+          navigationDisabled={busy}
+          onNewConversation={newConversation}
+          onCreateProject={() => setProjectCreationOpen(true)}
+          onOpenSettings={() => dispatch({ type: "dialog.set", dialog: { type: "settings" } })}
+          onSaveProject={(project) => void saveProject(project)}
+          onOpenWorkspace={(workspaceRoot) => {
+            void api.openWorkspace(workspaceRoot).catch((error) => {
+              dispatch({ type: "error", error: desktopError(error) });
+            });
+          }}
+          onRemoveWorkspace={setWorkspacePendingRemoval}
+          onDeleteSession={(sessionId) => {
+            void api
+              .deleteSession(sessionId)
+              .then((bootstrap) => {
+                applyBootstrap(bootstrap);
+                if (state.activeSessionId === sessionId) dispatch({ type: "conversation.new" });
+              })
+              .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+          }}
+          onRenameSession={(sessionId, title) => {
+            void api
+              .renameSession({ sessionId, title })
+              .then(applyBootstrap)
+              .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+          }}
+          onSetSessionPinned={(sessionId, pinned) => {
+            void api
+              .setSessionPinned({ sessionId, pinned })
+              .then(applyBootstrap)
+              .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+          }}
+          onSelectSession={(sessionId) => void selectSession(sessionId)}
+          renameWorkspaceRoot={workspacePendingRename}
+          onRenameWorkspaceHandled={() => setWorkspacePendingRename(undefined)}
         />
-        <div
-          className="conversation-scroll"
-          ref={scrollContainerRef}
-          onScroll={trackScrollPosition}
-        >
-          <div className="conversation">
-            {loading ? (
-              <div className="loading-state" role="status">
-                正在载入 DreamCode
-              </div>
-            ) : state.error?.code === "config_load_failed" ? (
-              <div className="empty-state error-state" role="alert">
-                <span className="empty-kicker">配置载入失败</span>
-                <h1>无法打开 DreamCode 配置</h1>
-                <p>{state.error.message}</p>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => void loadBootstrap()}
-                >
-                  重新加载
-                </button>
-              </div>
-            ) : (
-              <Timeline
-                state={{ ...state, timeline }}
-                profileUsable={profileUsable}
-                onConfigure={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
-                onChooseWorkspace={() => void chooseWorkspace()}
-              />
+        <main className={`main-pane${state.drawer ? " drawer-open" : ""}`}>
+          <TaskHeader
+            taskTitle={taskTitle}
+            workspaceRoot={state.workspaceRoot}
+            projectName={activeProject?.name}
+            projectPinned={activeProject?.pinned}
+            workspaceSelectionDisabled={busy}
+            onChooseWorkspace={() => void chooseWorkspace()}
+            onOpenWorkspace={() => {
+              if (!state.workspaceRoot) return;
+              void api.openWorkspace(state.workspaceRoot).catch((error) => {
+                dispatch({ type: "error", error: desktopError(error) });
+              });
+            }}
+            onToggleProjectPin={() => {
+              if (!state.workspaceRoot) return;
+              void saveProject({
+                workspaceRoot: state.workspaceRoot,
+                name: activeProject?.name ?? lastPathSegment(state.workspaceRoot),
+                pinned: !activeProject?.pinned,
+              });
+            }}
+            onRenameProject={() => setWorkspacePendingRename(state.workspaceRoot)}
+            onRemoveProject={() => setWorkspacePendingRemoval(state.workspaceRoot)}
+            onOpenLogs={() => dispatch({ type: "drawer.open", drawer: "logs" })}
+            onOpenTerminal={() => dispatch({ type: "drawer.open", drawer: "terminal" })}
+          />
+          <div
+            className="conversation-scroll"
+            ref={scrollContainerRef}
+            onScroll={trackScrollPosition}
+          >
+            <div className="conversation">
+              {loading ? (
+                <div className="loading-state" role="status">
+                  正在载入 DreamCode
+                </div>
+              ) : state.error?.code === "config_load_failed" ? (
+                <div className="empty-state error-state" role="alert">
+                  <span className="empty-kicker">配置载入失败</span>
+                  <h1>无法打开 DreamCode 配置</h1>
+                  <p>{state.error.message}</p>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void loadBootstrap()}
+                  >
+                    重新加载
+                  </button>
+                </div>
+              ) : (
+                <Timeline
+                  state={{ ...state, timeline }}
+                  workspaceName={projectName(state.bootstrap, state.workspaceRoot)}
+                  profileUsable={profileUsable}
+                  onPromptSuggestion={setPrompt}
+                  onConfigure={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
+                  onChooseWorkspace={() => void chooseWorkspace()}
+                />
+              )}
+              <div ref={timelineEndRef} aria-hidden="true" />
+            </div>
+          </div>
+          {state.error && state.error.code !== "config_load_failed" ? (
+            <div className="error-banner" role="alert">
+              {state.error.message}
+            </div>
+          ) : null}
+          <Composer
+            prompt={prompt}
+            mode={mode}
+            model={modelId}
+            profile={selectedProfile}
+            preset={selectedPreset}
+            runStatus={state.runStatus}
+            active={running}
+            starting={starting}
+            canSubmit={canSubmit}
+            workspaceName={projectName(state.bootstrap, state.workspaceRoot)}
+            showWorkspaceContext={Boolean(
+              state.workspaceRoot && !state.activeSessionId && !state.request && !timeline.length,
             )}
-            <div ref={timelineEndRef} aria-hidden="true" />
-          </div>
-        </div>
-        {state.error && state.error.code !== "config_load_failed" ? (
-          <div className="error-banner" role="alert">
-            {state.error.message}
-          </div>
-        ) : null}
-        <Composer
-          prompt={prompt}
-          mode={mode}
-          profileName={profileName}
-          profiles={state.profiles}
-          runStatus={state.runStatus}
-          active={running}
-          starting={starting}
-          canSubmit={canSubmit}
-          onPromptChange={setPrompt}
-          onModeChange={setMode}
-          onProfileChange={setProfileName}
-          onSubmit={() => void submit()}
-          onStop={() => void stop()}
-        />
-      </main>
-      {state.dialog?.type === "profile" || state.dialog?.type === "settings" ? (
-        state.bootstrap ? (
-          <ConfigDialog
+            contextUsage={displayedContextUsage}
+            onPromptChange={setPrompt}
+            onModeChange={setMode}
+            onModelChange={setModelId}
+            onSubmit={() => void submit()}
+            onStop={() => void stop()}
+          />
+        </main>
+        {state.drawer ? (
+          <DetailDrawer
+            terminalEntries={state.terminalEntries}
+            events={state.rawEvents}
             api={api}
-            bootstrap={state.bootstrap}
-            open
-            onClose={() => dispatch({ type: "dialog.set" })}
-            onSaved={(bootstrap) => {
-              dispatch({ type: "bootstrap.loaded", bootstrap });
-              setProfileName(
-                bootstrap.currentProfile ?? bootstrap.profiles.find(isProfileUsable)?.name ?? "",
-              );
+            workspaceRoot={state.workspaceRoot}
+            initialTab={drawerTab}
+            onClose={() => dispatch({ type: "drawer.close" })}
+          />
+        ) : null}
+        {approvalRequest ? (
+          <ApprovalDialog
+            api={api}
+            request={approvalRequest}
+            onResolved={() => setApprovalRequest(undefined)}
+          />
+        ) : null}
+        {questionRequest ? (
+          <QuestionDialog
+            api={api}
+            request={questionRequest}
+            onResolved={() => setQuestionRequest(undefined)}
+          />
+        ) : null}
+        {workspacePendingRemoval ? (
+          <ProjectRemovalDialog
+            projectName={lastPathSegment(workspacePendingRemoval)}
+            onCancel={() => setWorkspacePendingRemoval(undefined)}
+            onConfirm={() => void removeWorkspace(workspacePendingRemoval)}
+          />
+        ) : null}
+        {projectCreationOpen ? (
+          <ProjectCreationDialog
+            api={api}
+            onCancel={() => setProjectCreationOpen(false)}
+            onCreated={(bootstrap, workspaceRoot) => {
+              applyBootstrap(bootstrap);
+              sessionLoadSequence.current += 1;
+              dispatch({ type: "workspace.selected", workspaceRoot });
+              setProjectCreationOpen(false);
             }}
           />
-        ) : null
-      ) : null}
-      {state.drawer ? (
-        <DetailDrawer
-          api={api}
-          sessionId={state.activeSessionId}
-          session={state.activeSession}
-          changedFile={activeChangedFile}
-          terminalEntries={state.terminalEntries}
-          events={state.rawEvents}
-          initialTab={drawerTab}
-          onClose={() => dispatch({ type: "drawer.close" })}
-          onSessionRefresh={(session) => {
-            if (state.activeSessionId) {
-              dispatch({ type: "session.loaded", sessionId: state.activeSessionId, session });
-            }
-          }}
-        />
-      ) : null}
-      {approvalRequest ? (
-        <ApprovalDialog
-          api={api}
-          request={approvalRequest}
-          onResolved={() => setApprovalRequest(undefined)}
-        />
-      ) : null}
-      {questionRequest ? (
-        <QuestionDialog
-          api={api}
-          request={questionRequest}
-          onResolved={() => setQuestionRequest(undefined)}
-        />
-      ) : null}
-      {workspacePendingRemoval ? (
-        <ProjectRemovalDialog
-          projectName={lastPathSegment(workspacePendingRemoval)}
-          onCancel={() => setWorkspacePendingRemoval(undefined)}
-          onConfirm={() => void removeWorkspace(workspacePendingRemoval)}
-        />
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -414,8 +507,38 @@ function lastPathSegment(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
-function isProfileUsable(profile: { provider: string; apiKeyConfigured: boolean }): boolean {
-  return profile.provider === "fake" || profile.apiKeyConfigured;
+function projectName(bootstrap: DesktopBootstrap | undefined, workspaceRoot: string | undefined) {
+  if (!workspaceRoot) return undefined;
+  return (
+    bootstrap?.projects?.find((project) => project.workspaceRoot === workspaceRoot)?.name ??
+    lastPathSegment(workspaceRoot)
+  );
+}
+
+function isProfileUsable(profile: { provider: string; credentialAvailable: boolean }): boolean {
+  return profile.provider === "fake" || profile.credentialAvailable;
+}
+
+function modelForProfile(
+  bootstrap: DesktopBootstrap,
+  profile: DesktopBootstrap["profiles"][number] | undefined,
+): string {
+  if (!profile) return "";
+  return (
+    profile.model ??
+    bootstrap.presets.find((preset) => preset.id === profile.provider)?.defaultModel ??
+    ""
+  );
+}
+
+function contextUsageForModel(
+  preset: DesktopBootstrap["presets"][number] | undefined,
+  model: string,
+  current: { estimatedTokens: number; maxTokens: number; compressed: boolean } | undefined,
+) {
+  const configured = preset?.models?.find((candidate) => candidate.id === model)?.contextWindowTokens;
+  const maxTokens = configured ?? current?.maxTokens ?? 64_000;
+  return current ? { ...current, maxTokens } : { estimatedTokens: 0, maxTokens, compressed: false };
 }
 
 function desktopError(error: unknown): DesktopError {

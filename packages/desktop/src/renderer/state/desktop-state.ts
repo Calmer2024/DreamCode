@@ -1,15 +1,16 @@
-import type { AgentEvent, ChangedFile } from "@dreamcode/shared";
+import type { AgentEvent, ChangedFile, ModelUsage } from "@dreamcode/shared";
 import type { ReplayedSessionState, SessionListItem } from "@dreamcode/store";
 import type {
   DesktopBootstrap,
   DesktopError,
   DesktopRunEvent,
   DesktopRunStatus,
+  DesktopSessionDetail,
   StartTurnRequest,
 } from "../../shared/contracts";
 
 export type DesktopRunState = "idle" | DesktopRunStatus["status"];
-export type DesktopDrawer = "sessions" | "files" | "terminal" | "details";
+export type DesktopDrawer = "logs" | "terminal";
 export type DesktopDialog = { type: "profile" | "settings" | "approval" | "question" };
 export type DesktopTimelineKind =
   | "user"
@@ -55,6 +56,16 @@ export interface DesktopTerminalEntry {
   timestamp: string;
 }
 
+export interface DesktopContextUsage {
+  estimatedTokens: number;
+  maxTokens: number;
+  compressed: boolean;
+}
+
+export interface DesktopTurnUsage extends ModelUsage {
+  estimated?: boolean;
+}
+
 export interface WorkspaceGroup {
   workspaceRoot: string;
   name?: string;
@@ -69,12 +80,15 @@ export interface DesktopState {
   sessions: SessionListItem[];
   workspaceRoot?: string;
   activeSessionId?: string;
-  activeSession?: ReplayedSessionState;
+  activeSession?: DesktopSessionDetail;
   activeRunId?: string;
   runStatus: DesktopRunState;
   request?: StartTurnRequest;
+  requestTimestamp?: string;
   rawEvents: AgentEvent[];
   timeline: DesktopTimelineEntry[];
+  contextUsage?: DesktopContextUsage;
+  turnUsage: Record<string, DesktopTurnUsage>;
   tools: DesktopToolEvent[];
   changedFiles: ChangedFile[];
   activeChangedFilePath?: string;
@@ -90,7 +104,7 @@ export type DesktopAction =
   | { type: "conversation.new" }
   | { type: "workspace.selected"; workspaceRoot?: string }
   | { type: "session.selected"; sessionId?: string }
-  | { type: "session.loaded"; sessionId: string; session: ReplayedSessionState }
+  | { type: "session.loaded"; sessionId: string; session: DesktopSessionDetail }
   | { type: "run.started"; runId: string; request: StartTurnRequest }
   | { type: "run.event"; message: DesktopRunEvent }
   | { type: "run.status"; status: DesktopRunStatus }
@@ -108,6 +122,7 @@ export function createDesktopState(bootstrap?: DesktopBootstrap): DesktopState {
     runStatus: "idle",
     rawEvents: [],
     timeline: [],
+    turnUsage: {},
     tools: [],
     changedFiles: [],
     terminalEntries: [],
@@ -128,7 +143,7 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
         bootstrap: action.bootstrap,
         profiles: action.bootstrap.profiles,
         presets: action.bootstrap.presets,
-        sessions: action.bootstrap.sessions,
+        sessions: mergeSessionLists(state.sessions, action.bootstrap.sessions),
       };
     case "conversation.new":
       return resetConversation(state);
@@ -136,8 +151,9 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
       return { ...resetConversation(state), workspaceRoot: action.workspaceRoot };
     case "session.selected":
       return { ...state, activeSessionId: action.sessionId };
-    case "session.loaded":
-      return {
+    case "session.loaded": {
+      const events = action.session.events ?? [];
+      let restored: DesktopState = {
         ...state,
         activeSessionId: action.sessionId,
         activeSession: action.session,
@@ -148,29 +164,52 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
             : action.session.status,
         activeRunId: undefined,
         request: undefined,
+        requestTimestamp: undefined,
         rawEvents: [],
         timeline: [],
+        contextUsage: undefined,
+        turnUsage: {},
         tools: [],
-        changedFiles: action.session.changedFiles,
-        activeChangedFilePath: action.session.changedFiles[0]?.path,
-        terminalEntries: terminalEntriesFromSession(action.session, action.sessionId),
+        changedFiles: events.length ? [] : action.session.changedFiles,
+        activeChangedFilePath: undefined,
+        terminalEntries: events.length
+          ? []
+          : terminalEntriesFromSession(action.session, action.sessionId),
         error: undefined,
       };
-    case "run.started":
+      for (const event of events) restored = reduceAgentEvent(restored, event);
+      return {
+        ...restored,
+        activeSession: action.session,
+        activeRunId: undefined,
+        runStatus:
+          action.session.status === "unknown" || action.session.status === "rolled_back"
+            ? "idle"
+            : action.session.status,
+        activeChangedFilePath: restored.changedFiles[0]?.path,
+      };
+    }
+    case "run.started": {
+      const continuing =
+        Boolean(state.activeSessionId) && action.request.sessionId === state.activeSessionId;
       return {
         ...state,
         activeRunId: action.runId,
         request: action.request,
+        requestTimestamp: new Date().toISOString(),
         workspaceRoot: action.request.workspaceRoot,
         runStatus: "running",
-        rawEvents: [],
-        timeline: [],
-        tools: [],
-        changedFiles: [],
-        activeChangedFilePath: undefined,
-        terminalEntries: [],
+        rawEvents: continuing ? state.rawEvents : [],
+        timeline: continuing ? state.timeline : [],
+        contextUsage: continuing ? state.contextUsage : undefined,
+        turnUsage: continuing ? state.turnUsage : {},
+        tools: continuing ? state.tools : [],
+        changedFiles: continuing ? state.changedFiles : [],
+        activeChangedFilePath: continuing ? state.activeChangedFilePath : undefined,
+        terminalEntries: continuing ? state.terminalEntries : [],
         error: undefined,
       };
+    }
     case "run.event":
       return reduceAgentEvent(state, action.message.event);
     case "run.status":
@@ -211,18 +250,33 @@ export function selectWorkspaceGroups(state: DesktopState): WorkspaceGroup[] {
     groups.set(state.workspaceRoot, []);
   }
   const pinnedSessionIds = new Set(state.bootstrap?.pinnedSessionIds ?? []);
+  const projectOrder = new Map(
+    (state.bootstrap?.projects ?? [])
+      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((project, index) => [project.workspaceRoot, index]),
+  );
   return Array.from(groups, ([workspaceRoot, sessions]) => {
     const project = state.bootstrap?.projects?.find((item) => item.workspaceRoot === workspaceRoot);
     return {
       workspaceRoot,
       name: project?.name ?? workspaceRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? workspaceRoot,
       pinned: project?.pinned === true,
-      sessions: sessions.toSorted(
-        (left, right) =>
-          Number(pinnedSessionIds.has(right.id)) - Number(pinnedSessionIds.has(left.id)),
-      ),
+      sessions: sessions
+        .filter((session) => !pinnedSessionIds.has(session.id))
+        .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt)),
     };
-  }).toSorted((left, right) => Number(right.pinned) - Number(left.pinned));
+  }).toSorted(
+    (left, right) =>
+      (projectOrder.get(left.workspaceRoot) ?? Number.MAX_SAFE_INTEGER) -
+      (projectOrder.get(right.workspaceRoot) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+export function selectPinnedSessions(state: DesktopState): SessionListItem[] {
+  const pinnedSessionIds = new Set(state.bootstrap?.pinnedSessionIds ?? []);
+  return state.sessions
+    .filter((session) => pinnedSessionIds.has(session.id))
+    .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export function selectTimeline(state: DesktopState): DesktopTimelineEntry[] {
@@ -250,8 +304,27 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       const session = asRecord(payload.session);
       const sessionId = stringValue(session.id) ?? next.activeSessionId;
       const workspaceRoot = stringValue(session.workspaceRoot) ?? next.workspaceRoot;
+      const existingSession = sessionId
+        ? next.sessions.find((item) => item.id === sessionId)
+        : undefined;
+      const sessions =
+        event.type === "session.created" && sessionId && workspaceRoot && !existingSession
+          ? upsertSessionListItem(next.sessions, {
+              id: sessionId,
+              workspaceRoot,
+              status: "running",
+              title: next.request?.prompt ?? "新对话",
+              firstPrompt: next.request?.prompt ?? "新对话",
+              createdAt: stringValue(session.createdAt) ?? event.timestamp,
+              updatedAt: event.timestamp,
+              changedFileCount: 0,
+              commandCount: 0,
+              totalCostUsd: 0,
+              eventLogPath: stringValue(session.sessionDir) ?? "",
+            })
+          : next.sessions;
       return appendTimeline(
-        { ...next, activeSessionId: sessionId, workspaceRoot },
+        { ...next, activeSessionId: sessionId, workspaceRoot, sessions },
         event,
         "session",
         event.type === "session.created" ? "Session created" : "Session resumed",
@@ -270,6 +343,31 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
     }
     case "user.message":
       return appendTimeline(next, event, "user", "User message", stringValue(payload.content));
+    case "context.built": {
+      const contextUsage = contextUsageFrom(payload, next.contextUsage);
+      return appendTimeline(
+        { ...next, contextUsage },
+        event,
+        "event",
+        "Context built",
+        `${formatTokenCount(contextUsage.estimatedTokens)} / ${formatTokenCount(contextUsage.maxTokens)} tokens`,
+        "muted",
+      );
+    }
+    case "context.compressed": {
+      const contextUsage = {
+        ...contextUsageFrom(payload, next.contextUsage),
+        compressed: true,
+      };
+      return appendTimeline(
+        { ...next, contextUsage },
+        event,
+        "event",
+        "上下文已压缩",
+        stringValue(payload.summary) ?? "较早消息已压缩为结构化检查点，近期消息保持完整。",
+        "warning",
+      );
+    }
     case "model.started":
       return appendTimeline(
         next,
@@ -282,6 +380,18 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
     case "model.delta": {
       const text = stringValue(payload.text);
       return text ? appendAssistantDelta(next, event, text) : next;
+    }
+    case "model.usage": {
+      const turnId = event.turnId;
+      if (!turnId) return next;
+      const usage = modelUsageFrom(payload.usage, payload.estimated === true);
+      return {
+        ...next,
+        turnUsage: {
+          ...next.turnUsage,
+          [turnId]: mergeModelUsage(next.turnUsage[turnId], usage),
+        },
+      };
     }
     case "model.tool_call": {
       const toolCall = asRecord(payload.toolCall);
@@ -444,6 +554,25 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
   }
 }
 
+function upsertSessionListItem(
+  sessions: SessionListItem[],
+  session: SessionListItem,
+): SessionListItem[] {
+  return [session, ...sessions.filter((item) => item.id !== session.id)];
+}
+
+function mergeSessionLists(
+  current: SessionListItem[],
+  incoming: SessionListItem[],
+): SessionListItem[] {
+  const currentById = new Map(current.map((session) => [session.id, session]));
+  return incoming.map((session) => {
+    const previous = currentById.get(session.id);
+    if (!previous || session.title !== "新对话" || previous.title === "新对话") return session;
+    return { ...session, title: previous.title, firstPrompt: previous.firstPrompt };
+  });
+}
+
 function resetConversation(state: DesktopState, workspaceRoot = state.workspaceRoot): DesktopState {
   return {
     ...state,
@@ -453,8 +582,11 @@ function resetConversation(state: DesktopState, workspaceRoot = state.workspaceR
     activeRunId: undefined,
     runStatus: "idle",
     request: undefined,
+    requestTimestamp: undefined,
     rawEvents: [],
     timeline: [],
+    contextUsage: undefined,
+    turnUsage: {},
     tools: [],
     changedFiles: [],
     activeChangedFilePath: undefined,
@@ -570,6 +702,80 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function contextUsageFrom(
+  payload: Record<string, unknown>,
+  previous?: DesktopContextUsage,
+): DesktopContextUsage {
+  return {
+    estimatedTokens: numberValue(payload.estimatedTokens) ?? previous?.estimatedTokens ?? 0,
+    maxTokens: numberValue(payload.maxTokens) ?? previous?.maxTokens ?? 64_000,
+    compressed: payload.compressed === true,
+  };
+}
+
+function modelUsageFrom(value: unknown, estimated: boolean): DesktopTurnUsage {
+  const usage = asRecord(value);
+  const inputTokens = numberValue(usage.inputTokens);
+  const cachedInputTokens = numberValue(usage.cachedInputTokens);
+  const uncachedInputTokens = numberValue(usage.uncachedInputTokens);
+  const outputTokens = numberValue(usage.outputTokens);
+  return {
+    inputTokens,
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(uncachedInputTokens === undefined ? {} : { uncachedInputTokens }),
+    outputTokens,
+    totalTokens:
+      numberValue(usage.totalTokens) ??
+      (inputTokens !== undefined || outputTokens !== undefined
+        ? (inputTokens ?? 0) + (outputTokens ?? 0)
+        : undefined),
+    estimated,
+    ...(numberValue(usage.costUsd) === undefined ? {} : { costUsd: numberValue(usage.costUsd) }),
+  };
+}
+
+function mergeModelUsage(
+  previous: DesktopTurnUsage | undefined,
+  current: DesktopTurnUsage,
+): DesktopTurnUsage {
+  return {
+    inputTokens: sumTokenValues(previous?.inputTokens, current.inputTokens),
+    ...(sumTokenValues(previous?.cachedInputTokens, current.cachedInputTokens) === undefined
+      ? {}
+      : {
+          cachedInputTokens: sumTokenValues(
+            previous?.cachedInputTokens,
+            current.cachedInputTokens,
+          ),
+        }),
+    ...(sumTokenValues(previous?.uncachedInputTokens, current.uncachedInputTokens) === undefined
+      ? {}
+      : {
+          uncachedInputTokens: sumTokenValues(
+            previous?.uncachedInputTokens,
+            current.uncachedInputTokens,
+          ),
+        }),
+    outputTokens: sumTokenValues(previous?.outputTokens, current.outputTokens),
+    totalTokens: sumTokenValues(previous?.totalTokens, current.totalTokens),
+    estimated: previous?.estimated === true || current.estimated === true,
+    ...(sumTokenValues(previous?.costUsd, current.costUsd) === undefined
+      ? {}
+      : { costUsd: sumTokenValues(previous?.costUsd, current.costUsd) }),
+    ...((previous?.warnings?.length ?? 0) + (current.warnings?.length ?? 0) > 0
+      ? { warnings: [...(previous?.warnings ?? []), ...(current.warnings ?? [])] }
+      : {}),
+  };
+}
+
+function sumTokenValues(left: number | undefined, right: number | undefined): number | undefined {
+  return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
+}
+
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function previewJson(value: unknown): string | undefined {

@@ -24,7 +24,7 @@ DreamCode 使用紫色像素猫作为品牌标识，黑色像素保留眼睛细�
 
 ## 快速开始
 
-```bash
+```bas
 pnpm install
 pnpm dreamcode --provider fake --cwd evals/fixtures/failing-test-js "修复当前项目的测试失败, 并运行测试确认。"
 ```
@@ -149,14 +149,18 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - 支持 `openai-compatible` 自定义 provider。
   - CLI 支持 `--provider`、`--model`、`--api-key`、`--api-key-env`、`--base-url`、`--list-providers`。
 - Tool Registry: 注册经过 Zod 校验的内置工具:
+  - `runtime.info`
   - `file.read`, `file.write`, `file.patch`, `file.list`
   - `search.grep`, `search.glob`
-  - `shell.run`
+  - `process.run`, `shell.run`
   - `git.status`, `git.diff`
   - `todo.write`, `question.ask`
   - `web.search`, `web.fetch`
   - `skill.list`, `skill.read`, `skill.read_resource`
   - `mcp.list`, `mcp.call`
+  - Core 默认只发送 coding 核心工具 schema；Web、Skill、MCP 工具族仅在已配置且用户请求明确需要时暴露。
+- 命令执行采用两层无状态协议：普通程序使用结构化 `process.run`；管道、重定向等明确 Shell 能力使用受语义校验的 `shell.run`。
+- 命令结果提供机器可读的错误分类、execution outcome、4 KiB stdout/stderr 首尾预览和完整 artifact 引用。
 - 文件快照和回滚: `file.write` / `file.patch` 写入前保存 snapshot, 同时保存 patch artifact。
 - Permission Engine: 实现 Safe YOLO v0 规则:
   - 自动允许低风险 workspace 读写、搜索、只读 git、常见 test/lint/build 命令。
@@ -166,7 +170,8 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - Web 只读访问在 yolo/full 下允许, guided 下询问, plan 下拒绝。
   - MCP 工具默认询问, full mode 才自动允许配置内 MCP tool。
   - dependency install 标记为 `install_dependency` 风险。
-- Context Builder: 构建 workspace 摘要、加载 `DREAMCODE.md`、包含 todo 状态并压缩工具观察结果。
+- Context Builder: 构建 workspace 摘要、加载 `DREAMCODE.md`、包含 todo 状态，并按实际 messages、工具 schema 与 Provider 协议开销估算和压缩上下文。
+- Model usage 区分完整输入、缓存命中输入、未缓存输入和输出 Token；缓存输入仍计入上下文容量。
 - Eval fixtures: 覆盖失败测试修复、README 更新和安全拦截。
 
 ## 验证
@@ -184,6 +189,9 @@ pnpm build
 - permission allow/ask/deny 与 workspace path boundary。
 - file patch 的 changed-file 记录。
 - shell timeout 处理。
+- runtime 平台事实、结构化 process 执行、Shell 单表达式校验和输出外置。
+- 可选工具 schema 分层、回合内紧凑缓存命中和缓存失效。
+- Provider 缓存 Token 归一化与包含工具 schema 的请求前估算。
 - fake model 端到端修复失败的 JavaScript 测试。
 - secret 读取和破坏性删除的拒绝逻辑。
 - OpenAI-compatible tool schema 顶层 object 兼容性。

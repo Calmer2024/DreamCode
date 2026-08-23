@@ -1,0 +1,11 @@
+id: O03-legacy-regression
+fixture: legacy-mixed
+prompt: "只验证 legacy-mixed 的现有测试基线并报告结果，不修改文件。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: command
+    command: npm test
+    expectedExitCode: 0
+

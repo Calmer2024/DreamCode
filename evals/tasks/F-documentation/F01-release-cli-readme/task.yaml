@@ -1,0 +1,24 @@
+id: F01-release-cli-readme
+fixture: release-cli
+prompt: "根据当前 release CLI 的源码、测试和示例，更新 README，使它准确说明 validate 和 summary 命令、参数、manifest 必填字段和实际输出。不要修改源码。完成后运行测试确认。"
+mode: yolo
+fakeScenario: release-readme
+budgets:
+  referenceLatencyMs: 120000
+  referenceTokens: 18000
+  referenceToolCalls: 14
+assertions:
+  - type: file-matches
+    path: README.md
+    pattern: "(?:release|src/cli\\.ts)\\s+validate"
+  - type: file-matches
+    path: README.md
+    pattern: "(?:release|src/cli\\.ts)\\s+summary"
+  - type: file-matches
+    path: README.md
+    pattern: "<manifest\\.json>"
+  - type: file-unchanged
+    path: src/cli.ts
+  - type: command
+    command: node --experimental-strip-types --test
+    expectedExitCode: 0

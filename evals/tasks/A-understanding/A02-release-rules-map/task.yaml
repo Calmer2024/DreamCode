@@ -1,0 +1,8 @@
+id: A02-release-rules-map
+fixture: release-cli
+prompt: "请检查 release CLI 的源码、测试、示例和 DREAMCODE.md，列出实际支持的命令、必填字段和验证命令。只输出分析，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 60000, referenceTokens: 12000, referenceToolCalls: 8 }
+assertions:
+  - type: no-workspace-changes

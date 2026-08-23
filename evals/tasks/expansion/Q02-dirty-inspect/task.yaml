@@ -1,0 +1,9 @@
+id: Q02-dirty-inspect
+fixture: dirty-worktree
+prompt: "检查脏工作区中的用户修改和无关文件，不能改动任何内容。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

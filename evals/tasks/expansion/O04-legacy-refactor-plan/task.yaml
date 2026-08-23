@@ -1,0 +1,9 @@
+id: O04-legacy-refactor-plan
+fixture: legacy-mixed
+prompt: "为 legacy-util 的重复逻辑重构制定实施计划，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

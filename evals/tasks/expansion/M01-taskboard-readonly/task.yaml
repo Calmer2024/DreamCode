@@ -1,0 +1,9 @@
+id: M01-taskboard-readonly
+fixture: taskboard-service
+prompt: "检查 Taskboard 服务的状态筛选实现和测试覆盖，先给出风险清单，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

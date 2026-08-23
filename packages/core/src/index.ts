@@ -1,8 +1,12 @@
-import { ContextBuilder } from "@dreamcode/context";
-import { PermissionEngine } from "@dreamcode/safety";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { ContextBuilder, contextOptionsForModel } from "@dreamcode/context";
+import { PermissionEngine, buildPermissionCapabilityContract } from "@dreamcode/safety";
+import { UsageCalibrator } from "@dreamcode/models";
 import type {
   AgentEvent,
   ChangedFile,
+  ChatMessage,
   FinalSummary,
   ModelProvider,
   NormalizedToolCall,
@@ -10,6 +14,7 @@ import type {
   RunMode,
   TodoItem,
   ToolCallObservation,
+  ToolModelSpec,
   ToolResult,
   Turn,
 } from "@dreamcode/shared";
@@ -41,6 +46,7 @@ export interface RunTurnInput {
 }
 
 export interface RunTurnState {
+  messages: ChatMessage[];
   observations: ToolCallObservation[];
   todoItems: TodoItem[];
   changedFiles: ChangedFile[];
@@ -51,7 +57,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const mode = input.mode ?? "yolo";
   const registry = input.registry ?? createDefaultToolRegistry();
   const permissionEngine = input.permissionEngine ?? new PermissionEngine();
-  const contextBuilder = input.contextBuilder ?? new ContextBuilder();
+  const contextBuilder =
+    input.contextBuilder ?? new ContextBuilder(contextOptionsForModel(input.provider.name, input.model));
   const maxToolCalls = input.maxToolCalls ?? 80;
   const { session, eventLog } = input.sessionId
     ? await openSession({ sessionId: input.sessionId, home: input.home })
@@ -61,12 +68,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       });
   const priorEvents = input.sessionId ? await eventLog.readAll() : [];
   const resumeState = input.sessionId ? replaySession(priorEvents) : undefined;
-  const conversationSummary = [
-    input.conversationSummary,
-    resumeState ? buildResumeSummary(resumeState) : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
   const turn: Turn = {
     id: createId("turn"),
     sessionId: session.id,
@@ -76,14 +77,29 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
     startedAt: nowIso(),
   };
   const state: RunTurnState = {
+    messages: projectConversationMessages(priorEvents),
     observations: [],
-    todoItems: [],
-    changedFiles: [],
-    commands: [],
+    todoItems: resumeState?.todoItems ?? [],
+    changedFiles: resumeState?.changedFiles ?? [],
+    commands: resumeState?.commands ?? [],
   };
+  if (input.conversationSummary?.trim()) {
+    state.messages.push({
+      role: "system",
+      content: `Additional conversation context:\n${input.conversationSummary.trim()}`,
+    });
+  }
   let toolCallCount = 0;
   let consecutiveFailures = 0;
-  const postChangeInspectionCounts = new Map<string, number>();
+  let workspaceRevision = 0;
+  let forceSynthesisReason: "budget_exhausted" | "repeated_tools" | undefined;
+  let latestCheckpointKey: string | undefined;
+  const inspectionCounts = new Map<string, number>();
+  const readOnlyCache = new Map<string, ToolResult>();
+  const usageCalibrator = new UsageCalibrator();
+  await usageCalibrator.load(input.home);
+  const capability = buildPermissionCapabilityContract(mode, process.platform);
+  const capabilitySnapshot = JSON.stringify(capability);
 
   const emit = async <TPayload>(
     type: AgentEvent["type"],
@@ -110,34 +126,80 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       : undefined,
   });
   yield await emit("turn.started", { turn });
-  yield await emit("user.message", { content: input.prompt });
+  const userEvent = await emit("user.message", { content: input.prompt });
+  yield userEvent;
+  state.messages.push({ id: userEvent.id, role: "user", content: input.prompt });
 
   try {
-    while (toolCallCount < maxToolCalls) {
+    while (true) {
       throwIfInterrupted(input.signal);
+      const synthesizing = forceSynthesisReason !== undefined;
+      const budgetMessage = synthesizing
+        ? {
+            role: "system" as const,
+            content:
+              forceSynthesisReason === "budget_exhausted"
+                ? "The tool budget is exhausted. Do not call tools. Give the most useful final answer from existing evidence and state anything unfinished."
+                : "Repeated tool requests were detected. Do not call tools. Use the evidence already collected and give the final answer now.",
+          }
+        : buildBudgetGuidance(toolCallCount, maxToolCalls);
+      const toolSpecs = synthesizing ? [] : selectToolSpecs(registry, input.prompt);
       const context = await contextBuilder.build({
-        prompt: input.prompt,
         mode,
         workspaceRoot: session.workspaceRoot,
-        conversationSummary,
-        observations: state.observations,
+        messages: budgetMessage ? [...state.messages, budgetMessage] : state.messages,
         todoItems: state.todoItems,
+        runtimeSnapshot: capabilitySnapshot,
+        tools: toolSpecs,
+        model: input.model ?? "",
+        estimateInputTokens: input.provider.estimateInputTokens
+          ? async (estimateInput) => {
+              const base = await input.provider.estimateInputTokens!({ ...estimateInput, providerId: input.provider.name });
+              const baseInputTokens = base.baseInputTokens ?? base.inputTokens;
+              const requestClass = estimateInput.tools.length ? "with_tools" : "messages_only";
+              const calibrated = usageCalibrator.estimate(baseInputTokens, input.provider.name, input.model ?? "", requestClass);
+              return { ...base, baseInputTokens, calibratedInputTokens: calibrated.calibratedInputTokens, correctionRatio: calibrated.correctionRatio, sampleCount: calibrated.sampleCount, coldStart: calibrated.coldStart, inputTokens: calibrated.calibratedInputTokens };
+            }
+          : undefined,
       });
       throwIfInterrupted(input.signal);
-      yield await emit("context.built", { summary: context.summary });
+      yield await emit("context.built", {
+        summary: context.summary,
+        estimatedTokens: context.estimatedTokens,
+        maxTokens: context.maxTokens,
+        compressed: context.compressed,
+        tokenEstimate: context.tokenEstimate,
+        permissionContract: capability,
+      });
+      if (context.compressed && context.checkpoint) {
+        const checkpointKey = JSON.stringify(context.checkpoint.summary);
+        if (checkpointKey !== latestCheckpointKey) {
+          latestCheckpointKey = checkpointKey;
+          yield await emit("context.compressed", {
+            checkpoint: context.checkpoint,
+            summary: context.summary,
+            estimatedTokens: context.estimatedTokens,
+            maxTokens: context.maxTokens,
+            tokenEstimate: context.tokenEstimate,
+          });
+        }
+      }
 
       yield await emit("model.started", {
         provider: input.provider.name,
         model: input.model ?? "default",
-        toolCount: registry.list().length,
+        toolCount: toolSpecs.length,
+        tools: toolSpecs.map((tool) => tool.name),
+        phase: synthesizing ? "synthesis" : "execution",
       });
 
       let assistantText = "";
       const toolCalls: NormalizedToolCall[] = [];
+      let usageReported = false;
 
       for await (const modelEvent of input.provider.stream({
         messages: context.messages,
-        tools: registry.toModelSpecs(),
+        tools: toolSpecs,
         model: input.model ?? "",
         mode,
         workspaceRoot: session.workspaceRoot,
@@ -149,13 +211,63 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           yield await emit("model.delta", { text: modelEvent.text });
         }
         if (modelEvent.type === "tool_call") {
-          toolCalls.push(modelEvent.toolCall);
-          yield await emit("model.tool_call", { toolCall: modelEvent.toolCall });
+          if (!synthesizing) {
+            toolCalls.push(modelEvent.toolCall);
+            yield await emit("model.tool_call", { toolCall: modelEvent.toolCall });
+          }
         }
         if (modelEvent.type === "usage") {
+          usageReported = true;
+          const estimate = context.tokenEstimate;
+          if (estimate) {
+            usageCalibrator.observe(estimate.baseInputTokens ?? estimate.inputTokens, modelEvent.usage.inputTokens, input.provider.name, input.model ?? "", toolSpecs.length ? "with_tools" : "messages_only");
+            await usageCalibrator.persist(input.home);
+          }
           yield await emit("model.usage", { usage: modelEvent.usage });
         }
         throwIfInterrupted(input.signal);
+      }
+
+      if (!usageReported) {
+        const inputTokens = context.estimatedTokens;
+        const outputTokens = Math.ceil(
+          (assistantText.length + JSON.stringify(toolCalls.map(canonicalToolCall)).length) / 4,
+        );
+        yield await emit("model.usage", {
+          usage: {
+            inputTokens,
+            outputTokens,
+            totalTokens: inputTokens + outputTokens,
+          },
+          estimated: true,
+        });
+      }
+
+      const assistantMessage: ChatMessage = {
+        id: createId("msg"),
+        role: "assistant",
+        content: assistantText.trim(),
+        toolCalls: toolCalls.map(canonicalToolCall),
+      };
+      const assistantEvent = await emit("assistant.message", { message: assistantMessage });
+      yield assistantEvent;
+      state.messages.push({ ...assistantMessage, id: assistantEvent.id });
+
+      if (synthesizing) {
+        const fallback =
+          forceSynthesisReason === "budget_exhausted"
+            ? "Tool budget exhausted. Returning the evidence collected so far; some work may remain."
+            : "Stopped after repeated tool requests and returned the evidence already collected.";
+        const summary = buildFinalSummary({
+          status:
+            forceSynthesisReason === "budget_exhausted" ? "budget_exhausted" : "completed_partial",
+          message: assistantText.trim() || fallback,
+          state,
+          eventLogPath: eventLog.filePath,
+        });
+        yield await emit("turn.completed", { summary });
+        await safelyRebuildIndex(input.home);
+        return;
       }
 
       if (toolCalls.length === 0) {
@@ -171,26 +283,52 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       }
 
       for (const toolCall of toolCalls) {
-        toolCallCount += 1;
-        if (toolCallCount > maxToolCalls) {
-          throw new Error(`Maximum tool call count reached (${maxToolCalls}).`);
+        if (toolCallCount >= maxToolCalls) {
+          const result: ToolResult = {
+            toolCallId: toolCall.id,
+            status: "cancelled",
+            summary: `Tool budget exhausted (${maxToolCalls}); this call was not executed.`,
+          };
+          state.messages.push(toToolResultMessage(toolCall, result));
+          forceSynthesisReason = "budget_exhausted";
+          continue;
         }
+        toolCallCount += 1;
 
-        const repeatedInspection = recordPostChangeInspection({
-          state,
-          counts: postChangeInspectionCounts,
-          toolCall,
+        const preflightResult = await registry.get(toolCall.name)?.preflight?.(toolCall.input, {
+          workspaceRoot: session.workspaceRoot,
+          sessionDir: session.sessionDir,
+          mode,
+          toolCallId: toolCall.id,
+          signal: input.signal,
+          questionHandler: input.questionHandler,
         });
-        if (repeatedInspection) {
-          const summary = buildFinalSummary({
-            status: "completed",
-            message: `Task completed after applying changes. Stopped after repeated post-change inspection: ${repeatedInspection}.`,
-            state,
-            eventLogPath: eventLog.filePath,
+        if (preflightResult) {
+          const validationDecision: PermissionDecision = {
+            decision: "deny",
+            reason: "Tool input validation failed before permission evaluation.",
+            risk: [],
+            reviewer: "rules",
+          };
+          yield await emit("tool.completed", {
+            toolCallId: toolCall.id,
+            tool: toolCall.name,
+            status: preflightResult.status,
+            summary: preflightResult.summary,
+            error: preflightResult.error,
+            execution: preflightResult.execution,
           });
-          yield await emit("turn.completed", { summary });
-          await safelyRebuildIndex(input.home);
-          return;
+          state.observations.push({
+            toolCall,
+            decision: validationDecision,
+            result: preflightResult,
+          });
+          state.messages.push(toToolResultMessage(toolCall, preflightResult));
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 5) {
+            throw new Error("Stopped after 5 consecutive tool failures.");
+          }
+          continue;
         }
 
         const initialDecision = permissionEngine.decide({
@@ -211,34 +349,46 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         });
 
         const yieldedToolEvents: AgentEvent[] = [];
+        const signature = `${workspaceRevision}:${makeToolCallSignature(toolCall)}`;
+        const inspectionCount = (inspectionCounts.get(signature) ?? 0) + 1;
+        inspectionCounts.set(signature, inspectionCount);
+        const cached = readOnlyTools.has(toolCall.name) ? readOnlyCache.get(signature) : undefined;
         const result =
-          finalDecision.decision === "allow"
-            ? await executeToolWithEvents({
-                registry,
-                toolCall,
-                sessionDir: session.sessionDir,
-                workspaceRoot: session.workspaceRoot,
-                mode,
-                signal: input.signal,
-                questionHandler: input.questionHandler,
-                emit,
-                yieldEvent: async (event) => {
-                  yieldedToolEvents.push(event);
-                },
-              })
-            : deniedToolResult(toolCall.id, finalDecision.reason);
+          finalDecision.decision !== "allow"
+            ? deniedToolResult(toolCall.id, toolCall.name, finalDecision.reason)
+            : cached
+              ? compactCacheHit(cached, toolCall.id, workspaceRevision)
+              : await executeToolWithEvents({
+                  registry,
+                  toolCall,
+                  sessionDir: session.sessionDir,
+                  workspaceRoot: session.workspaceRoot,
+                  mode,
+                  signal: input.signal,
+                  questionHandler: input.questionHandler,
+                  emit,
+                  yieldEvent: async (event) => {
+                    yieldedToolEvents.push(event);
+                  },
+                });
 
         for (const event of yieldedToolEvents) {
           yield event;
         }
         yieldedToolEvents.length = 0;
 
-        if (finalDecision.decision !== "allow") {
+        if (finalDecision.decision !== "allow" || cached) {
           yield await emit("tool.completed", {
             toolCallId: toolCall.id,
             tool: toolCall.name,
             status: result.status,
             summary: result.summary,
+            cached: Boolean(cached),
+            error: result.error,
+            execution: result.execution,
+            streams: result.streams,
+            warnings: result.warnings,
+            cache: result.cache,
           });
         }
 
@@ -248,7 +398,22 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           result,
         };
         state.observations.push(observation);
+        state.messages.push(toToolResultMessage(toolCall, result));
         applyResultToState(state, toolCall, result);
+        if (!cached && finalDecision.decision === "allow" && readOnlyTools.has(toolCall.name)) {
+          readOnlyCache.set(signature, result);
+        }
+        if (
+          !cached &&
+          finalDecision.decision === "allow" &&
+          shouldInvalidateReadCache(registry, toolCall.name, result)
+        ) {
+          workspaceRevision += 1;
+          readOnlyCache.clear();
+        }
+        if (inspectionCount >= 3 && readOnlyTools.has(toolCall.name)) {
+          forceSynthesisReason = "repeated_tools";
+        }
         throwIfInterrupted(input.signal);
 
         if (result.status === "success") {
@@ -260,9 +425,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           }
         }
       }
+      if (toolCallCount >= maxToolCalls) forceSynthesisReason = "budget_exhausted";
     }
-
-    throw new Error(`Maximum tool call count reached (${maxToolCalls}).`);
   } catch (error) {
     if (error instanceof TurnInterruptedError || input.signal?.aborted) {
       yield await emit("turn.interrupted", {
@@ -310,26 +474,6 @@ function getAbortReason(signal: AbortSignal | undefined): string | undefined {
   return "Turn interrupted by user.";
 }
 
-function buildResumeSummary(state: ReturnType<typeof replaySession>): string {
-  const changedFiles = state.changedFiles.map((file) => `${file.operation}: ${file.path}`);
-  const commands = state.commands.map(
-    (command) => `${command.command} -> ${command.exitCode ?? "unknown"} (${command.summary})`,
-  );
-  return [
-    "This turn resumes an existing DreamCode session.",
-    `Previous status: ${state.status}.`,
-    state.latestSummary ? `Latest summary: ${state.latestSummary.message}` : undefined,
-    state.todoItems.length
-      ? `Previous todo:\n${state.todoItems.map((item) => `- ${item.status}: ${item.content}`).join("\n")}`
-      : undefined,
-    changedFiles.length ? `Files already changed:\n${changedFiles.join("\n")}` : undefined,
-    commands.length ? `Commands already run:\n${commands.join("\n")}` : undefined,
-    state.warnings.length ? `Replay warnings:\n${state.warnings.join("\n")}` : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
 async function safelyRebuildIndex(home: string | undefined): Promise<void> {
   try {
     await rebuildSessionIndex(home);
@@ -338,7 +482,8 @@ async function safelyRebuildIndex(home: string | undefined): Promise<void> {
   }
 }
 
-const postChangeInspectionTools = new Set([
+const readOnlyTools = new Set([
+  "runtime.info",
   "file.read",
   "file.list",
   "search.grep",
@@ -347,20 +492,88 @@ const postChangeInspectionTools = new Set([
   "git.diff",
 ]);
 
-function recordPostChangeInspection(input: {
-  state: RunTurnState;
-  counts: Map<string, number>;
-  toolCall: NormalizedToolCall;
-}): string | undefined {
-  if (!input.state.changedFiles.length || !postChangeInspectionTools.has(input.toolCall.name)) {
-    return undefined;
-  }
+const coreToolNames = new Set([
+  "runtime.info",
+  "file.read",
+  "artifact.read",
+  "file.write",
+  "file.patch",
+  "file.list",
+  "search.grep",
+  "search.glob",
+  "process.run",
+  "shell.run",
+  "git.status",
+  "git.diff",
+  "todo.write",
+  "question.ask",
+]);
 
-  const signature = makeToolCallSignature(input.toolCall);
-  const count = (input.counts.get(signature) ?? 0) + 1;
-  input.counts.set(signature, count);
+export function selectToolSpecs(registry: ToolRegistry, prompt: string): ToolModelSpec[] {
+  const normalized = prompt.toLowerCase();
+  const enableWeb =
+    !optionalCapabilityNegated(normalized, "web|internet|online|website|联网|网页|网站|互联网") &&
+    (/https?:\/\//.test(normalized) ||
+      /\b(web|internet|online|website)\b/.test(normalized) ||
+      /(联网|网页|网站|互联网)/.test(normalized));
+  const enableSkills =
+    !optionalCapabilityNegated(normalized, "skills?|技能") &&
+    (/\bskills?\b/.test(normalized) || /(技能)/.test(normalized));
+  const enableMcp =
+    !optionalCapabilityNegated(normalized, "mcp") && /\bmcp\b/.test(normalized);
 
-  return count >= 4 ? signature : undefined;
+  return registry.toModelSpecs().filter((spec) => {
+    if (coreToolNames.has(spec.name)) return true;
+    if (spec.name.startsWith("web.")) {
+      return enableWeb && registry.isOptionalFamilyConfigured("web");
+    }
+    if (spec.name.startsWith("skill.")) {
+      return enableSkills && registry.isOptionalFamilyConfigured("skill");
+    }
+    if (spec.name.startsWith("mcp.")) {
+      return enableMcp && registry.isOptionalFamilyConfigured("mcp");
+    }
+    return false;
+  });
+}
+
+function optionalCapabilityNegated(prompt: string, terms: string): boolean {
+  return new RegExp(`(?:不需要|不要|无需|without\\b|\\bno\\b)[^。.!?]*(?:${terms})`, "i").test(
+    prompt,
+  );
+}
+
+function compactCacheHit(
+  source: ToolResult,
+  toolCallId: string,
+  workspaceRevision: number,
+): ToolResult {
+  return {
+    toolCallId,
+    status: "success",
+    summary: `Cached result reference reused: ${source.summary}`,
+    data: {
+      sourceToolCallId: source.toolCallId,
+      workspaceRevision,
+    },
+    cache: {
+      outcome: "cache_hit",
+      sourceToolCallId: source.toolCallId,
+      workspaceRevision,
+    },
+  };
+}
+
+function shouldInvalidateReadCache(
+  registry: ToolRegistry,
+  toolName: string,
+  result: ToolResult,
+): boolean {
+  if (readOnlyTools.has(toolName)) return false;
+  if (result.execution && !result.execution.started) return false;
+  if (toolName === "mcp.call") return true;
+  const risk = registry.get(toolName)?.risk;
+  return Boolean(risk?.writesFiles || risk?.runsCommands || risk?.externalSideEffects);
 }
 
 function makeToolCallSignature(toolCall: NormalizedToolCall): string {
@@ -380,6 +593,169 @@ function stableStringify(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(input[key])}`);
   return `{${entries.join(",")}}`;
+}
+
+function canonicalToolCall(toolCall: NormalizedToolCall): NormalizedToolCall {
+  return {
+    id: toolCall.id,
+    name: toolCall.name,
+    input: toolCall.input,
+    rawProvider: toolCall.rawProvider,
+  };
+}
+
+function buildBudgetGuidance(toolCallCount: number, maxToolCalls: number): ChatMessage | undefined {
+  const ratio = toolCallCount / maxToolCalls;
+  if (ratio < 0.6) return undefined;
+  const remaining = Math.max(0, maxToolCalls - toolCallCount);
+  const instruction =
+    ratio >= 0.9
+      ? "Avoid low-value inspection. Finish the critical path and prepare the final answer."
+      : ratio >= 0.8
+        ? "Converge the plan and reuse existing evidence before calling more tools."
+        : "The tool budget is becoming limited; prioritize calls that add new evidence.";
+  return {
+    role: "system",
+    content: `Tool budget: ${remaining} of ${maxToolCalls} calls remain. ${instruction}`,
+  };
+}
+
+function toToolResultMessage(toolCall: NormalizedToolCall, result: ToolResult): ChatMessage {
+  const serializedData = safeJson(resultForModel(result));
+  const data = `\nData: ${truncateContext(serializedData)}`;
+  const artifacts = result.artifactRefs?.length
+    ? `\nArtifacts: ${result.artifactRefs.join(", ")}`
+    : "";
+  return {
+    id: createId("msg"),
+    role: "tool",
+    name: toolCall.name,
+    toolCallId: toolCall.id,
+    content: `Status: ${result.status}\nSummary: ${result.summary}${data}${artifacts}`,
+  };
+}
+
+function truncateContext(value: string, maxChars = 12_000): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n...[tool output truncated; use its artifact reference for more]`;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function projectConversationMessages(events: AgentEvent[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  let pendingText = "";
+  let pendingCalls: NormalizedToolCall[] = [];
+  let pendingEventId: string | undefined;
+  const flushPending = () => {
+    if (!pendingText && !pendingCalls.length) return;
+    messages.push({
+      id: pendingEventId,
+      role: "assistant",
+      content: pendingText.trim(),
+      toolCalls: pendingCalls,
+    });
+    pendingText = "";
+    pendingCalls = [];
+    pendingEventId = undefined;
+  };
+
+  for (const event of events) {
+    if (event.type === "user.message") {
+      flushPending();
+      const payload = event.payload as { content?: string };
+      if (payload.content) messages.push({ id: event.id, role: "user", content: payload.content });
+      continue;
+    }
+    if (event.type === "model.started") {
+      flushPending();
+      continue;
+    }
+    if (event.type === "model.delta") {
+      const payload = event.payload as { text?: string };
+      pendingText += payload.text ?? "";
+      pendingEventId ??= event.id;
+      continue;
+    }
+    if (event.type === "model.tool_call") {
+      const payload = event.payload as { toolCall?: NormalizedToolCall };
+      if (payload.toolCall) pendingCalls.push(canonicalToolCall(payload.toolCall));
+      pendingEventId ??= event.id;
+      continue;
+    }
+    if (event.type === "assistant.message") {
+      pendingText = "";
+      pendingCalls = [];
+      pendingEventId = undefined;
+      const payload = event.payload as { message?: ChatMessage };
+      if (payload.message) messages.push({ ...payload.message, id: event.id });
+      continue;
+    }
+    if (event.type === "permission.decided") {
+      flushPending();
+      continue;
+    }
+    if (event.type === "tool.completed") {
+      flushPending();
+      const payload = event.payload as {
+        toolCallId?: string;
+        tool?: string;
+        status?: ToolResult["status"];
+        summary?: string;
+        data?: unknown;
+        artifactRefs?: string[];
+        error?: ToolResult["error"];
+        execution?: ToolResult["execution"];
+        streams?: ToolResult["streams"];
+        warnings?: string[];
+        cache?: ToolResult["cache"];
+      };
+      if (payload.toolCallId) {
+        messages.push({
+          id: event.id,
+          role: "tool",
+          name: payload.tool,
+          toolCallId: payload.toolCallId,
+          content: [
+            `Status: ${payload.status ?? "success"}`,
+            `Summary: ${payload.summary ?? "Tool completed."}`,
+            payload.data === undefined &&
+            payload.error === undefined &&
+            payload.execution === undefined &&
+            payload.streams === undefined &&
+            payload.warnings === undefined &&
+            payload.cache === undefined
+              ? undefined
+              : `Data: ${truncateContext(
+                  safeJson({
+                    data: payload.data,
+                    error: payload.error,
+                    execution: payload.execution,
+                    streams: payload.streams,
+                    warnings: payload.warnings,
+                    cache: payload.cache,
+                  }),
+                )}`,
+            payload.artifactRefs?.length
+              ? `Artifacts: ${payload.artifactRefs.join(", ")}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        });
+      }
+      continue;
+    }
+    if (event.type === "turn.completed" || event.type === "turn.failed") flushPending();
+  }
+  flushPending();
+  return messages;
 }
 
 async function resolveApproval(input: {
@@ -432,7 +808,13 @@ async function executeToolWithEvents(input: {
       toolCallId: input.toolCall.id,
       status: "error",
       summary: `Unknown tool: ${input.toolCall.name}`,
-      error: { code: "unknown_tool", message: `Unknown tool: ${input.toolCall.name}` },
+      error: {
+        code: "unknown_tool",
+        category: "validation",
+        reason: "unknown_tool",
+        message: `Unknown tool: ${input.toolCall.name}`,
+        retryable: false,
+      },
     };
   }
 
@@ -445,7 +827,7 @@ async function executeToolWithEvents(input: {
   );
 
   try {
-    const result = await tool.execute(input.toolCall.input, {
+    let result = await tool.execute(input.toolCall.input, {
       workspaceRoot: input.workspaceRoot,
       sessionDir: input.sessionDir,
       mode: input.mode,
@@ -453,6 +835,12 @@ async function executeToolWithEvents(input: {
       signal: input.signal,
       questionHandler: input.questionHandler,
     });
+    const externalized = await externalizeLargeToolResult({
+      result,
+      sessionDir: input.sessionDir,
+      toolCallId: input.toolCall.id,
+    });
+    result = externalized.result;
 
     await input.yieldEvent(
       await input.emit("tool.completed", {
@@ -460,7 +848,12 @@ async function executeToolWithEvents(input: {
         tool: input.toolCall.name,
         status: result.status,
         summary: result.summary,
-        data: result.data,
+        data: externalized.eventData,
+        error: result.error,
+        execution: result.execution,
+        streams: result.streams,
+        warnings: result.warnings,
+        cache: result.cache,
         stdoutRef: result.stdoutRef,
         stderrRef: result.stderrRef,
         artifactRefs: result.artifactRefs,
@@ -548,7 +941,10 @@ async function executeToolWithEvents(input: {
       summary: toErrorMessage(error),
       error: {
         code: "tool_execution_failed",
+        category: "internal",
+        reason: "tool_execution_failed",
         message: toErrorMessage(error),
+        retryable: false,
       },
     };
     await input.yieldEvent(
@@ -561,6 +957,40 @@ async function executeToolWithEvents(input: {
     );
     return result;
   }
+}
+
+async function externalizeLargeToolResult(input: {
+  result: ToolResult;
+  sessionDir: string;
+  toolCallId: string;
+}): Promise<{ result: ToolResult; eventData: unknown }> {
+  if (input.result.data === undefined) {
+    return { result: input.result, eventData: undefined };
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input.result.data, null, 2);
+  } catch {
+    return { result: input.result, eventData: input.result.data };
+  }
+  const bytes = Buffer.byteLength(serialized, "utf8");
+  if (bytes <= 24_000) return { result: input.result, eventData: input.result.data };
+
+  const artifactsDir = path.join(input.sessionDir, "artifacts");
+  await mkdir(artifactsDir, { recursive: true });
+  const fileName = `tool-${input.toolCallId.replace(/[^a-zA-Z0-9_-]/g, "_")}-output.json`;
+  await writeFile(path.join(artifactsDir, fileName), serialized, "utf8");
+  const artifactRef = `artifact://${encodeURIComponent(fileName)}`;
+  const artifactRefs = [...new Set([...(input.result.artifactRefs ?? []), artifactRef])];
+  return {
+    result: { ...input.result, artifactRefs },
+    eventData: {
+      preview: serialized.slice(0, 8_000),
+      bytes,
+      truncated: true,
+      artifactRef,
+    },
+  };
 }
 
 function applyResultToState(
@@ -579,7 +1009,10 @@ function applyResultToState(
     }
   }
 
-  if (toolCall.name === "shell.run" && result.status !== "denied") {
+  if (
+    (toolCall.name === "shell.run" || toolCall.name === "process.run") &&
+    result.status !== "denied"
+  ) {
     const data = result.data as { command?: string; exitCode?: number } | undefined;
     state.commands.push({
       command: data?.command ?? JSON.stringify(toolCall.input),
@@ -589,15 +1022,38 @@ function applyResultToState(
   }
 }
 
-function deniedToolResult(toolCallId: string, reason: string): ToolResult {
+function deniedToolResult(toolCallId: string, toolName: string, reason: string): ToolResult {
   return {
     toolCallId,
     status: "denied",
     summary: reason,
     error: {
       code: "permission_denied",
+      category: "permission",
+      reason: "permission_denied",
       message: reason,
+      retryable: false,
     },
+    execution:
+      toolName === "process.run" || toolName === "shell.run"
+        ? { outcome: "permission_denied", started: false }
+        : undefined,
+  };
+}
+
+function resultForModel(result: ToolResult): Record<string, unknown> {
+  let data = result.data;
+  if (result.streams && data && typeof data === "object" && !Array.isArray(data)) {
+    const { stdout: _stdout, stderr: _stderr, ...rest } = data as Record<string, unknown>;
+    data = rest;
+  }
+  return {
+    data,
+    error: result.error,
+    execution: result.execution,
+    streams: result.streams,
+    warnings: result.warnings,
+    cache: result.cache,
   };
 }
 

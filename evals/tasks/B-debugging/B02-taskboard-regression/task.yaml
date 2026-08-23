@@ -1,0 +1,13 @@
+id: B02-taskboard-regression
+fixture: taskboard-service
+prompt: "修复 Taskboard service 的状态筛选回归问题，确保筛选不会修改任务对象，并运行完整测试确认。不要删除或放宽测试。"
+mode: yolo
+fakeScenario: taskboard-fix
+budgets: { referenceLatencyMs: 120000, referenceTokens: 16000, referenceToolCalls: 12 }
+assertions:
+  - type: file-contains
+    path: src/services/task-service.ts
+    text: "task.status === status"
+  - type: command
+    command: npm test
+    expectedExitCode: 0

@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 interface ProjectMoreMenuProps {
   projectName: string;
   pinned: boolean;
+  triggerClassName?: string;
+  triggerLabel?: string;
   onTogglePin: () => void;
   onOpenWorkspace: () => void;
   onRename: () => void;
@@ -14,11 +16,12 @@ interface ProjectMoreMenuProps {
 type MenuPosition = {
   direction: "down" | "up";
   left: number;
-  top: number;
+  top?: number;
+  bottom?: number;
   maxHeight: number;
 };
 
-const menuWidth = 246;
+const menuWidth = 218;
 const viewportGap = 8;
 const triggerGap = 6;
 const closeDuration = 140;
@@ -26,6 +29,8 @@ const closeDuration = 140;
 export function ProjectMoreMenu({
   projectName,
   pinned,
+  triggerClassName = "project-more-button",
+  triggerLabel = "项目更多操作",
   onTogglePin,
   onOpenWorkspace,
   onRename,
@@ -48,16 +53,17 @@ export function ProjectMoreMenu({
       direction === "down"
         ? window.innerHeight - rect.bottom - triggerGap - viewportGap
         : rect.top - triggerGap - viewportGap;
-    const menuHeight = Math.min(menuRef.current?.scrollHeight ?? 268, Math.max(80, available));
     const left = Math.min(
-      Math.max(viewportGap, rect.right - menuWidth),
+      Math.max(viewportGap, rect.left),
       Math.max(viewportGap, window.innerWidth - menuWidth - viewportGap),
     );
-    const top =
-      direction === "down"
-        ? Math.min(rect.bottom + triggerGap, window.innerHeight - menuHeight - viewportGap)
-        : Math.max(viewportGap, rect.top - triggerGap - menuHeight);
-    setPosition({ direction, left, top, maxHeight: Math.max(80, available) });
+    setPosition({
+      direction,
+      left,
+      top: direction === "down" ? rect.bottom + triggerGap : undefined,
+      bottom: direction === "up" ? window.innerHeight - rect.top + triggerGap : undefined,
+      maxHeight: Math.max(80, available),
+    });
   }, []);
 
   const close = useCallback((restoreFocus = false) => {
@@ -117,9 +123,9 @@ export function ProjectMoreMenu({
       <button
         ref={triggerRef}
         type="button"
-        className="project-more-button"
-        aria-label="项目更多操作"
-        title={`${projectName} 更多操作`}
+        className={triggerClassName}
+        aria-label={triggerLabel}
+        data-tooltip={`${projectName} 更多操作`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? close() : show())}
@@ -138,6 +144,7 @@ export function ProjectMoreMenu({
               style={{
                 left: position.left,
                 top: position.top,
+                bottom: position.bottom,
                 width: menuWidth,
                 maxHeight: position.maxHeight,
               }}
@@ -192,7 +199,7 @@ function MenuItem({
       className={`project-menu-item${danger ? " danger" : ""}`}
       role="menuitem"
       disabled={disabled}
-      title={disabled ? "当前版本尚未支持" : undefined}
+      data-tooltip={disabled ? "当前版本尚未支持" : undefined}
       onClick={onClick}
     >
       {icon}

@@ -8,20 +8,50 @@ export const startTurnRequestSchema = z.object({
   prompt: z.string().trim().min(1),
   workspaceRoot: workspaceRootSchema,
   mode: z.enum(["plan", "guided", "yolo", "full"]),
-  profileName: z.string().trim().min(1).optional(),
+  profileId: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
   sessionId: z.string().trim().min(1).optional(),
 });
 
 export type StartTurnRequest = z.infer<typeof startTurnRequestSchema> & { mode: RunMode };
 
-export const saveProfileRequestSchema = z.object({
-  name: z.string().trim().min(1),
+const httpUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .refine((value) => value.startsWith("http://") || value.startsWith("https://"));
+const environmentVariableSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+export const credentialActionSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("preserve") }),
+  z.object({ mode: z.literal("clear") }),
+  z.object({ mode: z.literal("inline"), apiKey: z.string().trim().min(1) }),
+  z.object({ mode: z.literal("environment"), apiKeyEnv: environmentVariableSchema }),
+]);
+const profileDraftSchema = z.object({
+  alias: z.string().trim().min(1),
   provider: z.string().trim().min(1),
-  model: z.string().trim().min(1).optional(),
-  baseURL: z.string().trim().url().optional(),
-  apiKey: z.string().trim().min(1).optional(),
-  apiKeyEnv: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1),
+  baseURL: httpUrlSchema.optional(),
+  credential: credentialActionSchema,
 });
+export const createProfileRequestSchema = profileDraftSchema;
+export const updateProfileRequestSchema = profileDraftSchema.extend({
+  profileId: z.string().trim().min(1),
+});
+export const profileIdSchema = z.string().trim().min(1);
+export const setDefaultProfileRequestSchema = z.object({ profileId: profileIdSchema });
+export const testProfileRequestSchema = profileDraftSchema.extend({
+  profileId: profileIdSchema.optional(),
+});
+export const webSearchCredentialRequestSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("preserve") }),
+  z.object({ mode: z.literal("clear") }),
+  z.object({ mode: z.literal("inline"), apiKey: z.string().trim().min(1) }),
+]);
+export type WebSearchCredentialRequest = z.infer<typeof webSearchCredentialRequestSchema>;
 
 export const sessionIdSchema = z.string().trim().min(1);
 export const runIdSchema = z.string().trim().min(1);
@@ -36,9 +66,16 @@ export const projectRequestSchema = z.object({
   name: z.string().trim().min(1),
   pinned: z.boolean().optional(),
 });
+export const createProjectRequestSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+});
 export const sessionPinRequestSchema = z.object({
   sessionId: sessionIdSchema,
   pinned: z.boolean(),
+});
+export const sessionRenameRequestSchema = z.object({
+  sessionId: sessionIdSchema,
+  title: z.string().trim().min(1).max(80),
 });
 
 export const approvalResponseSchema = z.object({
@@ -57,6 +94,11 @@ export interface DesktopRunEvent {
   runId: string;
   event: AgentEvent;
 }
+export interface DesktopTerminalOutput {
+  terminalId: string;
+  stream: "stdout" | "stderr";
+  text: string;
+}
 export interface DesktopError {
   code: string;
   message: string;
@@ -73,6 +115,9 @@ const safeDesktopErrorMessages: Record<string, string> = {
   config_load_failed: "Failed to load DreamCode configuration.",
   provider_setup_failed: "Provider could not be configured.",
   profile_not_found: "No matching model profile is configured.",
+  profile_alias_conflict: "A model profile with this alias already exists.",
+  profile_validation_failed: "Model profile is invalid.",
+  profile_connection_failed: "Model connection test failed.",
   run_failed: "Run failed.",
   status_delivery_failed: "Run status could not be delivered.",
 };
@@ -106,14 +151,32 @@ export interface DesktopRunStatus {
   status: "running" | "completed" | "failed" | "interrupted";
   error?: DesktopError;
 }
-export interface SaveProfileRequest {
-  name: string;
+export type CredentialAction = z.infer<typeof credentialActionSchema>;
+export interface ProfileDraftRequest {
+  alias: string;
   provider: string;
-  model?: string;
+  model: string;
   baseURL?: string;
-  apiKey?: string;
-  apiKeyEnv?: string;
+  credential: CredentialAction;
 }
+export type CreateProfileRequest = ProfileDraftRequest;
+export type UpdateProfileRequest = ProfileDraftRequest & { profileId: string };
+export type TestProfileRequest = ProfileDraftRequest & { profileId?: string };
+export type ProfileConnectionResult =
+  | { ok: true; message: string }
+  | {
+      ok: false;
+      code:
+        | "credential_missing"
+        | "credential_invalid"
+        | "model_not_found"
+        | "network_error"
+        | "timeout"
+        | "server_error"
+        | "empty_response"
+        | "profile_not_found";
+      message: string;
+    };
 export interface ApprovalResponse {
   runId: string;
   requestId: string;
@@ -129,40 +192,66 @@ export interface RollbackRequest {
   filePath: string;
 }
 export interface DesktopBootstrap {
+  webSearch?: {
+    provider: "exa";
+    credentialSource: "inline" | "environment" | "none";
+    credentialAvailable: boolean;
+  };
   profiles: Array<{
-    name: string;
+    id: string;
+    alias: string;
     provider: string;
     model?: string;
     baseURL?: string;
-    apiKeyConfigured: boolean;
+    credentialSource: "inline" | "environment" | "none";
+    apiKeyEnv?: string;
+    credentialAvailable: boolean;
   }>;
-  currentProfile?: string;
+  currentProfileId?: string;
   presets: Array<{
     id: string;
     displayName: string;
     defaultModel: string;
-    models?: ReadonlyArray<{ id: string; label?: string }>;
+    defaultBaseURL?: string;
+    requiresBaseURL?: boolean;
+    models?: ReadonlyArray<{ id: string; label?: string; contextWindowTokens?: number }>;
   }>;
   sessions: SessionListItem[];
   projects?: Array<{ workspaceRoot: string; name: string; pinned?: boolean; createdAt: string }>;
   pinnedSessionIds?: string[];
 }
+export interface DesktopSessionDetail extends ReplayedSessionState {
+  events?: AgentEvent[];
+}
 export interface DesktopApi {
   bootstrap(): Promise<DesktopBootstrap>;
   chooseWorkspace(): Promise<string | undefined>;
   openWorkspace(workspaceRoot: string): Promise<void>;
-  saveProfile(request: SaveProfileRequest): Promise<DesktopBootstrap>;
+  createProfile(request: CreateProfileRequest): Promise<DesktopBootstrap>;
+  updateProfile(request: UpdateProfileRequest): Promise<DesktopBootstrap>;
+  deleteProfile(profileId: string): Promise<DesktopBootstrap>;
+  setDefaultProfile(profileId: string): Promise<DesktopBootstrap>;
+  testProfile(request: TestProfileRequest): Promise<ProfileConnectionResult>;
+  updateWebSearchCredential(request: WebSearchCredentialRequest): Promise<DesktopBootstrap>;
   saveProject(request: {
     workspaceRoot: string;
     name: string;
     pinned?: boolean;
   }): Promise<DesktopBootstrap>;
+  createProject(request: {
+    name: string;
+  }): Promise<{ bootstrap: DesktopBootstrap; workspaceRoot: string }>;
   deleteProject(workspaceRoot: string): Promise<DesktopBootstrap>;
   deleteSession(sessionId: string): Promise<DesktopBootstrap>;
+  renameSession(request: { sessionId: string; title: string }): Promise<DesktopBootstrap>;
   setSessionPinned(request: { sessionId: string; pinned: boolean }): Promise<DesktopBootstrap>;
   startTurn(request: StartTurnRequest): Promise<{ runId: string }>;
   stopTurn(runId: string): Promise<void>;
-  readSession(sessionId: string): Promise<ReplayedSessionState>;
+  startTerminal(cwd: string): Promise<{ terminalId: string }>;
+  writeTerminal(terminalId: string, data: string): Promise<void>;
+  resizeTerminal(terminalId: string, columns: number, rows: number): Promise<void>;
+  closeTerminal(terminalId: string): Promise<void>;
+  readSession(sessionId: string): Promise<DesktopSessionDetail>;
   readDiff(request: RollbackRequest): Promise<string>;
   rollback(
     request: RollbackRequest,
@@ -173,4 +262,5 @@ export interface DesktopApi {
   onApprovalRequest(listener: (request: DesktopApprovalRequest) => void): () => void;
   onQuestionRequest(listener: (request: DesktopQuestionRequest) => void): () => void;
   onRunStatus(listener: (status: DesktopRunStatus) => void): () => void;
+  onTerminalOutput(listener: (output: DesktopTerminalOutput) => void): () => void;
 }

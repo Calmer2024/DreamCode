@@ -8,6 +8,7 @@ files:
   - dist-main/**
   - dist-renderer/**
 asar: true
+npmRebuild: false
 win:
   icon: build/icon.ico
   target:

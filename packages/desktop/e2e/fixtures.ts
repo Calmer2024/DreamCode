@@ -92,16 +92,19 @@ async function quitDesktopApplication(application: ElectronApplication): Promise
 
 export async function selectWorkspace(page: Page): Promise<void> {
   await page.getByLabel("选择工作区", { exact: true }).click();
-  await page.getByRole("button", { name: /选择工作区：workspace/ }).waitFor();
+  await page.getByRole("button", { name: /在资源管理器中打开：workspace/ }).waitFor();
 }
 
 export async function saveFakeProfile(page: Page): Promise<void> {
   await page.getByText("模型未配置", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "模型与配置", exact: true }).click();
-  await page.getByLabel("配置名称").fill("fake-e2e");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "模型", exact: true }).click();
+  await page.getByLabel("配置别名").fill("fake-e2e");
   await page.getByRole("combobox", { name: "提供商" }).selectOption("fake");
-  await page.getByRole("button", { name: "保存配置" }).click();
-  await page.getByRole("dialog", { name: "模型与配置" }).waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByText("编辑配置", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "返回应用", exact: true }).click();
+  await page.getByRole("main", { name: "设置" }).waitFor({ state: "detached" });
 }
 
 export async function runPrompt(page: Page, prompt: string, mode = "yolo"): Promise<void> {

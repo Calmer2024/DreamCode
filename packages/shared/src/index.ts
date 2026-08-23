@@ -68,8 +68,83 @@ export interface ChangedFile {
 
 export interface ToolError {
   code: string;
+  category?:
+    | "validation"
+    | "permission"
+    | "environment"
+    | "execution"
+    | "timeout"
+    | "cancelled"
+    | "internal";
+  reason?: string;
   message: string;
+  retryable?: boolean;
   details?: unknown;
+}
+
+export type ShellKind = "powershell" | "cmd" | "bash" | "sh";
+
+export interface RuntimeInfo {
+  platform: {
+    os: NodeJS.Platform;
+    arch: string;
+    pathSeparator: string;
+    lineEnding: "crlf" | "lf";
+  };
+  command: {
+    defaultShell: ShellKind;
+    supportedShells: ShellKind[];
+    environmentVariableStyle: "percent" | "powershell" | "posix";
+    pathStyle: "windows" | "posix";
+  };
+  execution: {
+    stateless: true;
+    workspaceRoot: string;
+    defaultCwd: string;
+    maxTimeoutMs: number;
+  };
+  constraints: {
+    currentMode: RunMode;
+    externalCwdPolicy: "mode_dependent";
+    processRunUsesShell: false;
+    shellRunAllowsPipeline: true;
+    shellRunAllowsMultipleSteps: false;
+    externalCwdUsesPermissionEngine: true;
+  };
+  permission?: PermissionCapabilityContract;
+}
+
+export type ExecutionOutcome =
+  | "validation_failed"
+  | "permission_denied"
+  | "unsupported_shell"
+  | "program_not_found"
+  | "spawn_failed"
+  | "exited_zero"
+  | "exited_nonzero"
+  | "timed_out"
+  | "aborted";
+
+export interface ToolExecutionResult {
+  outcome: ExecutionOutcome;
+  started: boolean;
+  exitCode?: number;
+  signal?: string;
+  timedOut?: boolean;
+  sideEffectsUncertain?: boolean;
+}
+
+export interface ToolOutputStream {
+  preview: string;
+  bytes: number;
+  truncated: boolean;
+  artifactRef?: string;
+}
+
+export interface ToolCacheInfo {
+  outcome: "cache_hit";
+  sourceToolCallId: string;
+  workspaceRevision: number;
 }
 
 export interface ToolUsage {
@@ -88,6 +163,13 @@ export interface ToolResult<T = unknown> {
   artifactRefs?: string[];
   changedFiles?: ChangedFile[];
   error?: ToolError;
+  execution?: ToolExecutionResult;
+  streams?: {
+    stdout: ToolOutputStream;
+    stderr: ToolOutputStream;
+  };
+  warnings?: string[];
+  cache?: ToolCacheInfo;
   usage?: ToolUsage;
 }
 
@@ -112,14 +194,35 @@ export interface Tool<TInput = unknown, TOutput = unknown> {
   inputSchema: z.ZodType<TInput, z.ZodTypeDef, unknown>;
   risk: ToolRiskProfile;
   timeoutMs?: number;
+  preflight?(
+    input: unknown,
+    context: ToolExecutionContext,
+  ): ToolResult | undefined | Promise<ToolResult | undefined>;
   execute(input: TInput, context: ToolExecutionContext): Promise<ToolResult<TOutput>>;
 }
 
 export interface ChatMessage {
+  id?: string;
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   name?: string;
   toolCallId?: string;
+  toolCalls?: NormalizedToolCall[];
+}
+
+export interface CompactionCheckpoint {
+  boundaryMessageId?: string;
+  createdAt: string;
+  summary: {
+    objective: string;
+    confirmedFacts: string[];
+    decisions: string[];
+    completed: string[];
+    active: string[];
+    blocked: string[];
+    nextSteps: string[];
+    relevantFiles: string[];
+  };
 }
 
 export type ModelEvent =
@@ -130,9 +233,57 @@ export type ModelEvent =
 
 export interface ModelUsage {
   inputTokens?: number;
+  cachedInputTokens?: number;
+  uncachedInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   costUsd?: number;
+  warnings?: string[];
+}
+
+export interface RequestTokenEstimate {
+  messageTokens: number;
+  toolDefinitionTokens: number;
+  providerOverheadTokens: number;
+  inputTokens: number;
+  baseInputTokens?: number;
+  calibratedInputTokens?: number;
+  correctionRatio?: number;
+  sampleCount?: number;
+  coldStart?: boolean;
+  exact: boolean;
+  estimationMethod: string;
+}
+
+export interface RequestTokenEstimateInput {
+  messages: ChatMessage[];
+  tools: ToolModelSpec[];
+  model: string;
+  providerId?: string;
+}
+
+export interface PermissionCapabilityCategory {
+  id: string;
+  summary: string;
+  examples?: string[];
+}
+
+export interface PermissionCapabilityContract {
+  schemaVersion: number;
+  rulesVersion: string;
+  generatedFor: { platform: string; currentMode: RunMode };
+  defaultDecision: PermissionDecisionKind;
+  modes: Record<RunMode, {
+    allow: PermissionCapabilityCategory[];
+    ask: PermissionCapabilityCategory[];
+    deny: PermissionCapabilityCategory[];
+  }>;
+  currentModeSummary: {
+    allow: PermissionCapabilityCategory[];
+    ask: PermissionCapabilityCategory[];
+    deny: PermissionCapabilityCategory[];
+  };
+  shellRun: { allowPipelines: boolean; allowMultipleSteps: boolean; guidance: string };
 }
 
 export interface ModelStreamInput {
@@ -146,6 +297,7 @@ export interface ModelStreamInput {
 
 export interface ModelProvider {
   name: string;
+  estimateInputTokens?(input: RequestTokenEstimateInput): Promise<RequestTokenEstimate>;
   stream(input: ModelStreamInput): AsyncIterable<ModelEvent>;
 }
 
@@ -162,6 +314,7 @@ export type AgentEventType =
   | "model.started"
   | "model.delta"
   | "model.tool_call"
+  | "assistant.message"
   | "model.usage"
   | "permission.decided"
   | "approval.remembered"
@@ -210,17 +363,24 @@ export interface Turn {
 }
 
 export interface ContextBuildInput {
-  prompt: string;
   mode: RunMode;
   workspaceRoot: string;
-  conversationSummary?: string;
-  observations: ToolCallObservation[];
+  messages: ChatMessage[];
   todoItems: TodoItem[];
+  tools?: ToolModelSpec[];
+  model?: string;
+  estimateInputTokens?: (input: RequestTokenEstimateInput) => Promise<RequestTokenEstimate>;
+  runtimeSnapshot?: string;
 }
 
 export interface ContextBuildResult {
   messages: ChatMessage[];
   summary: string;
+  estimatedTokens: number;
+  tokenEstimate?: RequestTokenEstimate;
+  maxTokens: number;
+  compressed: boolean;
+  checkpoint?: CompactionCheckpoint;
 }
 
 export interface TodoItem {
@@ -229,7 +389,7 @@ export interface TodoItem {
 }
 
 export interface FinalSummary {
-  status: "completed" | "failed" | "stopped";
+  status: "completed" | "completed_partial" | "budget_exhausted" | "failed" | "stopped";
   message: string;
   changedFiles: ChangedFile[];
   commands: Array<{

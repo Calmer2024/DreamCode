@@ -416,7 +416,7 @@ function createMockStdin(): NodeJS.ReadStream {
 
 function createTuiInput(): InkTuiInput {
   const config: DreamCodeConfig = {
-    version: 1,
+    version: 2,
     profiles: {},
     mcpServers: {},
   };

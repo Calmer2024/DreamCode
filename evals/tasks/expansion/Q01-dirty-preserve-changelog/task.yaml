@@ -1,0 +1,17 @@
+id: Q01-dirty-preserve-changelog
+fixture: dirty-worktree
+prompt: "在保留用户 notes.md 的前提下，为 greeting 功能补充变更说明并运行测试。"
+mode: yolo
+fakeScenario: dirty-preserve
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: file-contains
+    path: CHANGELOG.md
+    text: "greeting"
+  - type: file-contains
+    path: notes.md
+    text: "USER_EDIT: keep this exact line"
+  - type: command
+    command: npm test
+    expectedExitCode: 0
+

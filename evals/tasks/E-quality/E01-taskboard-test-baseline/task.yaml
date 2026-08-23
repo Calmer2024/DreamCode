@@ -1,0 +1,11 @@
+id: E01-taskboard-test-baseline
+fixture: taskboard-service
+prompt: "检查 Taskboard service 的测试覆盖和当前失败状态，运行测试并报告结果。不要修改代码或测试。"
+mode: yolo
+fakeScenario: run-tests
+budgets: { referenceLatencyMs: 60000, referenceTokens: 10000, referenceToolCalls: 6 }
+assertions:
+  - type: no-workspace-changes
+  - type: command
+    command: npm test
+    expectedExitCode: 1

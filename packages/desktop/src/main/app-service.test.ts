@@ -11,10 +11,42 @@ import { describe, expect, it } from "vitest";
 import { DesktopAppService } from "./app-service";
 
 function emptyConfig() {
-  return { version: 1 as const, profiles: {} };
+  return { version: 2 as const, profiles: {} };
 }
 
 describe("DesktopAppService", () => {
+  it("creates collision-safe managed projects under the DreamCode projects directory", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+
+    const first = await service.createProject({ name: "Managed App" });
+    const second = await service.createProject({ name: "Managed App" });
+
+    expect(first.workspaceRoot).toBe(path.join(home, "projects", "Managed App"));
+    expect(second.workspaceRoot).toBe(path.join(home, "projects", "Managed App-2"));
+    await expect(access(first.workspaceRoot)).resolves.toBeUndefined();
+    await expect(access(second.workspaceRoot)).resolves.toBeUndefined();
+    expect(second.bootstrap.projects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Managed App", workspaceRoot: first.workspaceRoot }),
+        expect.objectContaining({ name: "Managed App", workspaceRoot: second.workspaceRoot }),
+      ]),
+    );
+  });
+
+  it("preserves project creation order when a project is edited", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+    const firstRoot = path.join(home, "first");
+    const secondRoot = path.join(home, "second");
+
+    await service.saveProject({ workspaceRoot: firstRoot, name: "First" });
+    await service.saveProject({ workspaceRoot: secondRoot, name: "Second" });
+    const bootstrap = await service.saveProject({ workspaceRoot: firstRoot, name: "Renamed" });
+
+    expect(bootstrap.projects?.map((project) => project.name)).toEqual(["Renamed", "Second"]);
+  });
+
   it("exposes the normal Fake Provider preset without E2E-only variants", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
 
@@ -43,7 +75,7 @@ describe("DesktopAppService", () => {
     const bootstrap = await service.bootstrap();
 
     expect(JSON.stringify(bootstrap)).not.toContain("secret-value");
-    expect(bootstrap.profiles[0]?.apiKeyConfigured).toBe(true);
+    expect(bootstrap.profiles[0]?.credentialAvailable).toBe(true);
   });
 
   it("preserves an existing credential when a redacted profile is saved without a replacement", async () => {
@@ -58,10 +90,20 @@ describe("DesktopAppService", () => {
       home,
     );
 
-    await service.saveProfile({ name: "work", provider: "openai", model: "gpt-next" });
+    const profileId = (await service.bootstrap()).profiles[0]!.id;
+    await service.updateProfile({
+      profileId,
+      alias: "work",
+      provider: "openai",
+      model: "gpt-next",
+      credential: { mode: "preserve" },
+    });
 
-    await expect(loadDreamCodeConfig(home)).resolves.toMatchObject({
-      profiles: { work: { model: "gpt-next", apiKey: "secret-value" } },
+    const updated = await loadDreamCodeConfig(home);
+    expect(updated.profiles[profileId]).toMatchObject({
+      alias: "work",
+      model: "gpt-next",
+      apiKey: "secret-value",
     });
   });
 
@@ -77,16 +119,119 @@ describe("DesktopAppService", () => {
       home,
     );
 
-    await service.saveProfile({
-      name: "work",
+    const profileId = (await service.bootstrap()).profiles[0]!.id;
+    await service.updateProfile({
+      profileId,
+      alias: "work",
       provider: "openai",
       model: "gpt-next",
-      apiKey: "replacement-key",
+      credential: { mode: "inline", apiKey: "replacement-key" },
     });
 
     const updated = await loadDreamCodeConfig(home);
-    expect(updated.profiles.work).toMatchObject({ apiKey: "replacement-key" });
-    expect(updated.profiles.work?.apiKeyEnv).toBeUndefined();
+    expect(updated.profiles[profileId]).toMatchObject({ apiKey: "replacement-key" });
+    expect(updated.profiles[profileId]?.apiKeyEnv).toBeUndefined();
+  });
+
+  it("stores and redacts the Exa web search credential", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+
+    const bootstrap = await service.updateWebSearchCredential({
+      mode: "inline",
+      apiKey: "exa-secret-value",
+    });
+
+    expect(bootstrap.webSearch).toMatchObject({
+      provider: "exa",
+      credentialSource: "inline",
+      credentialAvailable: true,
+    });
+    expect(JSON.stringify(bootstrap)).not.toContain("exa-secret-value");
+    await expect(loadDreamCodeConfig(home)).resolves.toMatchObject({
+      exaApiKey: "exa-secret-value",
+    });
+  });
+
+  it("creates multiple profiles per provider without implicitly changing the default", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+
+    const first = await service.createProfile({
+      alias: "工作",
+      provider: "openai",
+      model: "gpt-5.5",
+      credential: { mode: "clear" },
+    });
+    const second = await service.createProfile({
+      alias: "个人",
+      provider: "openai",
+      model: "gpt-5.4",
+      credential: { mode: "clear" },
+    });
+
+    expect(second.profiles.map((profile) => profile.alias)).toEqual(["工作", "个人"]);
+    expect(first.currentProfileId).toBeUndefined();
+    expect(second.currentProfileId).toBeUndefined();
+  });
+
+  it("moves the default to the next profile when the default is deleted", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+    let snapshot = await service.createProfile({
+      alias: "工作",
+      provider: "openai",
+      model: "gpt-5.5",
+      credential: { mode: "clear" },
+    });
+    snapshot = await service.createProfile({
+      alias: "个人",
+      provider: "openai",
+      model: "gpt-5.4",
+      credential: { mode: "clear" },
+    });
+    const [first, second] = snapshot.profiles;
+    await service.setDefaultProfile(first!.id);
+
+    const deleted = await service.deleteProfile(first!.id);
+
+    expect(deleted.currentProfileId).toBe(second!.id);
+    expect(deleted.profiles.map((profile) => profile.id)).toEqual([second!.id]);
+  });
+
+  it("tests a Fake Provider draft without persisting it", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+
+    await expect(
+      service.testProfile({
+        alias: "离线测试",
+        provider: "fake",
+        model: "fake",
+        credential: { mode: "clear" },
+      }),
+    ).resolves.toEqual({ ok: true, message: "连接测试成功。" });
+    await expect(loadDreamCodeConfig(home)).resolves.toMatchObject({ profiles: {} });
+  });
+
+  it("rejects duplicate aliases within the same provider", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const service = new DesktopAppService(home);
+    await service.createProfile({
+      alias: "Work",
+      provider: "openai",
+      model: "gpt-5.5",
+      credential: { mode: "clear" },
+    });
+
+    await expect(
+      service.createProfile({
+        alias: "work",
+        provider: "openai",
+        model: "gpt-5.4",
+        credential: { mode: "clear" },
+      }),
+    ).rejects.toMatchObject({ code: "profile_alias_conflict" });
   });
 
   it("returns a stored diff only for the exact changed-file path", async () => {
@@ -120,6 +265,50 @@ describe("DesktopAppService", () => {
     await expect(
       service.readChangedFileDiff(sessionId, path.join(home, "outside.ts")),
     ).resolves.toBe("");
+  });
+
+  it("returns the complete stored event stream with replayed session state", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const { session, eventLog } = await createSession({ workspaceRoot: home, home });
+    await eventLog.append({
+      id: "evt_user",
+      sessionId: session.id,
+      turnId: "turn_1",
+      type: "user.message",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      payload: { content: "Keep the whole conversation" },
+    });
+
+    const detail = await new DesktopAppService(home).readSession(session.id);
+
+    expect(detail.latestPrompt).toBe("Keep the whole conversation");
+    expect(detail.events).toEqual([
+      expect.objectContaining({
+        type: "user.message",
+        payload: { content: "Keep the whole conversation" },
+      }),
+    ]);
+  });
+
+  it("persists an inline session rename across bootstrap refreshes", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-desktop-"));
+    const { session, eventLog } = await createSession({ workspaceRoot: home, home });
+    await eventLog.append({
+      id: "evt_title",
+      sessionId: session.id,
+      turnId: "turn_1",
+      type: "user.message",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      payload: { content: "Original prompt" },
+    });
+    const service = new DesktopAppService(home);
+
+    const bootstrap = await service.renameSession({ sessionId: session.id, title: "自定义名称" });
+
+    expect(bootstrap.sessions.find((item) => item.id === session.id)?.title).toBe("自定义名称");
+    await expect(service.bootstrap()).resolves.toMatchObject({
+      sessions: [expect.objectContaining({ id: session.id, title: "自定义名称" })],
+    });
   });
 
   it("rejects traversal session identifiers before reading or rolling back", async () => {

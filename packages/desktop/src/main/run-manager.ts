@@ -141,10 +141,11 @@ export class DesktopRunManager {
         throw desktopError("config_load_failed", "Failed to load DreamCode configuration.");
       }
       sensitiveValues = collectSensitiveValues(config);
-      const profile = resolveProfile(config, request.profileName);
+      const profile = resolveProfile(config, request.profileId);
+      const runtimeProfile = request.model ? { ...profile, model: request.model } : profile;
       let providerResult: ReturnType<NonNullable<DesktopRunManagerOptions["createProvider"]>>;
       try {
-        providerResult = this.#createProvider(request.prompt, profile);
+        providerResult = this.#createProvider(request.prompt, runtimeProfile);
       } catch (error) {
         throw desktopError(
           "provider_setup_failed",
@@ -162,7 +163,10 @@ export class DesktopRunManager {
         home: this.#home,
         provider,
         model,
-        registry: this.#createRegistry({ mcpServers: config.mcpServers }),
+        registry: this.#createRegistry({
+          mcpServers: config.mcpServers,
+          webSearch: { exaApiKey: config.exaApiKey },
+        }),
         signal: run.abortController.signal,
         approvalHandler: (approval) => this.#requestApproval(run, approval),
         questionHandler: (question) => this.#requestQuestion(run, question),
@@ -262,10 +266,10 @@ export class DesktopRunManager {
 
 function resolveProfile(
   config: DreamCodeConfig,
-  requestedName: string | undefined,
+  requestedId: string | undefined,
 ): DreamCodeLlmProfile {
-  const profileName = requestedName ?? config.currentProfile;
-  const profile = profileName ? config.profiles[profileName] : undefined;
+  const profileId = requestedId ?? config.currentProfileId;
+  const profile = profileId ? config.profiles[profileId] : undefined;
   if (!profile) {
     throw desktopError("profile_not_found", "No matching model profile is configured.");
   }
@@ -409,6 +413,8 @@ function isDesktopError(error: unknown): error is DesktopError {
 
 function collectSensitiveValues(config: DreamCodeConfig): string[] {
   const values = new Set<string>();
+  addSensitiveValue(values, config.exaApiKey);
+  addSensitiveValue(values, process.env.EXA_API_KEY);
   for (const profile of Object.values(config.profiles)) {
     addSensitiveValue(values, profile.apiKey);
     if (profile.apiKeyEnv) {

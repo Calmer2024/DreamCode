@@ -1,0 +1,9 @@
+id: U04-cached-usage
+fixture: workspace-ops
+prompt: "报告本轮模型 usage 中的缓存输入与未缓存输入 Token，不要修改文件。"
+mode: yolo
+fakeScenario: cached-usage
+budgets: { referenceLatencyMs: 30000, referenceTokens: 4000, referenceToolCalls: 1 }
+evaluator: ../evaluate.ts
+assertions:
+  - type: no-workspace-changes

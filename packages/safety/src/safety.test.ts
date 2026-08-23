@@ -1,5 +1,11 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { classifyCommand, PermissionEngine, resolveWorkspacePath } from "./index";
+import {
+  buildPermissionCapabilityContract,
+  classifyCommand,
+  PermissionEngine,
+  resolveWorkspacePath,
+} from "./index";
 
 describe("workspace path boundary", () => {
   it("marks paths inside and outside the workspace", () => {
@@ -85,5 +91,43 @@ describe("permission engine", () => {
 
     expect(externalWrite.decision).toBe("deny");
     expect(secretRead.decision).toBe("deny");
+  });
+
+  it("classifies process.run and routes external cwd through the current mode", () => {
+    const workspaceRoot = process.cwd();
+    const externalCwd = path.resolve(workspaceRoot, "..");
+    const guided = engine.decide({
+      mode: "guided",
+      workspaceRoot,
+      toolCall: {
+        id: "process_guided",
+        name: "process.run",
+        input: { program: "npm", args: ["test"], cwd: externalCwd },
+      },
+    });
+    const full = engine.decide({
+      mode: "full",
+      workspaceRoot,
+      toolCall: {
+        id: "process_full",
+        name: "process.run",
+        input: { program: "npm", args: ["test"], cwd: externalCwd },
+      },
+    });
+    expect(guided.decision).toBe("ask");
+    expect(full.decision).toBe("allow");
+    expect(full.risk).toContain("read_external_path");
+  });
+});
+
+describe("permission capability contract", () => {
+  it("exposes all four modes and highlights the current mode", () => {
+    const contract = buildPermissionCapabilityContract("guided", "win32");
+    expect(Object.keys(contract.modes).sort()).toEqual(["full", "guided", "plan", "yolo"]);
+    expect(contract.generatedFor).toEqual({ platform: "win32", currentMode: "guided" });
+    expect(contract.currentModeSummary).toBe(contract.modes.guided);
+    expect(contract.modes.plan.deny.map((item) => item.id)).toContain("workspace_write");
+    expect(contract.modes.yolo.allow.map((item) => item.id)).toContain("workspace_write");
+    expect(contract.modes.full.deny.map((item) => item.id)).toContain("destructive");
   });
 });

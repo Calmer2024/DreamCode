@@ -1,0 +1,9 @@
+id: R02-long-context-inspect
+fixture: long-context
+prompt: "从长上下文中提取 target 模块当前约束，先输出结论，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

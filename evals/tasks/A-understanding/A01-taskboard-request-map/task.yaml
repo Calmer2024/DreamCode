@@ -1,0 +1,8 @@
+id: A01-taskboard-request-map
+fixture: taskboard-service
+prompt: "请阅读 Taskboard service 的目录、项目规则和任务服务，说明按状态筛选的请求/调用路径、相关文件和当前风险。只分析，不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 60000, referenceTokens: 12000, referenceToolCalls: 8 }
+assertions:
+  - type: no-workspace-changes

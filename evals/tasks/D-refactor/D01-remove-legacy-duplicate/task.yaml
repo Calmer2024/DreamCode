@@ -1,0 +1,13 @@
+id: D01-remove-legacy-duplicate
+fixture: legacy-mixed
+prompt: "重构 legacy-mixed 中重复的姓名清理逻辑，保持 cleanName 的公开行为和 consumer 调用不变，补充必要测试并运行测试。"
+mode: yolo
+fakeScenario: legacy-refactor
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: file-matches
+    path: src/legacy-util.ts
+    pattern: "(?:oldCleanName[\\s\\S]*return cleanName|^(?![\\s\\S]*oldCleanName)[\\s\\S]*cleanName)"
+  - type: command
+    command: npm test
+    expectedExitCode: 0

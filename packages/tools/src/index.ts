@@ -10,12 +10,16 @@ import {
 } from "@dreamcode/safety";
 import type {
   ChangedFile,
+  ExecutionOutcome,
+  RuntimeInfo,
+  ShellKind,
   TodoItem,
   Tool,
   ToolExecutionContext,
   ToolModelSpec,
   ToolResult,
 } from "@dreamcode/shared";
+import { buildPermissionCapabilityContract } from "@dreamcode/safety";
 import { todoItemSchema, toErrorMessage } from "@dreamcode/shared";
 import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
@@ -31,10 +35,16 @@ export interface McpServerConfig {
 
 export interface ToolRegistryOptions {
   mcpServers?: Record<string, McpServerConfig>;
+  webSearch?: {
+    exaApiKey?: string;
+    exaBaseUrl?: string;
+  };
 }
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
+
+  constructor(private readonly configuredOptionalFamilies = new Set<string>()) {}
 
   register(tool: Tool): void {
     if (this.tools.has(tool.name)) {
@@ -49,6 +59,10 @@ export class ToolRegistry {
 
   list(): Tool[] {
     return Array.from(this.tools.values());
+  }
+
+  isOptionalFamilyConfigured(family: "web" | "skill" | "mcp"): boolean {
+    return this.configuredOptionalFamilies.has(family);
   }
 
   toModelSpecs(): ToolModelSpec[] {
@@ -77,7 +91,9 @@ function toToolInputSchema(inputSchema: z.ZodTypeAny): Record<string, unknown> {
 }
 
 export function createDefaultToolRegistry(options: ToolRegistryOptions = {}): ToolRegistry {
-  const registry = new ToolRegistry();
+  const configuredFamilies = new Set<string>(["web", "skill"]);
+  if (Object.keys(options.mcpServers ?? {}).length) configuredFamilies.add("mcp");
+  const registry = new ToolRegistry(configuredFamilies);
   for (const tool of createBuiltinTools(options)) {
     registry.register(tool);
   }
@@ -86,25 +102,81 @@ export function createDefaultToolRegistry(options: ToolRegistryOptions = {}): To
 
 export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
   return [
+    runtimeInfoTool,
     fileReadTool,
+    artifactReadTool,
     fileWriteTool,
     filePatchTool,
     fileListTool,
     searchGrepTool,
     searchGlobTool,
+    processRunTool,
     shellRunTool,
     gitStatusTool,
     gitDiffTool,
     todoWriteTool,
     questionAskTool,
-    webSearchTool,
+    createWebSearchTool(options.webSearch),
     webFetchTool,
     skillListTool,
     skillReadTool,
     skillReadResourceTool,
     createMcpListTool(options.mcpServers ?? {}),
     createMcpCallTool(options.mcpServers ?? {}),
-  ];
+];
+}
+
+const MAX_COMMAND_TIMEOUT_MS = 120_000;
+const STREAM_PREVIEW_BYTES = 4 * 1024;
+
+const runtimeInfoTool: Tool<Record<string, never>, RuntimeInfo> = {
+  name: "runtime.info",
+  description:
+    "Return the current OS, command dialect, path style, stateless execution semantics, and safety constraints. Call before platform-specific shell work.",
+  inputSchema: z.object({}),
+  risk: { tags: [] },
+  async execute(_rawInput, context) {
+    const info = buildRuntimeInfo(context.workspaceRoot, context.mode);
+    return {
+      toolCallId: context.toolCallId,
+      status: "success",
+      summary: `Runtime is ${info.platform.os}/${info.platform.arch}; default shell is ${info.command.defaultShell}.`,
+      data: info,
+    };
+  },
+};
+
+function buildRuntimeInfo(workspaceRoot: string, mode: ToolExecutionContext["mode"]): RuntimeInfo {
+  const windows = process.platform === "win32";
+  return {
+    platform: {
+      os: process.platform,
+      arch: process.arch,
+      pathSeparator: path.sep,
+      lineEnding: windows ? "crlf" : "lf",
+    },
+    command: {
+      defaultShell: windows ? "cmd" : "sh",
+      supportedShells: windows ? ["cmd", "powershell"] : ["sh", "bash"],
+      environmentVariableStyle: windows ? "percent" : "posix",
+      pathStyle: windows ? "windows" : "posix",
+    },
+    execution: {
+      stateless: true,
+      workspaceRoot: path.resolve(workspaceRoot),
+      defaultCwd: path.resolve(workspaceRoot),
+      maxTimeoutMs: MAX_COMMAND_TIMEOUT_MS,
+    },
+    constraints: {
+      currentMode: mode,
+      externalCwdPolicy: "mode_dependent",
+      processRunUsesShell: false,
+      shellRunAllowsPipeline: true,
+      shellRunAllowsMultipleSteps: false,
+      externalCwdUsesPermissionEngine: true,
+    },
+    permission: buildPermissionCapabilityContract(mode, process.platform),
+  };
 }
 
 const fileReadSchema = z.object({
@@ -148,6 +220,50 @@ const fileReadTool: Tool<z.infer<typeof fileReadSchema>> = {
         content: visible,
         bytes: content.length,
         truncated,
+      },
+    };
+  },
+};
+
+const artifactReadSchema = z.object({
+  ref: z.string().startsWith("artifact://"),
+  offset: z.number().int().nonnegative().default(0),
+  maxBytes: z.number().int().positive().max(200000).default(40000),
+});
+
+const artifactReadTool: Tool<z.infer<typeof artifactReadSchema>> = {
+  name: "artifact.read",
+  description: "Read a byte range from a large tool output previously saved as artifact://... .",
+  inputSchema: artifactReadSchema,
+  risk: { tags: ["read_workspace"], readsFiles: true },
+  async execute(rawInput, context) {
+    const input = artifactReadSchema.parse(rawInput);
+    const name = decodeURIComponent(input.ref.slice("artifact://".length));
+    if (!name || name !== path.basename(name)) {
+      return denied(context.toolCallId, "Refused to read an invalid artifact reference.");
+    }
+    const artifactsRoot = path.resolve(context.sessionDir, "artifacts");
+    const artifactPath = path.resolve(artifactsRoot, name);
+    if (path.dirname(artifactPath) !== artifactsRoot || !existsSync(artifactPath)) {
+      return errorResult(
+        context.toolCallId,
+        `Artifact not found: ${input.ref}`,
+        "artifact_not_found",
+      );
+    }
+    const content = await readFile(artifactPath);
+    const visible = content.subarray(input.offset, input.offset + input.maxBytes);
+    return {
+      toolCallId: context.toolCallId,
+      status: "success",
+      summary: `Read ${visible.length} byte(s) from ${input.ref} at offset ${input.offset}.`,
+      data: {
+        ref: input.ref,
+        offset: input.offset,
+        content: visible.toString("utf8"),
+        bytes: content.length,
+        truncated: input.offset + visible.length < content.length,
+        nextOffset: input.offset + visible.length,
       },
     };
   },
@@ -354,51 +470,117 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
   },
 };
 
+const commandEnvironmentSchema = z.record(z.string());
+
+const processRunSchema = z.object({
+  program: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  cwd: z.string().min(1).optional(),
+  env: commandEnvironmentSchema.optional(),
+  timeoutMs: z.number().int().positive().max(MAX_COMMAND_TIMEOUT_MS).default(30000),
+});
+
+const processRunTool: Tool<z.infer<typeof processRunSchema>> = {
+  name: "process.run",
+  description:
+    "Run one program without a shell. Pass arguments, cwd, and per-call environment explicitly; calls are stateless. Prefer this over shell.run.",
+  inputSchema: processRunSchema,
+  risk: { tags: ["shell_mutating"], runsCommands: true },
+  preflight(rawInput, context) {
+    const parsed = processRunSchema.safeParse(rawInput);
+    return parsed.success
+      ? undefined
+      : commandInputValidationResult(context.toolCallId, parsed.error.issues);
+  },
+  async execute(rawInput, context) {
+    const input = processRunSchema.parse(rawInput);
+    const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
+    const cwdError = await commandCwdError(context.toolCallId, cwd);
+    if (cwdError) return cwdError;
+    const started = Date.now();
+    const result = await runProcess(input.program, input.args, {
+      cwd,
+      env: mergeCommandEnvironment(input.env),
+      timeoutMs: input.timeoutMs,
+      signal: context.signal,
+    });
+    return makeCommandToolResult({
+      context,
+      command: [input.program, ...input.args].join(" "),
+      result,
+      started,
+      prefix: `process-${context.toolCallId}`,
+      data: {
+        command: [input.program, ...input.args].join(" "),
+        program: input.program,
+        args: input.args,
+        cwd,
+      },
+    });
+  },
+};
+
 const shellRunSchema = z.object({
   command: z.string().min(1),
-  timeoutMs: z.number().int().positive().max(120000).default(30000),
+  shell: z.enum(["powershell", "cmd", "bash", "sh"]).optional(),
+  cwd: z.string().min(1).optional(),
+  env: commandEnvironmentSchema.optional(),
+  timeoutMs: z.number().int().positive().max(MAX_COMMAND_TIMEOUT_MS).default(30000),
 });
 
 const shellRunTool: Tool<z.infer<typeof shellRunSchema>> = {
   name: "shell.run",
   description:
-    "Run a non-interactive shell command in the workspace with timeout and captured output.",
+    "Run one shell expression or pipeline when shell features are required. Multi-step chains and persistent cd/variable state are rejected; use cwd/env fields.",
   inputSchema: shellRunSchema,
   risk: { tags: ["shell_mutating"], runsCommands: true },
+  preflight(rawInput, context) {
+    const parsed = shellRunSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      return commandInputValidationResult(context.toolCallId, parsed.error.issues);
+    }
+    const shell =
+      parsed.data.shell ?? buildRuntimeInfo(context.workspaceRoot, context.mode).command.defaultShell;
+    const violations = validateShellCommand(parsed.data.command, shell);
+    return violations.length ? commandValidationResult(context.toolCallId, violations) : undefined;
+  },
   async execute(rawInput, context) {
     const input = shellRunSchema.parse(rawInput);
+    const shell = input.shell ?? buildRuntimeInfo(context.workspaceRoot, context.mode).command.defaultShell;
+    const violations = validateShellCommand(input.command, shell);
+    if (violations.length) {
+      return commandValidationResult(context.toolCallId, violations);
+    }
+    const shellProgram = shellExecutable(shell);
+    if (!shellProgram) {
+      return commandErrorResult({
+        toolCallId: context.toolCallId,
+        status: "error",
+        outcome: "unsupported_shell",
+        category: "environment",
+        reason: "unsupported_shell",
+        message: `Shell '${shell}' is not supported on ${process.platform}.`,
+        retryable: false,
+      });
+    }
     const started = Date.now();
-    const result = await runShell(input.command, {
-      cwd: context.workspaceRoot,
+    const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
+    const cwdError = await commandCwdError(context.toolCallId, cwd);
+    if (cwdError) return cwdError;
+    const result = await runShellExpression(input.command, shellProgram, {
+      cwd,
+      env: mergeCommandEnvironment(input.env),
       timeoutMs: input.timeoutMs,
       signal: context.signal,
     });
-    const refs = await persistLargeOutputs(context, {
-      prefix: safeArtifactName(`shell-${context.toolCallId}`),
-      stdout: result.stdout,
-      stderr: result.stderr,
+    return makeCommandToolResult({
+      context,
+      command: input.command,
+      result,
+      started,
+      prefix: `shell-${context.toolCallId}`,
+      data: { command: input.command, shell, cwd },
     });
-
-    const status = result.timedOut ? "cancelled" : result.exitCode === 0 ? "success" : "error";
-    return {
-      toolCallId: context.toolCallId,
-      status,
-      summary: `Command '${input.command}' exited with ${result.exitCode}${result.timedOut ? " after timeout" : ""}.`,
-      data: {
-        command: input.command,
-        exitCode: result.exitCode,
-        stdout: truncate(result.stdout, 12000),
-        stderr: truncate(result.stderr, 12000),
-        timedOut: result.timedOut,
-      },
-      stdoutRef: refs.stdoutRef,
-      stderrRef: refs.stderrRef,
-      usage: {
-        durationMs: Date.now() - started,
-        stdoutBytes: Buffer.byteLength(result.stdout),
-        stderrBytes: Buffer.byteLength(result.stderr),
-      },
-    };
   },
 };
 
@@ -519,29 +701,70 @@ const webSearchSchema = z.object({
   domains: z.array(z.string().min(1)).optional(),
 });
 
-const webSearchTool: Tool<z.infer<typeof webSearchSchema>> = {
-  name: "web.search",
-  description: "Search public web pages and return source candidates with URLs.",
-  inputSchema: webSearchSchema,
-  risk: { tags: ["network_access", "web_fetch"] },
-  async execute(rawInput, context) {
-    const input = webSearchSchema.parse(rawInput);
-    const started = Date.now();
-    const results = await searchWeb(input, context.signal);
-    const limited = results.slice(0, input.maxResults);
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: `Found ${limited.length} web result${limited.length === 1 ? "" : "s"} for '${input.query}'.`,
-      data: {
-        query: input.query,
-        results: limited,
-        truncated: results.length > limited.length,
-      },
-      usage: { durationMs: Date.now() - started },
-    };
-  },
-};
+function createWebSearchTool(
+  options: ToolRegistryOptions["webSearch"] = {},
+): Tool<z.infer<typeof webSearchSchema>> {
+  return {
+    name: "web.search",
+    description: "Search public web pages and return source candidates with URLs.",
+    inputSchema: webSearchSchema,
+    risk: { tags: ["network_access", "web_fetch"] },
+    async execute(rawInput, context) {
+      const input = webSearchSchema.parse(rawInput);
+      const started = Date.now();
+      if (/^https?:\/\//i.test(input.query)) {
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: `Found 1 web result for '${input.query}'.`,
+          data: {
+            query: input.query,
+            results: [
+              {
+                title: input.query,
+                url: input.query,
+                snippet: "Direct URL query.",
+                source: "direct",
+              },
+            ],
+            truncated: false,
+          },
+          usage: { durationMs: Date.now() - started },
+        };
+      }
+      const apiKey = options.exaApiKey?.trim() || process.env.EXA_API_KEY?.trim();
+      if (!apiKey && !process.env.DREAMCODE_WEB_SEARCH_FIXTURE) {
+        return errorResult(
+          context.toolCallId,
+          "Exa API key is not configured. Add it in Settings > General > Web Search, or set EXA_API_KEY.",
+          "exa_api_key_missing",
+        );
+      }
+      let results: Awaited<ReturnType<typeof searchWeb>>;
+      try {
+        results = await searchWeb(input, apiKey ?? "", options.exaBaseUrl, context.signal);
+      } catch (error) {
+        return errorResult(
+          context.toolCallId,
+          `Exa web search failed: ${toErrorMessage(error)}`,
+          "exa_search_failed",
+        );
+      }
+      const limited = results.slice(0, input.maxResults);
+      return {
+        toolCallId: context.toolCallId,
+        status: "success",
+        summary: `Found ${limited.length} web result${limited.length === 1 ? "" : "s"} for '${input.query}'.`,
+        data: {
+          query: input.query,
+          results: limited,
+          truncated: results.length > limited.length,
+        },
+        usage: { durationMs: Date.now() - started },
+      };
+    },
+  };
+}
 
 const webFetchSchema = z.object({
   url: z.string().url(),
@@ -844,6 +1067,8 @@ async function readIgnorePatterns(workspaceRoot: string): Promise<string[]> {
 
 async function searchWeb(
   input: z.infer<typeof webSearchSchema>,
+  apiKey: string,
+  baseUrl = "https://api.exa.ai",
   signal?: AbortSignal,
 ): Promise<Array<{ title: string; url: string; snippet: string; source: string }>> {
   const fixturePath = process.env.DREAMCODE_WEB_SEARCH_FIXTURE;
@@ -859,50 +1084,45 @@ async function searchWeb(
     }));
   }
 
-  if (/^https?:\/\//i.test(input.query)) {
-    return [
-      { title: input.query, url: input.query, snippet: "Direct URL query.", source: "direct" },
-    ];
-  }
-
-  const query = input.domains?.length
-    ? `${input.query} ${input.domains.map((domain) => `site:${domain}`).join(" ")}`
-    : input.query;
-  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, {
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/search`, {
+    method: "POST",
     signal,
     headers: {
-      "user-agent": "DreamCode/0.1 (+https://local.dreamcode)",
+      "content-type": "application/json",
+      "x-api-key": apiKey,
     },
+    body: JSON.stringify({
+      query: input.query,
+      numResults: input.maxResults,
+      type: "fast",
+      ...(input.domains?.length ? { includeDomains: input.domains } : {}),
+      contents: { highlights: { maxCharacters: 1000 } },
+    }),
   });
-  const html = await response.text();
-  const results: Array<{ title: string; url: string; snippet: string; source: string }> = [];
-  const resultPattern =
-    /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
-  for (const match of html.matchAll(resultPattern)) {
-    const rawUrl = decodeHtml(match[1] ?? "");
-    const parsedUrl = extractDuckDuckGoUrl(rawUrl);
-    results.push({
-      title: stripHtml(match[2] ?? "").trim(),
-      url: parsedUrl,
-      snippet: stripHtml(match[3] ?? "").trim(),
-      source: "duckduckgo-html",
-    });
-    if (results.length >= input.maxResults) {
-      break;
-    }
+  const payload = (await response.json()) as {
+    error?: string;
+    results?: Array<{
+      title?: string;
+      url?: string;
+      text?: string;
+      summary?: string;
+      highlights?: string[];
+    }>;
+  };
+  if (!response.ok) {
+    throw new Error(
+      `Exa search failed (${response.status}): ${payload.error ?? response.statusText}`,
+    );
   }
-  return results;
-}
-
-function extractDuckDuckGoUrl(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl, "https://duckduckgo.com");
-    const uddg = parsed.searchParams.get("uddg");
-    return uddg ? decodeURIComponent(uddg) : parsed.href;
-  } catch {
-    return rawUrl;
-  }
+  return (payload.results ?? [])
+    .filter((result): result is typeof result & { url: string } => Boolean(result.url))
+    .map((result) => ({
+      title: result.title?.trim() || result.url,
+      url: result.url,
+      snippet:
+        result.summary?.trim() || result.highlights?.join(" ").trim() || result.text?.trim() || "",
+      source: "exa",
+    }));
 }
 
 function extractReadableText(content: string, contentType: string): string {
@@ -1255,58 +1475,270 @@ function parseRipgrepOutput(
   return matches;
 }
 
+export interface ShellCommandViolation {
+  code: "multiple_shell_steps" | "stateful_shell_construct" | "unterminated_quote";
+  message: string;
+  position?: number;
+}
+
+export function validateShellCommand(
+  command: string,
+  shell: ShellKind,
+): ShellCommandViolation[] {
+  const violations: ShellCommandViolation[] = [];
+  const pipelineSegments: string[] = [];
+  let segmentStart = 0;
+  let quote: "single" | "double" | undefined;
+  let escaped = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    const escapeCharacter = shell === "powershell" ? "`" : shell === "cmd" ? "^" : "\\";
+    if (character === escapeCharacter && quote !== "single") {
+      escaped = true;
+      continue;
+    }
+    if (character === "'" && quote !== "double") {
+      quote = quote === "single" ? undefined : "single";
+      continue;
+    }
+    if (character === '"' && quote !== "single") {
+      quote = quote === "double" ? undefined : "double";
+      continue;
+    }
+    if (quote) continue;
+
+    const pair = command.slice(index, index + 2);
+    if (character === ";" || character === "\n" || character === "\r" || pair === "&&" || pair === "||") {
+      violations.push({
+        code: "multiple_shell_steps",
+        message: "shell.run accepts one expression or pipeline; run independent steps separately.",
+        position: index,
+      });
+      if (pair === "&&" || pair === "||") index += 1;
+      continue;
+    }
+    if (character === "|") {
+      pipelineSegments.push(command.slice(segmentStart, index));
+      segmentStart = index + 1;
+    }
+  }
+  pipelineSegments.push(command.slice(segmentStart));
+
+  if (quote) {
+    violations.push({
+      code: "unterminated_quote",
+      message: "The shell expression contains an unterminated quote.",
+      position: command.length - 1,
+    });
+  }
+
+  for (const segment of pipelineSegments) {
+    const trimmed = segment.trim();
+    const stateful =
+      /^(?:cd|chdir|set-location|pushd|popd)(?:\s|$)/i.test(trimmed) ||
+      /^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(trimmed) ||
+      /^\$[A-Za-z_][A-Za-z0-9_]*\s*=/.test(trimmed) ||
+      /^\$env:[A-Za-z_][A-Za-z0-9_]*\s*=/i.test(trimmed) ||
+      /^set\s+[A-Za-z_][A-Za-z0-9_]*\s*=/i.test(trimmed) ||
+      /^(?:export|set-variable)(?:\s|$)/i.test(trimmed);
+    if (stateful) {
+      violations.push({
+        code: "stateful_shell_construct",
+        message: "Use the cwd or env field instead of shell state that cannot persist across calls.",
+        position: command.indexOf(segment),
+      });
+    }
+  }
+
+  return violations.filter(
+    (violation, index, all) =>
+      all.findIndex(
+        (candidate) => candidate.code === violation.code && candidate.position === violation.position,
+      ) === index,
+  );
+}
+
+function shellExecutable(shell: ShellKind): string | undefined {
+  if (shell === "cmd") {
+    if (process.platform !== "win32") return undefined;
+    return process.env.ComSpec || "cmd.exe";
+  }
+  if (shell === "powershell") {
+    if (process.platform !== "win32") return undefined;
+    return "powershell.exe";
+  }
+  if (shell === "bash") return "bash";
+  if (shell === "sh") return "sh";
+  return undefined;
+}
+
+function resolveCommandCwd(workspaceRoot: string, cwd: string | undefined): string {
+  return path.resolve(workspaceRoot, cwd ?? ".");
+}
+
+async function commandCwdError(toolCallId: string, cwd: string): Promise<ToolResult | undefined> {
+  try {
+    const entry = await stat(cwd);
+    if (entry.isDirectory()) return undefined;
+  } catch {
+    // Report the same deterministic result for a missing or inaccessible cwd.
+  }
+  return commandErrorResult({
+    toolCallId,
+    status: "error",
+    outcome: "spawn_failed",
+    category: "environment",
+    reason: "cwd_not_found",
+    message: `Command cwd is not an accessible directory: ${cwd}`,
+    retryable: false,
+  });
+}
+
+function mergeCommandEnvironment(overrides: Record<string, string> | undefined): NodeJS.ProcessEnv {
+  return overrides ? { ...process.env, ...overrides } : process.env;
+}
+
+function commandValidationResult(
+  toolCallId: string,
+  violations: ShellCommandViolation[],
+): ToolResult {
+  return commandErrorResult({
+    toolCallId,
+    status: "error",
+    outcome: "validation_failed",
+    category: "validation",
+    reason: violations[0]?.code ?? "validation_failed",
+    message: violations[0]?.message ?? "Shell command validation failed.",
+    retryable: false,
+    details: { violations },
+  });
+}
+
+function commandInputValidationResult(toolCallId: string, issues: unknown): ToolResult {
+  return commandErrorResult({
+    toolCallId,
+    status: "error",
+    outcome: "validation_failed",
+    category: "validation",
+    reason: "invalid_input",
+    message: "Command input does not match the tool schema.",
+    retryable: false,
+    details: { issues },
+  });
+}
+
+function commandErrorResult(input: {
+  toolCallId: string;
+  status: ToolResult["status"];
+  outcome: ExecutionOutcome;
+  category: NonNullable<ToolResult["error"]>["category"];
+  reason: string;
+  message: string;
+  retryable: boolean;
+  details?: unknown;
+}): ToolResult {
+  return {
+    toolCallId: input.toolCallId,
+    status: input.status,
+    summary: input.message,
+    execution: { outcome: input.outcome, started: false },
+    error: {
+      code: input.reason,
+      category: input.category,
+      reason: input.reason,
+      message: input.message,
+      retryable: input.retryable,
+      details: input.details,
+    },
+  };
+}
+
 interface ProcessResult {
   stdout: string;
   stderr: string;
   exitCode: number;
   timedOut: boolean;
-}
-
-async function runShell(
-  command: string,
-  options: { cwd: string; timeoutMs: number; signal?: AbortSignal },
-): Promise<ProcessResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, {
-      cwd: options.cwd,
-      shell: true,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      signal: options.signal,
-    });
-    collectProcess(child, options.timeoutMs, resolve);
-  });
+  started: boolean;
+  aborted: boolean;
+  signal?: string;
+  spawnErrorCode?: string;
 }
 
 async function runProcess(
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs: number; signal?: AbortSignal },
+  options: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  },
 ): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
+      env: options.env,
       shell: false,
+      detached: process.platform !== "win32",
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       signal: options.signal,
     });
-    collectProcess(child, options.timeoutMs, resolve);
+    collectProcess(child, options.timeoutMs, options.signal, resolve);
+  });
+}
+
+async function runShellExpression(
+  command: string,
+  shell: string,
+  options: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  },
+): Promise<ProcessResult> {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd: options.cwd,
+      env: options.env,
+      shell,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      signal: options.signal,
+    });
+    collectProcess(child, options.timeoutMs, options.signal, resolve);
   });
 }
 
 function collectProcess(
   child: ReturnType<typeof spawn>,
   timeoutMs: number,
+  signal: AbortSignal | undefined,
   resolve: (result: ProcessResult) => void,
 ): void {
   let stdout = "";
   let stderr = "";
   let settled = false;
   let timedOut = false;
+  let started = false;
+  let aborted = Boolean(signal?.aborted);
+  child.once("spawn", () => {
+    started = true;
+  });
+  const onAbort = () => {
+    aborted = true;
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   const timeout = setTimeout(() => {
     timedOut = true;
-    child.kill();
+    terminateProcessTree(child);
   }, timeoutMs);
 
   child.stdout?.on("data", (chunk) => {
@@ -1319,16 +1751,225 @@ function collectProcess(
     if (!settled) {
       settled = true;
       clearTimeout(timeout);
-      resolve({ stdout, stderr: stderr + toErrorMessage(error), exitCode: 127, timedOut });
+      signal?.removeEventListener("abort", onAbort);
+      const processError = error as NodeJS.ErrnoException;
+      resolve({
+        stdout,
+        stderr: stderr + toErrorMessage(error),
+        exitCode: 127,
+        timedOut,
+        started,
+        aborted: aborted || processError.code === "ABORT_ERR",
+        spawnErrorCode: processError.code,
+      });
     }
   });
-  child.on("close", (code) => {
+  child.on("close", (code, closeSignal) => {
     if (!settled) {
       settled = true;
       clearTimeout(timeout);
-      resolve({ stdout, stderr, exitCode: code ?? 1, timedOut });
+      signal?.removeEventListener("abort", onAbort);
+      resolve({
+        stdout,
+        stderr,
+        exitCode: code ?? 1,
+        timedOut,
+        started,
+        aborted,
+        signal: closeSignal ?? undefined,
+      });
     }
   });
+}
+
+function terminateProcessTree(child: ReturnType<typeof spawn>): void {
+  if (!child.pid) {
+    child.kill();
+    return;
+  }
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      shell: false,
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    killer.once("error", () => child.kill());
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill();
+  }
+}
+
+async function makeCommandToolResult(input: {
+  context: ToolExecutionContext;
+  command: string;
+  result: ProcessResult;
+  started: number;
+  prefix: string;
+  data: Record<string, unknown>;
+}): Promise<ToolResult> {
+  const { result } = input;
+  const outcome: ExecutionOutcome = result.timedOut
+    ? "timed_out"
+    : result.aborted
+      ? "aborted"
+      : result.spawnErrorCode === "ENOENT"
+        ? "program_not_found"
+        : result.spawnErrorCode
+          ? "spawn_failed"
+          : result.exitCode === 0
+            ? "exited_zero"
+            : "exited_nonzero";
+  const status: ToolResult["status"] =
+    outcome === "timed_out" || outcome === "aborted"
+      ? "cancelled"
+      : outcome === "exited_zero"
+        ? "success"
+        : "error";
+
+  const warnings: string[] = [];
+  const stdout = await makeOutputStream(input.context, input.prefix, "stdout", result.stdout, warnings);
+  const stderr = await makeOutputStream(input.context, input.prefix, "stderr", result.stderr, warnings);
+  const stdoutRef = artifactAbsolutePath(input.context, stdout.artifactRef);
+  const stderrRef = artifactAbsolutePath(input.context, stderr.artifactRef);
+  const error =
+    status === "success"
+      ? undefined
+      : commandExecutionError(outcome, result.spawnErrorCode);
+  const summary =
+    outcome === "exited_zero"
+      ? `Command '${input.command}' completed successfully.`
+      : outcome === "timed_out"
+        ? `Command '${input.command}' timed out after execution began.`
+        : outcome === "aborted"
+          ? `Command '${input.command}' was aborted.`
+          : outcome === "program_not_found"
+            ? `Command program was not found: '${input.command}'.`
+            : outcome === "spawn_failed"
+              ? `Command '${input.command}' could not be started.`
+              : `Command '${input.command}' exited with ${result.exitCode}.`;
+
+  return {
+    toolCallId: input.context.toolCallId,
+    status,
+    summary,
+    data: {
+      ...input.data,
+      exitCode: result.exitCode,
+      stdout: stdout.preview,
+      stderr: stderr.preview,
+      timedOut: result.timedOut,
+    },
+    execution: {
+      outcome,
+      started: result.started,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      sideEffectsUncertain: (result.timedOut || result.aborted) && result.started,
+    },
+    streams: { stdout, stderr },
+    stdoutRef,
+    stderrRef,
+    artifactRefs: [stdout.artifactRef, stderr.artifactRef].filter(
+      (ref): ref is string => Boolean(ref),
+    ),
+    warnings: warnings.length ? warnings : undefined,
+    error,
+    usage: {
+      durationMs: Date.now() - input.started,
+      stdoutBytes: stdout.bytes,
+      stderrBytes: stderr.bytes,
+    },
+  };
+}
+
+function commandExecutionError(
+  outcome: ExecutionOutcome,
+  spawnErrorCode: string | undefined,
+): NonNullable<ToolResult["error"]> {
+  const reason =
+    outcome === "exited_nonzero"
+      ? "nonzero_exit"
+      : outcome === "program_not_found"
+        ? "program_not_found"
+        : outcome;
+  const category =
+    outcome === "timed_out"
+      ? "timeout"
+      : outcome === "aborted"
+        ? "cancelled"
+        : outcome === "program_not_found"
+          ? "environment"
+          : "execution";
+  const retryable = outcome === "spawn_failed" && ["EAGAIN", "EMFILE", "ENFILE"].includes(spawnErrorCode ?? "");
+  return {
+    code: reason,
+    category,
+    reason,
+    message:
+      outcome === "exited_nonzero"
+        ? "The process exited with a nonzero status; inspect the bounded output streams."
+        : outcome === "timed_out"
+          ? "The process exceeded its timeout."
+          : outcome === "aborted"
+            ? "The process was aborted."
+            : outcome === "program_not_found"
+              ? "The requested program was not found."
+              : "The process could not be started.",
+    retryable,
+    details: spawnErrorCode ? { spawnErrorCode } : undefined,
+  };
+}
+
+async function makeOutputStream(
+  context: ToolExecutionContext,
+  prefix: string,
+  stream: "stdout" | "stderr",
+  content: string,
+  warnings: string[],
+) {
+  const bytes = Buffer.byteLength(content, "utf8");
+  const truncated = bytes > STREAM_PREVIEW_BYTES;
+  const preview = previewUtf8(content, STREAM_PREVIEW_BYTES);
+  let artifactRef: string | undefined;
+  if (truncated) {
+    try {
+      const artifactsDir = path.join(context.sessionDir, "artifacts");
+      await mkdir(artifactsDir, { recursive: true });
+      const fileName = `${safeArtifactName(prefix)}.${stream}.txt`;
+      await writeFile(path.join(artifactsDir, fileName), content, "utf8");
+      artifactRef = `artifact://${encodeURIComponent(fileName)}`;
+    } catch (error) {
+      warnings.push(`Failed to persist complete ${stream}: ${toErrorMessage(error)}`);
+    }
+  }
+  return { preview, bytes, truncated, artifactRef };
+}
+
+function previewUtf8(content: string, maxBytes: number): string {
+  const buffer = Buffer.from(content, "utf8");
+  if (buffer.length <= maxBytes) return content;
+  const marker = Buffer.from("\n...[output truncated]...\n", "utf8");
+  const remaining = Math.max(0, maxBytes - marker.length);
+  const headBytes = Math.floor(remaining / 2);
+  const tailBytes = remaining - headBytes;
+  return Buffer.concat([
+    buffer.subarray(0, headBytes),
+    marker,
+    buffer.subarray(buffer.length - tailBytes),
+  ]).toString("utf8");
+}
+
+function artifactAbsolutePath(
+  context: ToolExecutionContext,
+  artifactRef: string | undefined,
+): string | undefined {
+  if (!artifactRef) return undefined;
+  return path.join(context.sessionDir, "artifacts", decodeURIComponent(artifactRef.slice("artifact://".length)));
 }
 
 async function persistLargeOutputs(
@@ -1403,7 +2044,10 @@ function denied(toolCallId: string, summary: string): ToolResult {
     summary,
     error: {
       code: "denied",
+      category: "permission",
+      reason: "denied",
       message: summary,
+      retryable: false,
     },
   };
 }
@@ -1415,7 +2059,10 @@ function errorResult(toolCallId: string, summary: string, code: string): ToolRes
     summary,
     error: {
       code,
+      category: "execution",
+      reason: code,
       message: summary,
+      retryable: false,
     },
   };
 }

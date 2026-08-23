@@ -1,0 +1,9 @@
+id: P01-workspace-doc-review
+fixture: workspace-ops
+prompt: "检查 workspace-ops 的文档和命令入口，指出不一致但不修改文件。"
+mode: yolo
+fakeScenario: inspect-only
+budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
+assertions:
+  - type: no-workspace-changes
+

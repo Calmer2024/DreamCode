@@ -50,10 +50,10 @@ export function createMainWindow(input: CreateMainWindowInput): DesktopWindow {
   const window = new input.BrowserWindow({
     autoHideMenuBar: true,
     title: "DreamCode",
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 700,
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 620,
     backgroundColor: "#ffffff",
     show: false,
     webPreferences: {
