@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = path.resolve(packageRoot, "../..");
 const releaseDirectory = path.join(packageRoot, "release");
 const { version } = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 const executablePath = path.join(releaseDirectory, `DreamCode-Portable-${version}-x64.exe`);
@@ -19,6 +18,8 @@ const assertions = {
   taskCompleted: false,
   fileChanged: false,
   commandExitCodeZero: false,
+  permissionContractInjected: false,
+  usageReported: false,
   sessionResumed: false,
 };
 
@@ -34,9 +35,7 @@ try {
   const home = path.join(scenarioRoot, "home");
   const workspace = path.join(scenarioRoot, "workspace");
   await mkdir(home, { recursive: true });
-  await cp(path.join(repositoryRoot, "evals", "fixtures", "failing-test-js"), workspace, {
-    recursive: true,
-  });
+  await createFixtureWorkspace(workspace);
   await writeFile(
     path.join(home, "config.json"),
     `${JSON.stringify(
@@ -71,6 +70,15 @@ try {
       event.type === "tool.completed" &&
       event.payload?.tool === "shell.run" &&
       event.payload?.data?.exitCode === 0,
+  );
+  assertions.permissionContractInjected = events.some(
+    (event) =>
+      event.type === "context.built" &&
+      event.payload?.permissionContract?.schemaVersion >= 2 &&
+      event.payload?.permissionContract?.generatedFor?.currentMode === "yolo",
+  );
+  assertions.usageReported = events.some(
+    (event) => event.type === "model.usage" && event.payload?.usage?.inputTokens > 0,
   );
 
   const second = await launchPackagedApplication({ home, workspace });
@@ -268,6 +276,26 @@ async function readOnlySessionDirectory(home) {
     throw new Error(`Expected one persisted Session, found ${sessions.length}.`);
   }
   return path.join(sessionsRoot, sessions[0].name);
+}
+
+async function createFixtureWorkspace(workspace) {
+  await mkdir(path.join(workspace, "src"), { recursive: true });
+  await mkdir(path.join(workspace, "test"), { recursive: true });
+  await writeFile(
+    path.join(workspace, "package.json"),
+    '{"type":"module","scripts":{"test":"node --test"}}\n',
+    "utf8",
+  );
+  await writeFile(
+    path.join(workspace, "src", "math.js"),
+    "export function add(a, b) { return a - b; }\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(workspace, "test", "math.test.js"),
+    "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { add } from '../src/math.js';\ntest('adds', () => assert.equal(add(2, 3), 5));\n",
+    "utf8",
+  );
 }
 
 async function readEvents(sessionDirectory) {
