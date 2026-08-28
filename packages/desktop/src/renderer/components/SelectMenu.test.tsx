@@ -4,6 +4,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "../../test/setup";
 import { SelectMenu } from "./SelectMenu";
+import { Zap } from "lucide-react";
 
 const options = [
   { value: "guided", label: "引导模式" },
@@ -37,5 +38,18 @@ describe("SelectMenu", () => {
       }),
     );
     expect(onChange).toHaveBeenCalledWith("full");
+  });
+
+  it("renders option icons", () => {
+    render(
+      <SelectMenu
+        label="运行模式"
+        value="guided"
+        options={[{ value: "guided", label: "引导模式", icon: <Zap data-testid="mode-icon" /> }]}
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "运行模式选项" }));
+    expect(screen.getAllByTestId("mode-icon")).toHaveLength(2);
   });
 });

@@ -92,6 +92,7 @@ export function Composer({
               options={Object.entries(modePresentations).map(([value, presentation]) => ({
                 value,
                 label: presentation.label,
+                icon: <presentation.Icon aria-hidden="true" data-lucide={presentation.iconName} />,
               }))}
               disabled={active || starting}
               accent={mode}

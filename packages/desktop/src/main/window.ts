@@ -1,5 +1,6 @@
 export interface BrowserWindowOptionsLike {
   autoHideMenuBar: boolean;
+  useContentSize: boolean;
   title: string;
   width: number;
   height: number;
@@ -49,11 +50,13 @@ export interface CreateMainWindowInput {
 export function createMainWindow(input: CreateMainWindowInput): DesktopWindow {
   const window = new input.BrowserWindow({
     autoHideMenuBar: true,
+    useContentSize: true,
     title: "DreamCode",
     width: 1280,
     height: 800,
-    minWidth: 900,
-    minHeight: 620,
+    // Keep the sidebar, header, composer and footer controls visible at all times.
+    minWidth: 1100,
+    minHeight: 780,
     backgroundColor: "#ffffff",
     show: false,
     webPreferences: {

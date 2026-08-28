@@ -7,11 +7,12 @@ describe("createMainWindow", () => {
 
     expect(fixture.options).toMatchObject({
       autoHideMenuBar: true,
+      useContentSize: true,
       title: "DreamCode",
       width: 1280,
       height: 800,
-      minWidth: 900,
-      minHeight: 620,
+      minWidth: 1100,
+      minHeight: 780,
       backgroundColor: "#ffffff",
       show: false,
       webPreferences: {

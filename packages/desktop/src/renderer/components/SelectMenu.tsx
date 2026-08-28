@@ -118,8 +118,7 @@ export function SelectMenu({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        {icon}
-        {selected?.icon}
+        {icon ?? selected?.icon}
         <span>{selected?.label ?? value}</span>
         <ChevronDown aria-hidden="true" />
       </button>
@@ -144,6 +143,7 @@ export function SelectMenu({
                   type="button"
                   role="option"
                   aria-selected={option.value === value}
+                  data-option-value={option.value}
                   key={option.value}
                   onClick={() => {
                     onChange(option.value);
@@ -151,7 +151,11 @@ export function SelectMenu({
                     triggerRef.current?.focus();
                   }}
                 >
-                  {option.icon}
+                  {option.icon ? (
+                    <span className="select-menu-option-icon" aria-hidden="true">
+                      {option.icon}
+                    </span>
+                  ) : null}
                   <span className="select-menu-option-copy">
                     <span>{option.label}</span>
                     {option.description ? <small>{option.description}</small> : null}

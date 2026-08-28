@@ -5,10 +5,12 @@ import {
   ChevronDown,
   CircleCheck,
   CircleDot,
+  CircleHelp,
   CircleStop,
   CircleX,
   Clock,
   Copy,
+  Check,
   FileCode2,
   Hammer,
   Radio,
@@ -17,7 +19,11 @@ import {
   Telescope,
   Wrench,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
+import type {
+  DesktopApi,
+  DesktopQuestionRequest,
+} from "../../shared/contracts";
 import type {
   DesktopState,
   DesktopTimelineEntry,
@@ -33,6 +39,9 @@ interface TimelineProps {
   onPromptSuggestion?: (prompt: string) => void;
   onConfigure: () => void;
   onChooseWorkspace: () => void;
+  questionRequest?: DesktopQuestionRequest;
+  questionApi?: Pick<DesktopApi, "respondQuestion">;
+  onQuestionResolved?: () => void;
 }
 
 export function Timeline({
@@ -42,6 +51,9 @@ export function Timeline({
   onPromptSuggestion = () => undefined,
   onConfigure,
   onChooseWorkspace,
+  questionRequest,
+  questionApi,
+  onQuestionResolved,
 }: TimelineProps) {
   if (!profileUsable) {
     return (
@@ -71,6 +83,9 @@ export function Timeline({
 
   const hasConversation = Boolean(state.request || state.timeline.length);
   if (!hasConversation) {
+    if (questionRequest && questionApi && onQuestionResolved) {
+      return <QuestionCard api={questionApi} request={questionRequest} onResolved={onQuestionResolved} />;
+    }
     const suggestions = [
       { icon: Telescope, tone: "explore", label: "探索并理解代码" },
       { icon: Hammer, tone: "build", label: "构建新功能、应用或工具" },
@@ -106,6 +121,9 @@ export function Timeline({
         <UserMessage content={state.request.prompt} timestamp={state.requestTimestamp ?? ""} />
       ) : null}
       {conversationBlocks(state.timeline, state.tools, state.turnUsage)}
+      {questionRequest && questionApi && onQuestionResolved ? (
+        <QuestionCard api={questionApi} request={questionRequest} onResolved={onQuestionResolved} />
+      ) : null}
       {state.changedFiles.length ? <DiffSummaryCard files={state.changedFiles} /> : null}
     </section>
   );
@@ -152,10 +170,16 @@ function ExecutionSegment({
   tools: DesktopToolEvent[];
   usage?: DesktopTurnUsage;
 }) {
+  const completed = entries.some((entry) => entry.title === "Turn completed");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (completed) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [completed]);
   const turnId = entries.find((entry) => entry.turnId)?.turnId;
   const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
   const hasCanonicalTools = segmentTools.length > 0;
-  const completed = entries.some((entry) => entry.title === "Turn completed");
   const processEntries = entries.filter(
     (entry) =>
       entry.kind !== "assistant" &&
@@ -175,7 +199,7 @@ function ExecutionSegment({
             <span>
               {completed
                 ? `已完成 · 耗时 ${formatElapsed(entries)}`
-                : `处理中 · ${formatElapsed(entries)}`}
+                : `处理中 · ${formatElapsed(entries, now)}`}
             </span>
             <ChevronDown aria-hidden="true" />
           </summary>
@@ -389,11 +413,27 @@ function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: D
 
 function UserMessage({ content, timestamp }: { content: string; timestamp: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    void navigator.clipboard?.writeText(content).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    });
+  const copy = async () => {
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_500);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+        return;
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = content;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    } catch {
+      // Keep the acknowledgement visible: the user interaction completed even
+      // when the host clipboard API is unavailable.
+    }
   };
   return (
     <article className="timeline-entry user-entry" data-testid="timeline-user">
@@ -403,9 +443,10 @@ function UserMessage({ content, timestamp }: { content: string; timestamp: strin
         <button
           type="button"
           aria-label={copied ? "已复制用户消息" : "复制用户消息"}
+          title={copied ? "已复制" : "复制"}
           onClick={copy}
         >
-          <Copy aria-hidden="true" />
+          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
         </button>
       </div>
     </article>
@@ -416,6 +457,12 @@ function TokenUsage({ usage }: { usage: DesktopTurnUsage }) {
   const parts = [`${usage.estimated ? "约 " : ""}${formatTokens(usage.totalTokens)} tokens`];
   if (usage.inputTokens !== undefined) parts.push(`输入 ${formatTokens(usage.inputTokens)}`);
   if (usage.outputTokens !== undefined) parts.push(`输出 ${formatTokens(usage.outputTokens)}`);
+  if (usage.cachedInputTokens !== undefined) {
+    parts.push(`缓存命中 ${formatTokens(usage.cachedInputTokens)}`);
+    if ((usage.inputTokens ?? 0) > 0) {
+      parts.push(`命中率 ${Math.round((usage.cachedInputTokens / (usage.inputTokens ?? 1)) * 100)}%`);
+    }
+  }
   return (
     <div className="assistant-token-usage" role="status" aria-label="本轮 Token 用量">
       {parts.join(" · ")}
@@ -450,18 +497,43 @@ function formatTime(timestamp: string): string {
   return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function formatElapsed(entries: DesktopTimelineEntry[]): string {
-  const timestamps = entries
+function formatElapsed(
+  entries: DesktopTimelineEntry[],
+  now = Date.now(),
+): string {
+  const timestamps = entries.filter((entry) => entry.kind !== "session")
     .map((entry) => new Date(entry.timestamp).valueOf())
     .filter(Number.isFinite);
   if (!timestamps.length) return "0秒";
-  const elapsedSeconds = Math.max(
-    0,
-    Math.round((Math.max(...timestamps) - Math.min(...timestamps)) / 1000),
-  );
+  const completed = entries.some((entry) => entry.title === "Turn completed");
+  const end = completed ? Math.max(...timestamps) : now;
+  const elapsedMs = Math.max(0, end - Math.min(...timestamps));
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
   return minutes ? `${minutes}分钟 ${seconds}秒` : `${seconds}秒`;
+}
+
+function QuestionCard({ api, request, onResolved }: { api: Pick<DesktopApi, "respondQuestion">; request: DesktopQuestionRequest; onResolved: () => void }) {
+  const [answer, setAnswer] = useState("");
+  const [responding, setResponding] = useState(false);
+  const [error, setError] = useState<string>();
+  const respond = async () => {
+    const cleanAnswer = answer.trim();
+    if (!cleanAnswer) return;
+    setResponding(true);
+    setError(undefined);
+    try { await api.respondQuestion({ runId: request.runId, requestId: request.requestId, answer: cleanAnswer }); onResolved(); }
+    catch { setError("回答未能提交，请重试。"); }
+    finally { setResponding(false); }
+  };
+  return <article className="timeline-entry question-inline-card" aria-label="Agent 问题">
+    <div className="question-inline-heading"><CircleHelp aria-hidden="true" /><span>Agent 询问</span></div>
+    <p className="question-inline-prompt">{request.question}</p>
+    <textarea aria-label="回答" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="输入你的回答" rows={3} onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (!responding && answer.trim()) void respond(); } }} />
+    {error ? <p className="form-error" role="alert">{error}</p> : null}
+    <footer><span>Ctrl/⌘ + Enter 提交</span><button type="button" className="primary-button" disabled={responding || !answer.trim()} onClick={() => void respond()}>提交回答</button></footer>
+  </article>;
 }
 
 function commandState(tool: DesktopToolEvent): string {

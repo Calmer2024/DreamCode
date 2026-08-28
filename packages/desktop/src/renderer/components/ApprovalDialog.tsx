@@ -34,7 +34,7 @@ export function ApprovalDialog({ api, request, onResolved }: ApprovalDialogProps
   };
 
   return (
-    <div className="modal-backdrop modal-priority">
+    <div className="modal-backdrop modal-priority approval-backdrop">
       <section
         className="dialog-card approval-dialog"
         role="alertdialog"
@@ -119,11 +119,10 @@ export function QuestionDialog({ api, request, onResolved }: QuestionDialogProps
   };
 
   return (
-    <div className="modal-backdrop modal-priority">
+    <div className="question-card-layer modal-priority">
       <section
-        className="dialog-card question-dialog"
+        className="dialog-card question-dialog question-card"
         role="dialog"
-        aria-modal="true"
         aria-label="回答问题"
       >
         <header className="dialog-header approval-heading">
@@ -140,6 +139,12 @@ export function QuestionDialog({ api, request, onResolved }: QuestionDialogProps
             value={answer}
             onChange={(event) => setAnswer(event.target.value)}
             rows={4}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                if (!responding && answer.trim()) void respond();
+              }
+            }}
           />
         </label>
         {error ? (

@@ -92,6 +92,9 @@ describe("Timeline", () => {
     expect(within(message).getByText(/^\d{1,2}:\d{2}$/)).toBeVisible();
     fireEvent.click(within(message).getByRole("button", { name: "复制用户消息" }));
     expect(writeText).toHaveBeenCalledWith("Copy this message");
+    const copiedButton = within(message).getByRole("button", { name: "已复制用户消息" });
+    expect(copiedButton).not.toHaveTextContent("已复制");
+    expect(copiedButton.querySelector("svg")).toBeTruthy();
   });
 
   it("shows a real turn prompt once when turn.started precedes user.message", () => {

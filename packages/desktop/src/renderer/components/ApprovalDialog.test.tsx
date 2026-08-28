@@ -57,12 +57,14 @@ describe("QuestionDialog", () => {
       />,
     );
 
+    expect(screen.getByRole("dialog", { name: "回答问题" })).toHaveClass("question-card");
+    expect(screen.getByRole("dialog", { name: "回答问题" })).not.toHaveAttribute("aria-modal");
     const submit = screen.getByRole("button", { name: "提交回答" });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText("回答"), { target: { value: "   " } });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText("回答"), { target: { value: " README.md " } });
-    fireEvent.click(submit);
+    fireEvent.keyDown(screen.getByLabelText("回答"), { key: "Enter", ctrlKey: true });
 
     await waitFor(() =>
       expect(respondQuestion).toHaveBeenCalledWith({

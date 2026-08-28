@@ -369,6 +369,7 @@ select:focus-visible {
 
 .sidebar-footer {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   border-top: 1px solid var(--dc-border);
   padding: 8px 10px;
@@ -607,7 +608,7 @@ select:focus-visible {
 .conversation {
   max-width: 820px;
   margin: 0 auto;
-  padding: 48px 30px 190px;
+  padding: 48px 30px calc(var(--composer-height, 170px) + 32px);
 }
 
 .loading-state,
@@ -1030,6 +1031,7 @@ select:focus-visible {
   border-radius: 9px;
   padding: 0 9px;
   background: transparent;
+  color: var(--text-primary);
   font-size: 13px;
 }
 
@@ -1055,23 +1057,29 @@ select:focus-visible {
 .select-menu-trigger svg:last-child {
   width: 14px;
   height: 14px;
-  color: var(--text-secondary);
+  color: currentColor;
 }
 .select-menu-control[data-accent="plan"] .select-menu-trigger {
-  background: #eef2ff;
-  color: #4f46e5;
+  --mode-hover-color: #4f46e5;
+  --mode-active-background: #eef2ff;
 }
 .select-menu-control[data-accent="guided"] .select-menu-trigger {
-  background: #edf6ff;
-  color: #2474c5;
+  --mode-hover-color: #2474c5;
+  --mode-active-background: #edf6ff;
 }
 .select-menu-control[data-accent="yolo"] .select-menu-trigger {
-  background: #fff7e6;
-  color: #b86b00;
+  --mode-hover-color: #b86b00;
+  --mode-active-background: #fff7e6;
 }
 .select-menu-control[data-accent="full"] .select-menu-trigger {
-  background: #fff1e8;
-  color: #d45113;
+  --mode-hover-color: #d45113;
+  --mode-active-background: #fff1e8;
+}
+.select-menu-control[data-accent] .select-menu-trigger,
+.select-menu-control[data-accent] .select-menu-trigger:hover,
+.select-menu-control[data-accent] .select-menu-trigger[aria-expanded="true"] {
+  color: var(--mode-hover-color);
+  background: var(--mode-active-background);
 }
 .model-control .select-menu-trigger {
   max-width: 190px;
@@ -1116,7 +1124,51 @@ select:focus-visible {
 .select-menu-popover > button svg {
   width: 16px;
   height: 16px;
+  color: currentColor;
+}
+
+.select-menu-popover > button > svg:last-child {
   color: var(--accent);
+}
+
+.select-menu-option-icon {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+}
+
+.select-menu-option-icon svg {
+  width: 17px;
+  height: 17px;
+  color: currentColor;
+}
+
+.select-menu-popover > button > svg:first-child {
+  color: currentColor;
+}
+
+.select-menu-popover > button { color: var(--text-primary); }
+.select-menu-popover > button[data-option-value="plan"]:hover,
+.select-menu-popover > button[data-option-value="plan"][aria-selected="true"] {
+  color: #4f46e5;
+  background: #eef2ff;
+}
+.select-menu-popover > button[data-option-value="guided"]:hover,
+.select-menu-popover > button[data-option-value="guided"][aria-selected="true"] {
+  color: #2474c5;
+  background: #edf6ff;
+}
+.select-menu-popover > button[data-option-value="yolo"]:hover,
+.select-menu-popover > button[data-option-value="yolo"][aria-selected="true"] {
+  color: #b86b00;
+  background: #fff7e6;
+}
+.select-menu-popover > button[data-option-value="full"]:hover,
+.select-menu-popover > button[data-option-value="full"][aria-selected="true"] {
+  color: #d45113;
+  background: #fff1e8;
 }
 
 @keyframes select-menu-enter {
@@ -2047,6 +2099,62 @@ select:focus-visible {
   resize: vertical;
 }
 
+/* Questions stay in the conversation as an actionable card, matching Codex's
+   inline approval treatment instead of interrupting the whole window. */
+.question-card-layer {
+  position: fixed;
+  inset: auto 0 20px;
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  padding: 0 22px;
+  pointer-events: none;
+}
+
+.question-card-layer .question-dialog {
+  pointer-events: auto;
+  width: min(820px, calc(100vw - 48px));
+  border-radius: 22px;
+  padding: 22px 26px 20px;
+  box-shadow: 0 14px 40px rgb(32 33 36 / 14%);
+}
+
+.question-card-layer .question-dialog .dialog-header {
+  margin-bottom: 0;
+}
+
+.question-card-layer .question-answer {
+  margin-top: 14px;
+}
+
+.question-card-layer .question-answer textarea {
+  min-height: 54px;
+  max-height: 180px;
+}
+
+.question-inline-card {
+  width: min(760px, 100%);
+  justify-self: center;
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  padding: 16px 18px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(32 33 36 / 8%);
+}
+
+.question-inline-heading,
+.question-inline-card footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-inline-heading { color: var(--dc-brand-dark); font-size: 12px; font-weight: 650; }
+.question-inline-heading svg { width: 17px; height: 17px; }
+.question-inline-prompt { margin: 10px 0 12px; font-size: 15px; font-weight: 600; }
+.question-inline-card textarea { width: 100%; resize: vertical; border: 1px solid var(--dc-border); border-radius: 10px; padding: 10px 12px; box-sizing: border-box; }
+.question-inline-card footer { justify-content: space-between; margin-top: 10px; color: var(--text-secondary); font-size: 11px; }
+
 .drawer-backdrop {
   inset: auto 0 0 272px;
   z-index: 18;
@@ -2541,6 +2649,47 @@ details[open] > .tool-process-summary > svg:last-child,
   width: min(820px, calc(100% - 48px));
   transform: translateX(-50%);
   transition: bottom var(--motion-collapse);
+}
+
+.composer-stack-anchor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  pointer-events: none;
+}
+
+@media (max-height: 760px) {
+  .conversation {
+    padding-top: 28px;
+  }
+
+  .composer-stack {
+    bottom: 12px;
+  }
+
+  .composer textarea {
+    min-height: 58px;
+    padding-top: 13px;
+  }
+
+  .composer-toolbar {
+    min-height: 44px;
+    padding-bottom: 6px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .app-shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .composer-stack {
+    width: min(760px, calc(100% - 32px));
+  }
+}
+
+.composer-stack-anchor > .composer-stack {
+  pointer-events: auto;
 }
 
 .main-pane.drawer-open .conversation-scroll {

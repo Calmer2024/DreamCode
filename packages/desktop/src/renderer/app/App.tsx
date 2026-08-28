@@ -10,7 +10,7 @@ import type {
   DesktopRunStatus,
   StartTurnRequest,
 } from "../../shared/contracts";
-import { ApprovalDialog, QuestionDialog } from "../components/ApprovalDialog";
+import { ApprovalDialog } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
 import { ConfigDialog } from "../components/ConfigDialog";
 import { DetailDrawer, type DetailTab } from "../components/DetailDrawer";
@@ -51,8 +51,11 @@ export function App({ api = window.dreamcode }: AppProps) {
   const pendingRunStatuses = useRef<DesktopRunStatus[]>([]);
   const sessionLoadSequence = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const mainPaneRef = useRef<HTMLElement>(null);
+  const composerStackRef = useRef<HTMLDivElement>(null);
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const shouldFollowTimeline = useRef(true);
+  const pendingScrollFrame = useRef<number | undefined>(undefined);
 
   const loadBootstrap = useCallback(async () => {
     setLoading(true);
@@ -149,10 +152,24 @@ export function App({ api = window.dreamcode }: AppProps) {
   const timelineRevision = `${timeline.length}:${timeline.at(-1)?.detail ?? ""}:${state.request?.prompt ?? ""}`;
 
   useEffect(() => {
+    const mainPane = mainPaneRef.current;
+    const composerStack = composerStackRef.current;
+    if (!mainPane || !composerStack) return;
+    const composer = composerStack.querySelector<HTMLElement>(".composer-stack") ?? composerStack;
+    const updateHeight = () => {
+      mainPane.style.setProperty("--composer-height", `${composer.getBoundingClientRect().height}px`);
+    };
+    updateHeight();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, [loading, state.workspaceRoot, state.activeSessionId, state.request, timeline.length]);
+
+  useEffect(() => {
     const container = scrollContainerRef.current;
-    if (timelineRevision && shouldFollowTimeline.current && container) {
-      container.scrollTop = container.scrollHeight;
-    }
+    if (!timelineRevision || !shouldFollowTimeline.current || !container) return;
+    container.scrollTop = container.scrollHeight;
   }, [timelineRevision]);
 
   const applyBootstrap = useCallback((bootstrap: DesktopBootstrap) => {
@@ -281,6 +298,10 @@ export function App({ api = window.dreamcode }: AppProps) {
   const trackScrollPosition = () => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    if (pendingScrollFrame.current !== undefined) {
+      window.cancelAnimationFrame(pendingScrollFrame.current);
+      pendingScrollFrame.current = undefined;
+    }
     shouldFollowTimeline.current =
       container.scrollHeight - container.scrollTop - container.clientHeight <= 120;
   };
@@ -365,7 +386,7 @@ export function App({ api = window.dreamcode }: AppProps) {
           renameWorkspaceRoot={workspacePendingRename}
           onRenameWorkspaceHandled={() => setWorkspacePendingRename(undefined)}
         />
-        <main className={`main-pane${state.drawer ? " drawer-open" : ""}`}>
+        <main ref={mainPaneRef} className={`main-pane${state.drawer ? " drawer-open" : ""}`}>
           <TaskHeader
             taskTitle={taskTitle}
             workspaceRoot={state.workspaceRoot}
@@ -423,6 +444,9 @@ export function App({ api = window.dreamcode }: AppProps) {
                   onPromptSuggestion={setPrompt}
                   onConfigure={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
                   onChooseWorkspace={() => void chooseWorkspace()}
+                  questionRequest={questionRequest}
+                  questionApi={api}
+                  onQuestionResolved={() => setQuestionRequest(undefined)}
                 />
               )}
               <div ref={timelineEndRef} aria-hidden="true" />
@@ -433,6 +457,7 @@ export function App({ api = window.dreamcode }: AppProps) {
               {state.error.message}
             </div>
           ) : null}
+          <div ref={composerStackRef} className="composer-stack-anchor">
           <Composer
             prompt={prompt}
             mode={mode}
@@ -454,6 +479,7 @@ export function App({ api = window.dreamcode }: AppProps) {
             onSubmit={() => void submit()}
             onStop={() => void stop()}
           />
+          </div>
         </main>
         {state.drawer ? (
           <DetailDrawer
@@ -470,13 +496,6 @@ export function App({ api = window.dreamcode }: AppProps) {
             api={api}
             request={approvalRequest}
             onResolved={() => setApprovalRequest(undefined)}
-          />
-        ) : null}
-        {questionRequest ? (
-          <QuestionDialog
-            api={api}
-            request={questionRequest}
-            onResolved={() => setQuestionRequest(undefined)}
           />
         ) : null}
         {workspacePendingRemoval ? (
