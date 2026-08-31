@@ -49,6 +49,98 @@ function api(overrides: Partial<DesktopApi> = {}): DesktopApi {
 }
 
 describe("ConfigDialog", () => {
+  it("shows the low-density auto-discovered Skill manager", async () => {
+    const listSkills = vi.fn().mockResolvedValue({
+      generation: 1,
+      customRoots: [],
+      diagnostics: [],
+      skills: [{
+        skillId: "skill_review",
+        name: "Review",
+        description: "Review a change before it ships.",
+        source: "user",
+        provider: "agents",
+        capabilities: ["filesystem.read"],
+        allowImplicitInvocation: true,
+        path: "C:\\skills\\review",
+        enabled: true,
+        valid: true,
+        resolution: "resolved",
+        managed: false,
+        canUninstall: false,
+        canUpdate: false,
+        canRollback: false,
+        diagnostics: [],
+      }],
+    });
+    render(
+      <ConfigDialog
+        api={api({ listSkills })}
+        bootstrap={bootstrap}
+        open
+        initialSection="skills"
+        workspaceRoot="D:/project"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Review")).toBeInTheDocument();
+    expect(screen.getByText("Review a change before it ships.")).toBeInTheDocument();
+    expect(screen.getByText("读取文件")).toBeInTheDocument();
+    expect(screen.getByText("未声明版本")).toBeInTheDocument();
+    expect(screen.getByText(/自动发现/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("详情"));
+    expect(screen.getByText("C:\\skills\\review")).toBeVisible();
+    expect(screen.getByText("允许隐式调用，也可用 / 或 $ 显式调用")).toBeVisible();
+  });
+
+  it("filters by source and forwards Git ref and subpath during installation", async () => {
+    const snapshot = {
+      generation: 1,
+      customRoots: [],
+      diagnostics: [],
+      skills: [
+        { ...desktopSkill("Project helper", "project"), skillId: "project" },
+        { ...desktopSkill("User helper", "user"), skillId: "user" },
+      ],
+    };
+    const installSkill = vi.fn().mockResolvedValue(snapshot);
+    render(
+      <ConfigDialog
+        api={api({ listSkills: vi.fn().mockResolvedValue(snapshot), installSkill })}
+        bootstrap={bootstrap}
+        open
+        initialSection="skills"
+        workspaceRoot="D:/project"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Project helper")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("按来源筛选"), { target: { value: "project" } });
+    expect(screen.getByText("Project helper")).toBeVisible();
+    expect(screen.queryByText("User helper")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.change(screen.getByLabelText("来源类型"), { target: { value: "git" } });
+    fireEvent.change(screen.getByLabelText("技能来源"), { target: { value: "https://example.test/skills.git" } });
+    fireEvent.change(screen.getByLabelText("Git ref"), { target: { value: "v2.1.0" } });
+    fireEvent.change(screen.getByLabelText("仓库子目录"), { target: { value: "skills/review" } });
+    fireEvent.click(screen.getByRole("button", { name: "安装" }));
+
+    await waitFor(() => expect(installSkill).toHaveBeenCalledWith({
+      workspaceRoot: "D:/project",
+      scope: "project",
+      source: {
+        type: "git",
+        location: "https://example.test/skills.git",
+        ref: "v2.1.0",
+        subpath: "skills/review",
+      },
+      confirmations: undefined,
+    }));
+  });
+
   it("saves the Exa API key from General settings", async () => {
     const updateWebSearchCredential = vi.fn().mockResolvedValue({
       ...bootstrap,
@@ -217,3 +309,24 @@ describe("ConfigDialog", () => {
     expect(screen.getByLabelText("配置别名")).toHaveValue("工作");
   });
 });
+
+function desktopSkill(name: string, source: "user" | "project") {
+  return {
+    skillId: name,
+    name,
+    description: `${name} description`,
+    source,
+    provider: "dreamcode",
+    capabilities: [],
+    allowImplicitInvocation: true,
+    path: `D:\\skills\\${name}`,
+    enabled: true,
+    valid: true,
+    resolution: "resolved" as const,
+    managed: false,
+    canUninstall: false,
+    canUpdate: false,
+    canRollback: false,
+    diagnostics: [],
+  };
+}

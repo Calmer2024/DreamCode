@@ -8,7 +8,7 @@
   "packageManager": "pnpm@11.7.0",
   "main": "dist-main/main/index.js",
   "scripts": {
-    "build": "pnpm run build:main && pnpm run build:renderer",
+    "build": "pnpm --filter @dreamcode/desktop^... build && pnpm run build:main && pnpm run build:renderer",
     "build:contracts": "tsup",
     "build:main": "tsup",
     "build:renderer": "vite build",
@@ -17,7 +17,7 @@
     "dev": "vite",
     "dist": "pnpm run build && pnpm run dist:package",
     "dist:package": "electron-builder --config electron-builder.yml --win --x64",
-    "e2e": "playwright test --config playwright.config.ts",
+    "e2e": "pnpm run build && playwright test --config playwright.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -25,6 +25,7 @@
     "@dreamcode/core": "workspace:*",
     "@dreamcode/models": "workspace:*",
     "@dreamcode/shared": "workspace:*",
+    "@dreamcode/skills": "workspace:*",
     "@dreamcode/store": "workspace:*",
     "@dreamcode/tools": "workspace:*",
     "@fontsource/noto-sans-sc": "5.3.0",

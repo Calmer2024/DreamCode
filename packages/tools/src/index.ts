@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  buildPermissionCapabilityContract,
   isSecretPath,
   resolveExistingWorkspacePath,
   resolveWorkspacePath,
@@ -19,7 +20,6 @@ import type {
   ToolModelSpec,
   ToolResult,
 } from "@dreamcode/shared";
-import { buildPermissionCapabilityContract } from "@dreamcode/safety";
 import { todoItemSchema, toErrorMessage } from "@dreamcode/shared";
 import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
@@ -118,8 +118,7 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     questionAskTool,
     createWebSearchTool(options.webSearch),
     webFetchTool,
-    skillListTool,
-    skillReadTool,
+    skillLoadTool,
     skillReadResourceTool,
     createMcpListTool(options.mcpServers ?? {}),
     createMcpCallTool(options.mcpServers ?? {}),
@@ -825,55 +824,41 @@ const webFetchTool: Tool<z.infer<typeof webFetchSchema>> = {
   },
 };
 
-const skillListSchema = z.object({});
-
-const skillListTool: Tool<z.infer<typeof skillListSchema>> = {
-  name: "skill.list",
-  description: "List available DreamCode skills without loading their full instruction files.",
-  inputSchema: skillListSchema,
-  risk: { tags: ["read_workspace"] },
-  async execute(_rawInput, context) {
-    const skills = await listSkills(context);
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: `Found ${skills.length} skill${skills.length === 1 ? "" : "s"}.`,
-      data: { skills },
-    };
-  },
-};
-
-const skillReadSchema = z.object({
-  name: z.string().min(1),
+const skillLoadSchema = z.object({
+  skillId: z.string().min(1),
 });
 
-const skillReadTool: Tool<z.infer<typeof skillReadSchema>> = {
-  name: "skill.read",
-  description: "Read the full SKILL.md for a named DreamCode skill.",
-  inputSchema: skillReadSchema,
+const skillLoadTool: Tool<z.infer<typeof skillLoadSchema>> = {
+  name: "skill.load",
+  description:
+    "Load the complete instructions for one available Skill by the stable skillId from <available_skills>.",
+  inputSchema: skillLoadSchema,
   risk: { tags: ["read_workspace"] },
   async execute(rawInput, context) {
-    const input = skillReadSchema.parse(rawInput);
-    const skill = (await listSkills(context)).find((item) => item.name === input.name);
-    if (!skill) {
-      return errorResult(context.toolCallId, `Skill not found: ${input.name}`, "skill_not_found");
+    const input = skillLoadSchema.parse(rawInput);
+    if (!context.skills) {
+      return errorResult(context.toolCallId, "Skill Registry is unavailable.", "skill_registry_unavailable");
     }
-    const content = await readFile(path.join(skill.path, "SKILL.md"), "utf8");
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: `Loaded skill ${input.name}.`,
-      data: {
-        name: skill.name,
-        path: skill.path,
-        content,
-      },
-    };
+    try {
+      const loaded = await context.skills.load(input.skillId);
+      return {
+        toolCallId: context.toolCallId,
+        status: "success",
+        summary: `Loaded Skill ${loaded.name}.`,
+        data: loaded,
+      };
+    } catch (error) {
+      return errorResult(
+        context.toolCallId,
+        error instanceof Error ? error.message : "Skill could not be loaded.",
+        "skill_load_failed",
+      );
+    }
   },
 };
 
 const skillReadResourceSchema = z.object({
-  name: z.string().min(1),
+  skillId: z.string().min(1),
   resourcePath: z.string().min(1),
   maxBytes: z.number().int().positive().max(200000).default(40000),
 });
@@ -885,26 +870,28 @@ const skillReadResourceTool: Tool<z.infer<typeof skillReadResourceSchema>> = {
   risk: { tags: ["read_workspace"] },
   async execute(rawInput, context) {
     const input = skillReadResourceSchema.parse(rawInput);
-    const skill = (await listSkills(context)).find((item) => item.name === input.name);
-    if (!skill) {
-      return errorResult(context.toolCallId, `Skill not found: ${input.name}`, "skill_not_found");
+    if (!context.skills) {
+      return errorResult(context.toolCallId, "Skill Registry is unavailable.", "skill_registry_unavailable");
     }
-    const target = path.resolve(skill.path, input.resourcePath);
-    if (!isInsidePath(skill.path, target)) {
-      return denied(context.toolCallId, "Refused to read outside the skill directory.");
+    try {
+      const resource = await context.skills.readResource(
+        input.skillId,
+        input.resourcePath,
+        input.maxBytes,
+      );
+      return {
+        toolCallId: context.toolCallId,
+        status: "success",
+        summary: `Read Skill resource ${resource.resourcePath}.`,
+        data: resource,
+      };
+    } catch (error) {
+      return errorResult(
+        context.toolCallId,
+        error instanceof Error ? error.message : "Skill resource could not be read.",
+        "skill_resource_failed",
+      );
     }
-    const content = await readFile(target, "utf8");
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: `Read skill resource ${input.name}/${input.resourcePath}.`,
-      data: {
-        name: input.name,
-        resourcePath: input.resourcePath,
-        content: truncate(content, input.maxBytes),
-        truncated: content.length > input.maxBytes,
-      },
-    };
   },
 };
 
@@ -1160,70 +1147,6 @@ function decodeHtml(text: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#x2F;/g, "/");
-}
-
-interface SkillSummary {
-  name: string;
-  description: string;
-  source: "workspace" | "global";
-  path: string;
-}
-
-async function listSkills(context: ToolExecutionContext): Promise<SkillSummary[]> {
-  const roots: Array<{ source: SkillSummary["source"]; path: string }> = [
-    { source: "workspace", path: path.join(context.workspaceRoot, ".dreamcode", "skills") },
-    { source: "global", path: path.join(getHomeFromSessionDir(context.sessionDir), "skills") },
-  ];
-  const skills: SkillSummary[] = [];
-  for (const root of roots) {
-    if (!existsSync(root.path)) {
-      continue;
-    }
-    const entries = await readdir(root.path, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      const skillPath = path.join(root.path, entry.name);
-      const skillFile = path.join(skillPath, "SKILL.md");
-      if (!existsSync(skillFile)) {
-        continue;
-      }
-      const content = await readFile(skillFile, "utf8");
-      skills.push({
-        name: entry.name,
-        description: readSkillDescription(content),
-        source: root.source,
-        path: skillPath,
-      });
-    }
-  }
-  return skills;
-}
-
-function readSkillDescription(content: string): string {
-  const descriptionMatch = /^description:\s*(.+)$/im.exec(content);
-  if (descriptionMatch?.[1]) {
-    return descriptionMatch[1].trim();
-  }
-  const headingMatch = /^#\s+(.+)$/m.exec(content);
-  if (headingMatch?.[1]) {
-    return headingMatch[1].trim();
-  }
-  const firstParagraph = content
-    .split(/\r?\n\r?\n/)
-    .map((part) => part.trim())
-    .find(Boolean);
-  return firstParagraph?.slice(0, 200) ?? "No description.";
-}
-
-function getHomeFromSessionDir(sessionDir: string): string {
-  return path.dirname(path.dirname(sessionDir));
-}
-
-function isInsidePath(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function selectMcpServers(

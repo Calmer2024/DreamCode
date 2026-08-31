@@ -7,13 +7,13 @@ import { describe, expect, it } from "vitest";
 import { runTurn, selectToolSpecs } from "./index";
 
 describe("tool exposure and turn cache", () => {
-  it("keeps optional schemas out unless configured and explicitly requested", () => {
+  it("keeps Skill loading available while gating web and MCP schemas", () => {
     const registry = createDefaultToolRegistry();
     const coding = selectToolSpecs(registry, "Fix the TypeScript build").map((tool) => tool.name);
     expect(coding).toContain("runtime.info");
     expect(coding).toContain("process.run");
     expect(coding.some((name) => name.startsWith("web."))).toBe(false);
-    expect(coding.some((name) => name.startsWith("skill."))).toBe(false);
+    expect(coding).toContain("skill.load");
     expect(coding.some((name) => name.startsWith("mcp."))).toBe(false);
 
     const web = selectToolSpecs(registry, "Search the web for this API").map((tool) => tool.name);
@@ -26,12 +26,9 @@ describe("tool exposure and turn cache", () => {
       registry,
       "不需要联网、Skill 或 MCP，只处理本地代码。",
     ).map((tool) => tool.name);
-    expect(
-      explicitlyLocal.some(
-        (name) =>
-          name.startsWith("web.") || name.startsWith("skill.") || name.startsWith("mcp."),
-      ),
-    ).toBe(false);
+    expect(explicitlyLocal.some((name) => name.startsWith("web."))).toBe(false);
+    expect(explicitlyLocal.some((name) => name.startsWith("mcp."))).toBe(false);
+    expect(explicitlyLocal).toContain("skill.load");
   });
 
   it("returns a compact reference for a repeated read-only call", async () => {

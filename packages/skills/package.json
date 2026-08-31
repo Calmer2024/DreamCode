@@ -1,5 +1,5 @@
 {
-  "name": "@dreamcode/core",
+  "name": "@dreamcode/skills",
   "version": "0.1.0",
   "type": "module",
   "exports": {
@@ -14,12 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@dreamcode/context": "workspace:*",
-    "@dreamcode/models": "workspace:*",
-    "@dreamcode/safety": "workspace:*",
     "@dreamcode/shared": "workspace:*",
-    "@dreamcode/skills": "workspace:*",
-    "@dreamcode/store": "workspace:*",
-    "@dreamcode/tools": "workspace:*"
+    "fflate": "^0.8.2",
+    "yaml": "^2.9.0"
   }
 }

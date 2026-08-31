@@ -5,8 +5,151 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentEvent, ChangedFile, FinalSummary, Session, TodoItem } from "@dreamcode/shared";
 import { createId, makeEvent, nowIso } from "@dreamcode/shared";
+import { type SkillLocator, type SkillStateProvider, skillLocatorStateKey } from "@dreamcode/skills";
 
 const configWriteQueues = new Map<string, Promise<void>>();
+const skillStateWriteQueues = new Map<string, Promise<void>>();
+
+export type ManagedSkillSource =
+  | { type: "directory"; location: string; subpath?: string }
+  | { type: "zip"; location: string; subpath?: string }
+  | { type: "git"; location: string; ref?: string; subpath?: string };
+
+export interface ManagedSkillPreviousVersion {
+  backupPath: string;
+  version?: string;
+  revision?: string;
+  contentHash: string;
+}
+
+export interface ManagedSkillInstallation {
+  skillId: string;
+  name: string;
+  path: string;
+  scope: "user" | "project";
+  source: ManagedSkillSource;
+  version?: string;
+  revision?: string;
+  contentHash: string;
+  installedAt: string;
+  previous?: ManagedSkillPreviousVersion;
+}
+
+interface UserSkillStateFile {
+  version: 1;
+  states: Record<string, { enabled: boolean }>;
+  customRoots: string[];
+  installations: Record<string, ManagedSkillInstallation>;
+}
+
+interface ProjectSkillStateFile {
+  version: 1;
+  states: Record<string, { enabled: boolean }>;
+  installations: Record<string, ManagedSkillInstallation>;
+}
+
+export class PersistedSkillState implements SkillStateProvider {
+  private constructor(
+    readonly home: string,
+    readonly workspaceRoot: string,
+    private user: UserSkillStateFile,
+    private project: ProjectSkillStateFile,
+  ) {}
+
+  static async open(input: { home?: string; workspaceRoot: string }): Promise<PersistedSkillState> {
+    const home = input.home ?? getDreamCodeHome();
+    const workspaceRoot = path.resolve(input.workspaceRoot);
+    const [user, project] = await Promise.all([
+      loadUserSkillState(getSkillStatePath(home)),
+      loadProjectSkillState(getProjectSkillStatePath(workspaceRoot)),
+    ]);
+    return new PersistedSkillState(home, workspaceRoot, user, project);
+  }
+
+  isEnabled(locator: SkillLocator): boolean | undefined {
+    const key = skillLocatorStateKey(locator);
+    return (locator.source === "project" ? this.project.states[key] : this.user.states[key])?.enabled;
+  }
+
+  async setEnabled(locator: SkillLocator, enabled: boolean): Promise<void> {
+    const key = skillLocatorStateKey(locator);
+    if (locator.source === "project") {
+      const filePath = getProjectSkillStatePath(this.workspaceRoot);
+      this.project = await updateSkillStateFile(filePath, loadProjectSkillState, (current) => ({
+        ...current,
+        states: { ...current.states, [key]: { enabled } },
+      }));
+      return;
+    }
+    const filePath = getSkillStatePath(this.home);
+    this.user = await updateSkillStateFile(filePath, loadUserSkillState, (current) => ({
+      ...current,
+      states: { ...current.states, [key]: { enabled } },
+    }));
+  }
+
+  customRoots(): readonly string[] {
+    return this.user.customRoots;
+  }
+
+  async setCustomRoots(roots: readonly string[]): Promise<void> {
+    const filePath = getSkillStatePath(this.home);
+    this.user = await updateSkillStateFile(filePath, loadUserSkillState, (current) => ({
+      ...current,
+      customRoots: [...new Set(roots.map((root) => path.resolve(root)))],
+    }));
+  }
+
+  listInstallations(): readonly ManagedSkillInstallation[] {
+    return [...Object.values(this.user.installations), ...Object.values(this.project.installations)];
+  }
+
+  getInstallation(skillId: string): ManagedSkillInstallation | undefined {
+    return this.user.installations[skillId] ?? this.project.installations[skillId];
+  }
+
+  async saveInstallation(installation: ManagedSkillInstallation): Promise<void> {
+    if (installation.scope === "project") {
+      const filePath = getProjectSkillStatePath(this.workspaceRoot);
+      this.project = await updateSkillStateFile(filePath, loadProjectSkillState, (current) => ({
+        ...current,
+        installations: { ...current.installations, [installation.skillId]: installation },
+      }));
+      return;
+    }
+    const filePath = getSkillStatePath(this.home);
+    this.user = await updateSkillStateFile(filePath, loadUserSkillState, (current) => ({
+      ...current,
+      installations: { ...current.installations, [installation.skillId]: installation },
+    }));
+  }
+
+  async deleteInstallation(skillId: string): Promise<void> {
+    if (this.project.installations[skillId]) {
+      const filePath = getProjectSkillStatePath(this.workspaceRoot);
+      this.project = await updateSkillStateFile(filePath, loadProjectSkillState, (current) => {
+        const installations = { ...current.installations };
+        delete installations[skillId];
+        return { ...current, installations };
+      });
+      return;
+    }
+    const filePath = getSkillStatePath(this.home);
+    this.user = await updateSkillStateFile(filePath, loadUserSkillState, (current) => {
+      const installations = { ...current.installations };
+      delete installations[skillId];
+      return { ...current, installations };
+    });
+  }
+}
+
+export function getSkillStatePath(home = getDreamCodeHome()): string {
+  return path.join(home, "skills.json");
+}
+
+export function getProjectSkillStatePath(workspaceRoot: string): string {
+  return path.join(path.resolve(workspaceRoot), ".dreamcode", "skills.local.json");
+}
 
 export function getDreamCodeHome(): string {
   return process.env.DREAMCODE_HOME ?? path.join(os.homedir(), ".dreamcode");
@@ -935,6 +1078,116 @@ function assertUniqueProfileAlias(
       throw new Error("A model profile with this alias already exists for the provider.");
     }
   }
+}
+
+async function loadUserSkillState(filePath: string): Promise<UserSkillStateFile> {
+  const raw = await readOptionalJson(filePath);
+  if (raw === undefined) return { version: 1, states: {}, customRoots: [], installations: {} };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1) {
+    throw new Error(`Failed to read DreamCode Skill state at ${filePath}: unsupported schema.`);
+  }
+  return {
+    version: 1,
+    states: normalizeEnabledStates(raw.states),
+    customRoots: Array.isArray(raw.customRoots)
+      ? raw.customRoots.filter((root): root is string => typeof root === "string" && Boolean(root.trim()))
+      : [],
+    installations: normalizeInstallations(raw.installations, "user"),
+  };
+}
+
+async function loadProjectSkillState(filePath: string): Promise<ProjectSkillStateFile> {
+  const raw = await readOptionalJson(filePath);
+  if (raw === undefined) return { version: 1, states: {}, installations: {} };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1) {
+    throw new Error(`Failed to read DreamCode project Skill state at ${filePath}: unsupported schema.`);
+  }
+  return {
+    version: 1,
+    states: normalizeEnabledStates(raw.states),
+    installations: normalizeInstallations(raw.installations, "project"),
+  };
+}
+
+async function readOptionalJson(filePath: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const value: unknown = JSON.parse(await readFile(filePath, "utf8"));
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : { value };
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+    throw new Error(
+      `Failed to read Skill state at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function normalizeEnabledStates(value: unknown): Record<string, { enabled: boolean }> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, { enabled: boolean }> = {};
+  for (const [key, state] of Object.entries(value)) {
+    if (state && typeof state === "object" && !Array.isArray(state) && typeof state.enabled === "boolean") {
+      result[key] = { enabled: state.enabled };
+    }
+  }
+  return result;
+}
+
+function normalizeInstallations(
+  value: unknown,
+  expectedScope?: ManagedSkillInstallation["scope"],
+): Record<string, ManagedSkillInstallation> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, ManagedSkillInstallation> = {};
+  for (const [key, installation] of Object.entries(value)) {
+    if (!installation || typeof installation !== "object" || Array.isArray(installation)) continue;
+    const candidate = installation as Partial<ManagedSkillInstallation>;
+    if (
+      typeof candidate.skillId !== "string" ||
+      typeof candidate.name !== "string" ||
+      typeof candidate.path !== "string" ||
+      (candidate.scope !== "user" && candidate.scope !== "project") ||
+      typeof candidate.contentHash !== "string" ||
+      typeof candidate.installedAt !== "string" ||
+      !candidate.source
+    ) {
+      continue;
+    }
+    if (expectedScope && candidate.scope !== expectedScope) continue;
+    result[key] = candidate as ManagedSkillInstallation;
+  }
+  return result;
+}
+
+async function updateSkillStateFile<T extends UserSkillStateFile | ProjectSkillStateFile>(
+  filePath: string,
+  load: (filePath: string) => Promise<T>,
+  update: (current: T) => T,
+): Promise<T> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const previous = skillStateWriteQueues.get(filePath) ?? Promise.resolve();
+  let result: T | undefined;
+  const write = previous
+    .catch(() => undefined)
+    .then(async () => {
+      result = update(await load(filePath));
+      const temporaryPath = `${filePath}.${process.pid}.${createId("skill_state")}.tmp`;
+      await writeFile(temporaryPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+      try {
+        await rename(temporaryPath, filePath);
+      } catch (error) {
+        await rm(temporaryPath, { force: true });
+        throw error;
+      }
+    });
+  skillStateWriteQueues.set(filePath, write);
+  try {
+    await write;
+  } finally {
+    if (skillStateWriteQueues.get(filePath) === write) skillStateWriteQueues.delete(filePath);
+  }
+  return result!;
 }
 
 function hasProfileAlias(

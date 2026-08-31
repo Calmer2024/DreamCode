@@ -2,10 +2,11 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createDefaultFakeProvider, FakeModelProvider, fakeCall } from "@dreamcode/models";
-import type { AgentEvent, FinalSummary, ModelProvider } from "@dreamcode/shared";
+import { SkillRegistry } from "@dreamcode/skills";
+import type { AgentEvent, FinalSummary, ModelProvider, ModelStreamInput } from "@dreamcode/shared";
 import { listSessions, readReplayedSession, rollbackSession } from "@dreamcode/store";
 import { describe, expect, it } from "vitest";
-import { runTurn } from "./index";
+import { getUndeclaredSkillCapability, runTurn } from "./index";
 
 describe("runTurn fake model integration", () => {
   it("fixes a failing JavaScript test workspace and records evidence", async () => {
@@ -367,6 +368,72 @@ describe("runTurn fake model integration", () => {
     ).session?.id;
     const replayed = await readReplayedSession(sessionId!, home);
     expect(replayed.status).toBe("interrupted");
+  });
+
+  it("injects the compact Skill catalog and preloads explicit slash invocation", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const skillRoot = path.join(workspaceRoot, ".dreamcode", "skills", "diagnose");
+    await mkdir(skillRoot, { recursive: true });
+    await writeFile(
+      path.join(skillRoot, "SKILL.md"),
+      [
+        "---",
+        "name: diagnose",
+        "description: Diagnose hard bugs methodically.",
+        "---",
+        "",
+        "Reproduce the bug before changing code.",
+      ].join("\n"),
+      "utf8",
+    );
+    const requests: ModelStreamInput[] = [];
+    const provider: ModelProvider = {
+      name: "capture",
+      async *stream(request) {
+        requests.push(request);
+        yield { type: "text_delta", text: "Used the requested workflow." };
+      },
+    };
+
+    const events = await collectEvents(
+      runTurn({
+        prompt: "/diagnose fix this failure",
+        workspaceRoot,
+        provider,
+        mode: "yolo",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    const request = requests[0]!;
+    expect(request.messages[0]?.content).toContain("<available_skills>");
+    expect(request.messages[0]?.content).toContain("Diagnose hard bugs methodically.");
+    expect(request.messages.some((message) => message.role === "user" && message.content === "fix this failure")).toBe(true);
+    expect(request.messages.some((message) => message.role === "tool" && message.content.includes("<skill_content"))).toBe(true);
+    expect(request.tools.map((tool) => tool.name)).toContain("skill.load");
+    expect(events.some((event) => event.type === "skill.loaded")).toBe(true);
+  });
+
+  it("audits capabilities against the union declared by loaded Skills", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const skillRoot = path.join(workspaceRoot, ".dreamcode", "skills", "executor");
+    await mkdir(skillRoot, { recursive: true });
+    await writeFile(
+      path.join(skillRoot, "SKILL.md"),
+      "---\nname: executor\ndescription: Execute a verified command.\ncapabilities:\n  - process.execute\n---\nRun it.\n",
+      "utf8",
+    );
+    const snapshot = await new SkillRegistry({
+      workspaceRoot,
+      userHome: path.dirname(workspaceRoot),
+      dreamCodeHome: path.join(path.dirname(workspaceRoot), ".dreamcode"),
+      systemRoots: [],
+      builtInRoots: [],
+    }).initialize();
+    const loaded = new Set([snapshot.resolve("executor")!.skillId]);
+
+    expect(getUndeclaredSkillCapability(snapshot, loaded, "process.run")).toBeUndefined();
+    expect(getUndeclaredSkillCapability(snapshot, loaded, "file.write")).toBe("filesystem.write");
   });
 });
 

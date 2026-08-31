@@ -115,6 +115,7 @@ export async function startDesktopApplication(): Promise<void> {
     }
   };
   const runManager = new DesktopRunManager({
+    getSkillRegistry: (workspaceRoot) => service.skills.registryFor(workspaceRoot),
     emitEvent: (message) => send("desktop:run-event", message),
     emitApproval: (request) => send("desktop:approval-request", request),
     emitQuestion: (request) => send("desktop:question-request", request),
@@ -168,6 +169,7 @@ export async function startDesktopApplication(): Promise<void> {
       disposeIpc();
       terminalManager.dispose();
       await runManager.dispose();
+      service.skills.close();
     },
   });
 }

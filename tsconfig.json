@@ -24,6 +24,7 @@
       "@dreamcode/models": ["packages/models/src/index.ts"],
       "@dreamcode/safety": ["packages/safety/src/index.ts"],
       "@dreamcode/shared": ["packages/shared/src/index.ts"],
+      "@dreamcode/skills": ["packages/skills/src/index.ts"],
       "@dreamcode/store": ["packages/store/src/index.ts"],
       "@dreamcode/tools": ["packages/tools/src/index.ts"]
     },
@@ -36,6 +37,7 @@
   "files": [],
   "references": [
     { "path": "./packages/shared" },
+    { "path": "./packages/skills" },
     { "path": "./packages/store" },
     { "path": "./packages/safety" },
     { "path": "./packages/tools" },

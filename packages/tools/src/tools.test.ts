@@ -260,25 +260,41 @@ describe("builtin tools", () => {
     expect(result.summary).toContain("EXA_API_KEY");
   });
 
-  it("loads skill metadata and reads a skill on demand", async () => {
+  it("loads Skill instructions and resources through the turn-scoped Registry", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-skills-workspace-"));
-    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-skills-home-"));
-    const skillDir = path.join(home, "skills", "demo");
     await writeFile(path.join(workspaceRoot, "placeholder.txt"), "ok", "utf8");
-    await mkdir(skillDir, { recursive: true });
-    await writeFile(path.join(skillDir, "SKILL.md"), "# Demo Skill\n\nUse this for tests.\n");
     const registry = createDefaultToolRegistry();
     const context = {
       workspaceRoot,
-      sessionDir: path.join(home, "sessions", "sess_test"),
+      sessionDir: workspaceRoot,
       mode: "full" as const,
       toolCallId: "call_skill",
+      skills: {
+        generation: 1,
+        catalog: [],
+        load: async (skillId: string) => ({
+          skillId,
+          name: "demo",
+          path: path.join(workspaceRoot, "SKILL.md"),
+          content: "<skill_content>Demo Skill</skill_content>",
+          contentHash: "abc",
+          cacheHit: false,
+        }),
+        readResource: async (skillId: string, resourcePath: string) => ({
+          skillId,
+          resourcePath,
+          content: "Resource text",
+          truncated: false,
+        }),
+      },
     };
 
-    const list = await registry.get("skill.list")!.execute({}, context);
-    expect((list.data as { skills: Array<{ name: string }> }).skills[0]?.name).toBe("demo");
-    const read = await registry.get("skill.read")!.execute({ name: "demo" }, context);
-    expect((read.data as { content: string }).content).toContain("Demo Skill");
+    const loaded = await registry.get("skill.load")!.execute({ skillId: "skill_demo" }, context);
+    expect((loaded.data as { content: string }).content).toContain("Demo Skill");
+    const resource = await registry
+      .get("skill.read_resource")!
+      .execute({ skillId: "skill_demo", resourcePath: "guide.md" }, context);
+    expect((resource.data as { content: string }).content).toBe("Resource text");
   });
 
   it("calls a configured fake MCP stdio tool", async () => {

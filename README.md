@@ -156,7 +156,7 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - `git.status`, `git.diff`
   - `todo.write`, `question.ask`
   - `web.search`, `web.fetch`
-  - `skill.list`, `skill.read`, `skill.read_resource`
+  - `skill.load`, `skill.read_resource`
   - `mcp.list`, `mcp.call`
   - Core 默认只发送 coding 核心工具 schema；Web、Skill、MCP 工具族仅在已配置且用户请求明确需要时暴露。
 - 命令执行采用两层无状态协议：普通程序使用结构化 `process.run`；管道、重定向等明确 Shell 能力使用受语义校验的 `shell.run`。

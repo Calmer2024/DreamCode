@@ -3,12 +3,14 @@ import {
   ArrowUp,
   ClipboardList,
   Folder,
+  Puzzle,
   ShieldAlert,
   ShieldCheck,
   Square,
   Zap,
 } from "lucide-react";
-import type { DesktopBootstrap } from "../../shared/contracts";
+import { useEffect, useId, useMemo, useState } from "react";
+import type { DesktopApi, DesktopBootstrap, DesktopSkillItem } from "../../shared/contracts";
 import type { DesktopContextUsage } from "../state/desktop-state";
 import { ProviderIcon } from "./ProviderIcon";
 import { SelectMenu } from "./SelectMenu";
@@ -26,6 +28,8 @@ interface ComposerProps {
   workspaceName?: string;
   showWorkspaceContext?: boolean;
   contextUsage?: DesktopContextUsage;
+  api?: Pick<DesktopApi, "listSkills">;
+  workspaceRoot?: string;
   onPromptChange: (prompt: string) => void;
   onModeChange: (mode: RunMode) => void;
   onModelChange: (model: string) => void;
@@ -53,16 +57,76 @@ export function Composer({
   workspaceName,
   showWorkspaceContext,
   contextUsage,
+  api,
+  workspaceRoot,
   onPromptChange,
   onModeChange,
   onModelChange,
   onSubmit,
   onStop,
 }: ComposerProps) {
+  const [skills, setSkills] = useState<DesktopSkillItem[]>([]);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
+  const suggestionListId = useId();
+  const refreshSkills = () => {
+    if (!api) return;
+    void api.listSkills(workspaceRoot).then((snapshot) => setSkills(snapshot.skills)).catch(() => undefined);
+  };
+  useEffect(() => {
+    let active = true;
+    if (!api) return;
+    void api.listSkills(workspaceRoot).then((snapshot) => {
+      if (active) setSkills(snapshot.skills);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [api, workspaceRoot]);
+  const invocation = /(^|\s)([/$])([A-Za-z0-9_.-]*)$/.exec(prompt);
+  const suggestions = useMemo(() => {
+    if (!invocation || suggestionsDismissed) return [];
+    const query = invocation[3]?.toLocaleLowerCase() ?? "";
+    return skills
+      .filter((skill) => skill.enabled && skill.valid && skill.resolution === "resolved")
+      .filter((skill) => !query || `${skill.invocationName ?? skill.name} ${skill.name}`.toLocaleLowerCase().includes(query))
+      .slice(0, 8);
+  }, [invocation?.[0], skills, suggestionsDismissed]);
+  useEffect(() => {
+    setActiveSuggestion(0);
+    setSuggestionsDismissed(false);
+  }, [invocation?.[0]]);
+  const chooseSuggestion = (skill: DesktopSkillItem) => {
+    if (!invocation) return;
+    const start = prompt.length - invocation[0].length;
+    const prefix = invocation[1] ?? "";
+    const marker = invocation[2] ?? "$";
+    onPromptChange(`${prompt.slice(0, start)}${prefix}${marker}${skill.invocationName ?? skill.name} `);
+  };
   const modePresentation = modePresentations[mode];
   const ModeIcon = modePresentation.Icon;
   return (
     <section className="composer-stack" aria-label="消息编辑器">
+      {invocation && suggestions.length ? (
+        <div className="skill-suggestions" id={suggestionListId} role="listbox" aria-label="技能建议">
+          {suggestions.map((skill, index) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={index === activeSuggestion}
+              id={`${suggestionListId}-${index}`}
+              key={skill.skillId}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                chooseSuggestion(skill);
+              }}
+              onMouseEnter={() => setActiveSuggestion(index)}
+            >
+              <PuzzleIcon />
+              <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+              <em>{skillSourceLabel(skill.source)}</em>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {showWorkspaceContext && workspaceName ? (
         <div className="composer-context">
           <Folder aria-hidden="true" />
@@ -76,14 +140,37 @@ export function Composer({
           placeholder="随心输入"
           rows={2}
           value={prompt}
+          aria-controls={suggestions.length ? suggestionListId : undefined}
+          aria-activedescendant={suggestions.length ? `${suggestionListId}-${activeSuggestion}` : undefined}
+          aria-expanded={suggestions.length > 0}
+          onFocus={refreshSkills}
           onChange={(event) => onPromptChange(event.target.value)}
           onKeyDown={(event) => {
+            if (suggestions.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+              event.preventDefault();
+              setActiveSuggestion((current) =>
+                event.key === "ArrowDown"
+                  ? (current + 1) % suggestions.length
+                  : (current - 1 + suggestions.length) % suggestions.length,
+              );
+              return;
+            }
+            if (suggestions.length && event.key === "Escape") {
+              event.preventDefault();
+              setSuggestionsDismissed(true);
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
+              const suggestion = suggestions[activeSuggestion];
+              if (suggestion) {
+                chooseSuggestion(suggestion);
+                return;
+              }
               if (canSubmit && !active && !starting) onSubmit();
             }
           }}
-        />
+          />
         <div className="composer-toolbar">
           <div className="composer-selects">
             <SelectMenu
@@ -147,6 +234,14 @@ export function Composer({
       </div>
     </section>
   );
+}
+
+function skillSourceLabel(source: DesktopSkillItem["source"]): string {
+  return ({ built_in: "内置", system: "系统", user: "个人", project: "项目", plugin: "插件" } as const)[source];
+}
+
+function PuzzleIcon() {
+  return <span className="composer-skill-icon" aria-hidden="true"><Puzzle /></span>;
 }
 
 function ContextUsageMeter({ usage }: { usage?: DesktopContextUsage }) {

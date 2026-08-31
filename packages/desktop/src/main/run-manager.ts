@@ -1,6 +1,7 @@
 import { type ApprovalRequest, runTurn } from "@dreamcode/core";
 import type { ModelProvider } from "@dreamcode/shared";
 import { createId } from "@dreamcode/shared";
+import type { SkillRegistry } from "@dreamcode/skills";
 import {
   type DreamCodeConfig,
   type DreamCodeLlmProfile,
@@ -44,6 +45,7 @@ export interface DesktopRunManagerOptions {
     profile: DreamCodeLlmProfile,
   ) => { provider: ModelProvider; model?: string };
   createRegistry?: typeof createDefaultToolRegistry;
+  getSkillRegistry?: (workspaceRoot: string) => Promise<SkillRegistry>;
   emitEvent?: (event: DesktopRunEvent) => unknown;
   emitApproval?: (request: DesktopApprovalRequest) => unknown;
   emitQuestion?: (request: DesktopQuestionRequest) => unknown;
@@ -55,6 +57,7 @@ export class DesktopRunManager {
   readonly #loadConfig: NonNullable<DesktopRunManagerOptions["loadConfig"]>;
   readonly #createProvider: NonNullable<DesktopRunManagerOptions["createProvider"]>;
   readonly #createRegistry: NonNullable<DesktopRunManagerOptions["createRegistry"]>;
+  readonly #getSkillRegistry?: DesktopRunManagerOptions["getSkillRegistry"];
   readonly #emitEvent: NonNullable<DesktopRunManagerOptions["emitEvent"]>;
   readonly #emitApproval: NonNullable<DesktopRunManagerOptions["emitApproval"]>;
   readonly #emitQuestion: NonNullable<DesktopRunManagerOptions["emitQuestion"]>;
@@ -66,6 +69,7 @@ export class DesktopRunManager {
     this.#loadConfig = options.loadConfig ?? loadDreamCodeConfig;
     this.#createProvider = options.createProvider ?? createDesktopProvider;
     this.#createRegistry = options.createRegistry ?? createDefaultToolRegistry;
+    this.#getSkillRegistry = options.getSkillRegistry;
     this.#emitEvent = options.emitEvent ?? (() => undefined);
     this.#emitApproval = options.emitApproval ?? (() => undefined);
     this.#emitQuestion = options.emitQuestion ?? (() => undefined);
@@ -167,6 +171,7 @@ export class DesktopRunManager {
           mcpServers: config.mcpServers,
           webSearch: { exaApiKey: config.exaApiKey },
         }),
+        skillRegistry: await this.#getSkillRegistry?.(request.workspaceRoot),
         signal: run.abortController.signal,
         approvalHandler: (approval) => this.#requestApproval(run, approval),
         questionHandler: (question) => this.#requestQuestion(run, question),

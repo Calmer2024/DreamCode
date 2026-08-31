@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { ContextBuilder, contextOptionsForModel } from "@dreamcode/context";
-import { PermissionEngine, buildPermissionCapabilityContract } from "@dreamcode/safety";
 import { UsageCalibrator } from "@dreamcode/models";
+import { buildPermissionCapabilityContract, PermissionEngine } from "@dreamcode/safety";
 import type {
   AgentEvent,
   ChangedFile,
@@ -19,7 +20,19 @@ import type {
   Turn,
 } from "@dreamcode/shared";
 import { createId, makeEvent, nowIso, toErrorMessage } from "@dreamcode/shared";
-import { createSession, openSession, rebuildSessionIndex, replaySession } from "@dreamcode/store";
+import {
+  parseExplicitSkillInvocations,
+  renderSkillCatalog,
+  SkillRegistry,
+  type SkillSnapshot,
+} from "@dreamcode/skills";
+import {
+  createSession,
+  openSession,
+  PersistedSkillState,
+  rebuildSessionIndex,
+  replaySession,
+} from "@dreamcode/store";
 import { createDefaultToolRegistry, type ToolRegistry } from "@dreamcode/tools";
 
 export interface ApprovalRequest {
@@ -40,6 +53,7 @@ export interface RunTurnInput {
   registry?: ToolRegistry;
   permissionEngine?: PermissionEngine;
   contextBuilder?: ContextBuilder;
+  skillRegistry?: SkillRegistry;
   signal?: AbortSignal;
   approvalHandler?: (request: ApprovalRequest) => Promise<boolean>;
   questionHandler?: (question: string) => Promise<string>;
@@ -57,8 +71,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const mode = input.mode ?? "yolo";
   const registry = input.registry ?? createDefaultToolRegistry();
   const permissionEngine = input.permissionEngine ?? new PermissionEngine();
-  const contextBuilder =
-    input.contextBuilder ?? new ContextBuilder(contextOptionsForModel(input.provider.name, input.model));
+  const contextOptions = contextOptionsForModel(input.provider.name, input.model);
+  const contextBuilder = input.contextBuilder ?? new ContextBuilder(contextOptions);
   const maxToolCalls = input.maxToolCalls ?? 80;
   const { session, eventLog } = input.sessionId
     ? await openSession({ sessionId: input.sessionId, home: input.home })
@@ -100,6 +114,39 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   await usageCalibrator.load(input.home);
   const capability = buildPermissionCapabilityContract(mode, process.platform);
   const capabilitySnapshot = JSON.stringify(capability);
+  const persistedSkillState = input.skillRegistry
+    ? undefined
+    : await PersistedSkillState.open({ home: input.home, workspaceRoot: session.workspaceRoot });
+  const ownedSkillRegistry = input.skillRegistry
+    ? undefined
+    : new SkillRegistry({
+        workspaceRoot: session.workspaceRoot,
+        dreamCodeHome: input.home,
+        userHome: os.homedir(),
+        customRoots: persistedSkillState?.customRoots(),
+        state: persistedSkillState,
+      });
+  const skillSnapshot: SkillSnapshot = input.skillRegistry
+    ? input.skillRegistry.current().generation > 0
+      ? input.skillRegistry.current()
+      : await input.skillRegistry.initialize()
+    : await ownedSkillRegistry!.initialize();
+  const loadedSkillIds = new Set<string>();
+  const baseSkills = skillSnapshot.createTurnContext();
+  const skills = {
+    ...baseSkills,
+    load: async (skillId: string) => {
+      const loaded = await baseSkills.load(skillId);
+      loadedSkillIds.add(skillId);
+      return loaded;
+    },
+  };
+  const explicitSkills = parseExplicitSkillInvocations(input.prompt, skillSnapshot);
+  const catalogMaxChars = Math.max(
+    1,
+    Math.floor((contextOptions.maxContextTokens ?? 100_000) * 0.02 * 4),
+  );
+  const skillCatalog = renderSkillCatalog(skillSnapshot.catalog, catalogMaxChars);
 
   const emit = async <TPayload>(
     type: AgentEvent["type"],
@@ -128,7 +175,35 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   yield await emit("turn.started", { turn });
   const userEvent = await emit("user.message", { content: input.prompt });
   yield userEvent;
-  state.messages.push({ id: userEvent.id, role: "user", content: input.prompt });
+  state.messages.push({ id: userEvent.id, role: "user", content: explicitSkills.prompt });
+  if (explicitSkills.errors.length) {
+    state.messages.push({
+      role: "system",
+      content: `Explicit Skill invocation failed:\n${explicitSkills.errors.map((error) => `- ${error}`).join("\n")}\nTell the user the exact reason and do not silently substitute another Skill.`,
+    });
+  }
+  for (const skillId of explicitSkills.skillIds) {
+    const loaded = await skills.load(skillId);
+    const toolCallId = createId("explicit_skill");
+    state.messages.push({
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: toolCallId, name: "skill.load", input: { skillId } }],
+    });
+    state.messages.push({
+      role: "tool",
+      name: "skill.load",
+      toolCallId,
+      content: loaded.content,
+    });
+    yield await emit("skill.loaded", {
+      toolCallId,
+      name: loaded.name,
+      path: loaded.path,
+      skillId: loaded.skillId,
+      explicit: true,
+    });
+  }
 
   try {
     while (true) {
@@ -150,6 +225,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         messages: budgetMessage ? [...state.messages, budgetMessage] : state.messages,
         todoItems: state.todoItems,
         runtimeSnapshot: capabilitySnapshot,
+        skillCatalog,
         tools: toolSpecs,
         model: input.model ?? "",
         estimateInputTokens: input.provider.estimateInputTokens
@@ -336,6 +412,19 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           workspaceRoot: session.workspaceRoot,
           toolCall,
         });
+        const undeclaredCapability = getUndeclaredSkillCapability(
+          skillSnapshot,
+          loadedSkillIds,
+          toolCall.name,
+        );
+        if (undeclaredCapability) {
+          yield await emit("skill.capability.undeclared", {
+            toolCallId: toolCall.id,
+            tool: toolCall.name,
+            capability: undeclaredCapability,
+            skillIds: [...loadedSkillIds],
+          });
+        }
         const finalDecision = await resolveApproval({
           decision: initialDecision,
           toolCall,
@@ -366,6 +455,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
                   mode,
                   signal: input.signal,
                   questionHandler: input.questionHandler,
+                  skills,
                   emit,
                   yieldEvent: async (event) => {
                     yieldedToolEvents.push(event);
@@ -516,9 +606,6 @@ export function selectToolSpecs(registry: ToolRegistry, prompt: string): ToolMod
     (/https?:\/\//.test(normalized) ||
       /\b(web|internet|online|website)\b/.test(normalized) ||
       /(联网|网页|网站|互联网)/.test(normalized));
-  const enableSkills =
-    !optionalCapabilityNegated(normalized, "skills?|技能") &&
-    (/\bskills?\b/.test(normalized) || /(技能)/.test(normalized));
   const enableMcp =
     !optionalCapabilityNegated(normalized, "mcp") && /\bmcp\b/.test(normalized);
 
@@ -528,13 +615,49 @@ export function selectToolSpecs(registry: ToolRegistry, prompt: string): ToolMod
       return enableWeb && registry.isOptionalFamilyConfigured("web");
     }
     if (spec.name.startsWith("skill.")) {
-      return enableSkills && registry.isOptionalFamilyConfigured("skill");
+      return registry.isOptionalFamilyConfigured("skill");
     }
     if (spec.name.startsWith("mcp.")) {
       return enableMcp && registry.isOptionalFamilyConfigured("mcp");
     }
     return false;
   });
+}
+
+export function getUndeclaredSkillCapability(
+  snapshot: SkillSnapshot,
+  loadedSkillIds: ReadonlySet<string>,
+  toolName: string,
+): import("@dreamcode/skills").SkillCapability | undefined {
+  if (!loadedSkillIds.size || toolName.startsWith("skill.")) return undefined;
+  const capability = requiredSkillCapability(toolName);
+  if (!capability) return undefined;
+  const declared = new Set(
+    [...loadedSkillIds].flatMap(
+      (skillId) => snapshot.get(skillId)?.metadata?.capabilities ?? [],
+    ),
+  );
+  return declared.has(capability) ? undefined : capability;
+}
+
+function requiredSkillCapability(
+  toolName: string,
+): import("@dreamcode/skills").SkillCapability | undefined {
+  if (
+    toolName === "file.read" ||
+    toolName === "file.list" ||
+    toolName.startsWith("search.") ||
+    toolName === "git.status" ||
+    toolName === "git.diff" ||
+    toolName === "artifact.read"
+  ) {
+    return "filesystem.read";
+  }
+  if (toolName === "file.write" || toolName === "file.patch") return "filesystem.write";
+  if (toolName === "process.run" || toolName === "shell.run") return "process.execute";
+  if (toolName.startsWith("web.")) return "network.access";
+  if (toolName === "mcp.call") return "mcp.use";
+  return undefined;
 }
 
 function optionalCapabilityNegated(prompt: string, terms: string): boolean {
@@ -799,6 +922,7 @@ async function executeToolWithEvents(input: {
   mode: RunMode;
   signal?: AbortSignal;
   questionHandler?: (question: string) => Promise<string>;
+  skills?: import("@dreamcode/shared").SkillTurnContext;
   emit: <TPayload>(type: AgentEvent["type"], payload: TPayload) => Promise<AgentEvent<TPayload>>;
   yieldEvent: (event: AgentEvent) => Promise<void>;
 }): Promise<ToolResult> {
@@ -834,6 +958,7 @@ async function executeToolWithEvents(input: {
       toolCallId: input.toolCall.id,
       signal: input.signal,
       questionHandler: input.questionHandler,
+      skills: input.skills,
     });
     const externalized = await externalizeLargeToolResult({
       result,
@@ -885,23 +1010,24 @@ async function executeToolWithEvents(input: {
       );
     }
 
-    if (input.toolCall.name === "skill.read" && result.status === "success") {
-      const data = result.data as { name?: string; path?: string } | undefined;
+    if (input.toolCall.name === "skill.load" && result.status === "success") {
+      const data = result.data as { skillId?: string; name?: string; path?: string } | undefined;
       await input.yieldEvent(
         await input.emit("skill.loaded", {
           toolCallId: input.toolCall.id,
           name: data?.name,
           path: data?.path,
+          skillId: data?.skillId,
         }),
       );
     }
 
     if (input.toolCall.name === "skill.read_resource" && result.status === "success") {
-      const data = result.data as { name?: string; resourcePath?: string } | undefined;
+      const data = result.data as { skillId?: string; resourcePath?: string } | undefined;
       await input.yieldEvent(
         await input.emit("skill.resource.loaded", {
           toolCallId: input.toolCall.id,
-          name: data?.name,
+          skillId: data?.skillId,
           resourcePath: data?.resourcePath,
         }),
       );

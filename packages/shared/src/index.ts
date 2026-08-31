@@ -179,6 +179,43 @@ export interface ToolModelSpec {
   inputSchema: Record<string, unknown>;
 }
 
+export interface SkillCatalogEntry {
+  skillId: string;
+  name: string;
+  description: string;
+  source: "built_in" | "system" | "user" | "project" | "plugin";
+  path: string;
+  allowImplicitInvocation: boolean;
+}
+
+export interface SkillLoadedContent {
+  skillId: string;
+  name: string;
+  path: string;
+  content: string;
+  contentHash: string;
+  version?: string;
+  cacheHit: boolean;
+}
+
+export interface SkillResourceContent {
+  skillId: string;
+  resourcePath: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface SkillTurnContext {
+  generation: number;
+  catalog: readonly SkillCatalogEntry[];
+  load(skillId: string): Promise<SkillLoadedContent>;
+  readResource(
+    skillId: string,
+    resourcePath: string,
+    maxBytes?: number,
+  ): Promise<SkillResourceContent>;
+}
+
 export interface ToolExecutionContext {
   workspaceRoot: string;
   sessionDir: string;
@@ -186,6 +223,7 @@ export interface ToolExecutionContext {
   toolCallId: string;
   signal?: AbortSignal;
   questionHandler?: (question: string) => Promise<string>;
+  skills?: SkillTurnContext;
 }
 
 export interface Tool<TInput = unknown, TOutput = unknown> {
@@ -324,6 +362,7 @@ export type AgentEventType =
   | "web.source.saved"
   | "skill.loaded"
   | "skill.resource.loaded"
+  | "skill.capability.undeclared"
   | "mcp.server.started"
   | "mcp.server.stopped"
   | "mcp.tool.discovered"
@@ -371,6 +410,7 @@ export interface ContextBuildInput {
   model?: string;
   estimateInputTokens?: (input: RequestTokenEstimateInput) => Promise<RequestTokenEstimate>;
   runtimeSnapshot?: string;
+  skillCatalog?: string;
 }
 
 export interface ContextBuildResult {

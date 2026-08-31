@@ -51,16 +51,17 @@ export const evaluate: CustomEvaluator = async ({ task, events }) => {
   if (task.id === "U03-core-tool-exposure") {
     const started = events.find((event) => event.type === "model.started");
     const tools = (started?.payload as { tools?: string[] } | undefined)?.tools ?? [];
-    const optional = tools.filter(
-      (tool) => tool.startsWith("web.") || tool.startsWith("skill.") || tool.startsWith("mcp."),
-    );
+    const optional = tools.filter((tool) => tool.startsWith("web.") || tool.startsWith("mcp."));
     const passed =
-      tools.includes("runtime.info") && tools.includes("process.run") && optional.length === 0;
+      tools.includes("runtime.info") &&
+      tools.includes("process.run") &&
+      tools.includes("skill.load") &&
+      optional.length === 0;
     return [
       {
         passed,
         detail: passed
-          ? "only the core coding tool set was exposed"
+          ? "the core coding tools and progressive Skill loader were exposed"
           : `optional tools: ${optional.join(", ")}`,
         hardFailure: false,
       },

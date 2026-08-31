@@ -6,6 +6,7 @@ import type {
   DesktopBootstrap,
   DesktopIpcResponse,
   DesktopRunStatus,
+  DesktopSkillSnapshot,
   DesktopTerminalOutput,
   QuestionResponse,
   RollbackRequest,
@@ -39,6 +40,22 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
     testProfile: (request: TestProfileRequest) => invoke(renderer, "desktop:test-profile", request),
     updateWebSearchCredential: (request: WebSearchCredentialRequest) =>
       invoke<DesktopBootstrap>(renderer, "desktop:update-web-search-credential", request),
+    listSkills: (workspaceRoot) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:list-skills", { workspaceRoot }),
+    rescanSkills: (workspaceRoot) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:rescan-skills", { workspaceRoot }),
+    setSkillEnabled: (request) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:set-skill-enabled", request),
+    setSkillRoots: (request) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:set-skill-roots", request),
+    installSkill: (request) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:install-skill", request),
+    updateSkill: (request) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:update-skill", request),
+    rollbackSkill: (request) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:rollback-skill", request),
+    uninstallSkill: (request) =>
+      invoke<DesktopSkillSnapshot>(renderer, "desktop:uninstall-skill", request),
     saveProject: (request) => invoke<DesktopBootstrap>(renderer, "desktop:save-project", request),
     createProject: (request) => invoke(renderer, "desktop:create-project", request),
     deleteProject: (workspaceRoot) =>

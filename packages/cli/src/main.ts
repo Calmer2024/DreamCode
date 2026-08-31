@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import os from "node:os";
 import process from "node:process";
 import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
@@ -16,6 +17,7 @@ import {
 } from "@dreamcode/models";
 import type { AgentEvent, FinalSummary, ModelProvider, RunMode } from "@dreamcode/shared";
 import { runModeSchema, toErrorMessage } from "@dreamcode/shared";
+import { SkillRegistry } from "@dreamcode/skills";
 import {
   type DreamCodeConfig,
   type DreamCodeLlmProfile,
@@ -28,6 +30,7 @@ import {
   readReplayedSession,
   rebuildSessionIndex,
   rollbackSession,
+  PersistedSkillState,
   saveDreamCodeConfig,
   upsertLlmProfile,
 } from "@dreamcode/store";
@@ -208,7 +211,7 @@ export async function main(argv = process.argv): Promise<void> {
       .option("--cwd <path>", "工作区根目录", process.cwd())
       .action(async (options: { home?: string; cwd: string }) => {
         handledSubcommand = true;
-        await runToolCommand("skill.list", {}, options);
+        await printSkills(options);
       });
     skills
       .command("show <name>")
@@ -216,7 +219,7 @@ export async function main(argv = process.argv): Promise<void> {
       .option("--cwd <path>", "工作区根目录", process.cwd())
       .action(async (name: string, options: { home?: string; cwd: string }) => {
         handledSubcommand = true;
-        await runToolCommand("skill.read", { name }, options);
+        await printSkill(name, options);
       });
 
     const mcp = program.command("mcp").description("查看配置的 MCP server");
@@ -427,7 +430,7 @@ async function handleSlashCommand(
       await printSessionDiff(args[0], { home: state.home });
       return true;
     case "skills":
-      await runToolCommand("skill.list", {}, { home: state.home, cwd: state.workspaceRoot });
+      await printSkills({ home: state.home, cwd: state.workspaceRoot });
       return true;
     case "mcp":
       await runToolCommand(
@@ -1018,6 +1021,53 @@ async function runToolCommand(
   console.log(result.summary);
   if (result.data !== undefined) {
     console.log(JSON.stringify(result.data, null, 2));
+  }
+}
+
+async function openSkillRegistry(options: { home?: string; cwd: string }): Promise<{ registry: SkillRegistry; state: PersistedSkillState }> {
+  const workspaceRoot = path.resolve(options.cwd);
+  const state = await PersistedSkillState.open({ home: options.home, workspaceRoot });
+  const registry = new SkillRegistry({
+    workspaceRoot,
+    workingDirectory: workspaceRoot,
+    dreamCodeHome: options.home,
+    userHome: os.homedir(),
+    customRoots: state.customRoots(),
+    state,
+  });
+  await registry.initialize();
+  return { registry, state };
+}
+
+async function printSkills(options: { home?: string; cwd: string }): Promise<void> {
+  const { registry } = await openSkillRegistry(options);
+  try {
+    const snapshot = registry.current();
+    if (!snapshot.instances.length) {
+      console.log("没有找到可用 Skill。");
+      return;
+    }
+    for (const instance of snapshot.instances) {
+      const name = instance.metadata?.name ?? instance.skillId;
+      const description = instance.metadata?.description ?? "元数据无效";
+      console.log(`${name}  [${instance.locator.source}]  ${instance.enabled ? instance.resolution : "disabled"}`);
+      console.log(`  ${description}`);
+      if (instance.diagnostics.length) console.log(`  诊断: ${instance.diagnostics[0]?.message}`);
+    }
+  } finally {
+    registry.close();
+  }
+}
+
+async function printSkill(name: string, options: { home?: string; cwd: string }): Promise<void> {
+  const { registry } = await openSkillRegistry(options);
+  try {
+    const instance = registry.current().resolve(name);
+    if (!instance) throw new Error(`Skill 不存在或不可用: ${name}`);
+    const loaded = await registry.current().createTurnContext().load(instance.skillId);
+    console.log(loaded.content);
+  } finally {
+    registry.close();
   }
 }
 

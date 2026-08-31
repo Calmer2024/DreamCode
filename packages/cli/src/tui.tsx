@@ -2,11 +2,13 @@ import os from "node:os";
 import path from "node:path";
 import type { ApprovalRequest } from "@dreamcode/core";
 import { runTurn } from "@dreamcode/core";
+import { SkillRegistry } from "@dreamcode/skills";
 import type { ModelProvider, RunMode } from "@dreamcode/shared";
 import {
   type DreamCodeConfig,
   getDreamCodeHome,
   listSessions,
+  PersistedSkillState,
   readReplayedSession,
   readSessionEvents,
   rollbackSession,
@@ -1448,7 +1450,7 @@ async function handleSlashCommand(input: {
       await runRollback(input, args);
       return;
     case "skills":
-      await showToolResult(input, "skill.list", {});
+      await showSkills(input);
       return;
     case "mcp":
       await showToolResult(input, "mcp.list", {});
@@ -1707,6 +1709,36 @@ async function showToolResult(
       tone: result.status === "success" ? "success" : "warning",
     }),
   );
+}
+
+async function showSkills(input: {
+  setState: React.Dispatch<React.SetStateAction<TuiState>>;
+  home?: string;
+  workspaceRoot: string;
+}): Promise<void> {
+  const state = await PersistedSkillState.open({
+    home: input.home,
+    workspaceRoot: input.workspaceRoot,
+  });
+  const registry = new SkillRegistry({
+    workspaceRoot: input.workspaceRoot,
+    workingDirectory: input.workspaceRoot,
+    dreamCodeHome: input.home,
+    userHome: os.homedir(),
+    customRoots: state.customRoots(),
+    state,
+  });
+  try {
+    const snapshot = await registry.initialize();
+    const body = snapshot.instances.length
+      ? snapshot.instances
+          .map((instance) => `${instance.metadata?.name ?? instance.skillId} [${instance.locator.source}]\n  ${instance.metadata?.description ?? "Invalid metadata"}`)
+          .join("\n\n")
+      : "No available Skills.";
+    input.setState((current) => setTuiDetail(current, { title: "Skills", body, tone: "info" }));
+  } finally {
+    registry.close();
+  }
 }
 
 function formatStatusDetail(state: TuiState): string {

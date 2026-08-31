@@ -15,6 +15,11 @@ import {
   sessionPinRequestSchema,
   sessionRenameRequestSchema,
   setDefaultProfileRequestSchema,
+  skillInstallRequestSchema,
+  skillLifecycleRequestSchema,
+  skillRootsRequestSchema,
+  skillToggleRequestSchema,
+  skillWorkspaceRequestSchema,
   startTurnRequestSchema,
   testProfileRequestSchema,
   updateProfileRequestSchema,
@@ -60,6 +65,14 @@ export interface DesktopIpcDependencies {
     | "readSession"
     | "readChangedFileDiff"
     | "rollback"
+    | "listSkills"
+    | "rescanSkills"
+    | "setSkillEnabled"
+    | "setSkillRoots"
+    | "installSkill"
+    | "updateSkill"
+    | "rollbackSkill"
+    | "uninstallSkill"
   >;
   runManager: Pick<DesktopRunManager, "start" | "stop" | "respondApproval" | "respondQuestion">;
   terminalManager: Pick<DesktopTerminalManager, "start" | "write" | "resize" | "close">;
@@ -121,6 +134,26 @@ const handlers = {
     dependencies.service.updateWebSearchCredential(
       parseRequest(webSearchCredentialRequestSchema, request),
     ),
+  "desktop:list-skills": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
+    dependencies.service.listSkills(parseRequest(skillWorkspaceRequestSchema, request).workspaceRoot),
+  "desktop:rescan-skills": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
+    dependencies.service.rescanSkills(parseRequest(skillWorkspaceRequestSchema, request).workspaceRoot),
+  "desktop:set-skill-enabled": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
+    dependencies.service.setSkillEnabled(parseRequest(skillToggleRequestSchema, request)),
+  "desktop:set-skill-roots": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
+    dependencies.service.setSkillRoots(parseRequest(skillRootsRequestSchema, request)),
+  "desktop:install-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
+    dependencies.service.installSkill(parseRequest(skillInstallRequestSchema, request)),
+  "desktop:update-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
+    dependencies.service.updateSkill(parseRequest(skillLifecycleRequestSchema, request)),
+  "desktop:rollback-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) => {
+    const parsed = parseRequest(skillLifecycleRequestSchema, request);
+    return dependencies.service.rollbackSkill({ workspaceRoot: parsed.workspaceRoot, skillId: parsed.skillId });
+  },
+  "desktop:uninstall-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) => {
+    const parsed = parseRequest(skillLifecycleRequestSchema, request);
+    return dependencies.service.uninstallSkill({ workspaceRoot: parsed.workspaceRoot, skillId: parsed.skillId });
+  },
   "desktop:save-project": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,

@@ -269,11 +269,7 @@ export class PermissionEngine {
       return allow("Planning and user-question tools are always safe.", []);
     }
 
-    if (
-      toolName === "skill.list" ||
-      toolName === "skill.read" ||
-      toolName === "skill.read_resource"
-    ) {
+    if (toolName === "skill.load" || toolName === "skill.read_resource") {
       return allow("Skill metadata and resources are local read-only context.", ["read_workspace"]);
     }
 

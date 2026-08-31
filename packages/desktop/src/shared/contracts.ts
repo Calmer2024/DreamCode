@@ -90,6 +90,37 @@ export const questionResponseSchema = z.object({
   answer: z.string().trim().min(1),
 });
 
+export const skillWorkspaceRequestSchema = z.object({
+  workspaceRoot: workspaceRootSchema.optional(),
+});
+export const skillToggleRequestSchema = skillWorkspaceRequestSchema.extend({
+  skillId: z.string().trim().min(1),
+  enabled: z.boolean(),
+});
+export const skillRootsRequestSchema = skillWorkspaceRequestSchema.extend({
+  roots: z.array(z.string().trim().min(1)),
+});
+export const skillInstallRequestSchema = z.object({
+  workspaceRoot: workspaceRootSchema.optional(),
+  scope: z.enum(["user", "project"]),
+  source: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("directory"), location: z.string().trim().min(1), subpath: z.string().trim().min(1).optional() }),
+    z.object({ type: z.literal("zip"), location: z.string().trim().min(1), subpath: z.string().trim().min(1).optional() }),
+    z.object({ type: z.literal("git"), location: z.string().trim().min(1), ref: z.string().trim().min(1).optional(), subpath: z.string().trim().min(1).optional() }),
+  ]),
+  confirmations: z.object({
+    overwrite: z.boolean().optional(),
+    downgrade: z.boolean().optional(),
+    sourceChange: z.boolean().optional(),
+    localChanges: z.boolean().optional(),
+    sameVersionContentChange: z.boolean().optional(),
+  }).optional(),
+});
+export const skillLifecycleRequestSchema = skillWorkspaceRequestSchema.extend({
+  skillId: z.string().trim().min(1),
+  confirmations: skillInstallRequestSchema.shape.confirmations,
+});
+
 export interface DesktopRunEvent {
   runId: string;
   event: AgentEvent;
@@ -120,6 +151,16 @@ const safeDesktopErrorMessages: Record<string, string> = {
   profile_connection_failed: "Model connection test failed.",
   run_failed: "Run failed.",
   status_delivery_failed: "Run status could not be delivered.",
+  skill_not_found: "Skill is no longer available.",
+  skill_workspace_required: "A project workspace is required for this action.",
+  source_invalid: "The Skill source is invalid.",
+  package_unsafe: "The Skill package contains unsafe files.",
+  package_limit_exceeded: "The Skill package exceeds the safety limits.",
+  git_failed: "The Skill Git source could not be fetched.",
+  install_conflict: "The Skill installation needs confirmation before it can continue.",
+  installation_not_found: "The managed Skill installation was not found.",
+  rollback_unavailable: "This Skill has no previous version to restore.",
+  managed_path_invalid: "DreamCode refused to modify an unmanaged Skill path.",
 };
 
 export function sanitizeDesktopError(error: unknown): DesktopError {
@@ -127,8 +168,12 @@ export function sanitizeDesktopError(error: unknown): DesktopError {
     const candidate = error as Partial<DesktopError>;
     const message =
       typeof candidate.code === "string" ? safeDesktopErrorMessages[candidate.code] : undefined;
-    if (message && typeof candidate.recoverable === "boolean") {
-      return { code: candidate.code as string, message, recoverable: candidate.recoverable };
+    if (message) {
+      return {
+        code: candidate.code as string,
+        message,
+        recoverable: typeof candidate.recoverable === "boolean" ? candidate.recoverable : true,
+      };
     }
   }
   return { code: "internal_error", message: "Request failed.", recoverable: true };
@@ -220,6 +265,38 @@ export interface DesktopBootstrap {
   projects?: Array<{ workspaceRoot: string; name: string; pinned?: boolean; createdAt: string }>;
   pinnedSessionIds?: string[];
 }
+export interface DesktopSkillItem {
+  skillId: string;
+  name: string;
+  invocationName?: string;
+  description: string;
+  version?: string;
+  source: "built_in" | "system" | "user" | "project" | "plugin";
+  provider: string;
+  capabilities: Array<
+    "filesystem.read" | "filesystem.write" | "process.execute" | "network.access" | "mcp.use"
+  >;
+  allowImplicitInvocation: boolean;
+  pluginDisplayName?: string;
+  pluginVersion?: string;
+  pluginManagementAction?: string;
+  path: string;
+  enabled: boolean;
+  valid: boolean;
+  resolution: "resolved" | "overridden" | "conflicted" | "ineligible";
+  managed: boolean;
+  canUninstall: boolean;
+  canUpdate: boolean;
+  canRollback: boolean;
+  diagnostics: string[];
+}
+export interface DesktopSkillSnapshot {
+  generation: number;
+  skills: DesktopSkillItem[];
+  customRoots: string[];
+  diagnostics: Array<{ code: string; message: string; path: string }>;
+}
+export type SkillInstallRequest = z.infer<typeof skillInstallRequestSchema>;
 export interface DesktopSessionDetail extends ReplayedSessionState {
   events?: AgentEvent[];
 }
@@ -233,6 +310,14 @@ export interface DesktopApi {
   setDefaultProfile(profileId: string): Promise<DesktopBootstrap>;
   testProfile(request: TestProfileRequest): Promise<ProfileConnectionResult>;
   updateWebSearchCredential(request: WebSearchCredentialRequest): Promise<DesktopBootstrap>;
+  listSkills(workspaceRoot?: string): Promise<DesktopSkillSnapshot>;
+  rescanSkills(workspaceRoot?: string): Promise<DesktopSkillSnapshot>;
+  setSkillEnabled(request: { workspaceRoot?: string; skillId: string; enabled: boolean }): Promise<DesktopSkillSnapshot>;
+  setSkillRoots(request: { workspaceRoot?: string; roots: string[] }): Promise<DesktopSkillSnapshot>;
+  installSkill(request: SkillInstallRequest): Promise<DesktopSkillSnapshot>;
+  updateSkill(request: { workspaceRoot?: string; skillId: string; confirmations?: SkillInstallRequest["confirmations"] }): Promise<DesktopSkillSnapshot>;
+  rollbackSkill(request: { workspaceRoot?: string; skillId: string }): Promise<DesktopSkillSnapshot>;
+  uninstallSkill(request: { workspaceRoot?: string; skillId: string }): Promise<DesktopSkillSnapshot>;
   saveProject(request: {
     workspaceRoot: string;
     name: string;

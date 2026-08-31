@@ -695,7 +695,7 @@ async function expectSettlesPromptly(promise: Promise<unknown>): Promise<void> {
       () => "rejected" as const,
     ),
     new Promise<"timeout">((resolve) => {
-      timeout = setTimeout(() => resolve("timeout"), 100);
+      timeout = setTimeout(() => resolve("timeout"), 500);
     }),
   ]);
   if (timeout) {

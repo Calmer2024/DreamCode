@@ -8,6 +8,7 @@
   "include": ["src"],
   "references": [
     { "path": "../shared" },
+    { "path": "../skills" },
     { "path": "../store" },
     { "path": "../safety" },
     { "path": "../tools" },

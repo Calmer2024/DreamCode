@@ -315,6 +315,7 @@ export function App({ api = window.dreamcode }: AppProps) {
         bootstrap={state.bootstrap}
         open
         initialSection={state.dialog.type === "settings" ? "general" : "model"}
+        workspaceRoot={state.workspaceRoot}
         activeProfileId={profileId}
         onClose={() => dispatch({ type: "dialog.set" })}
         onApplyProfile={(nextProfileId) => {
@@ -459,6 +460,8 @@ export function App({ api = window.dreamcode }: AppProps) {
           ) : null}
           <div ref={composerStackRef} className="composer-stack-anchor">
           <Composer
+            api={api}
+            workspaceRoot={state.workspaceRoot}
             prompt={prompt}
             mode={mode}
             model={modelId}

@@ -910,6 +910,14 @@ function fakeDesktopApi(
     setDefaultProfile: vi.fn().mockResolvedValue(bootstrapValue),
     testProfile: vi.fn().mockResolvedValue({ ok: true, message: "连接测试成功。" }),
     updateWebSearchCredential: vi.fn().mockResolvedValue(bootstrapValue),
+    listSkills: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    rescanSkills: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    setSkillEnabled: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    setSkillRoots: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    installSkill: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    updateSkill: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    rollbackSkill: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
+    uninstallSkill: vi.fn().mockResolvedValue({ generation: 1, skills: [], customRoots: [], diagnostics: [] }),
     saveProject: vi.fn().mockResolvedValue(bootstrapValue),
     createProject: vi
       .fn()

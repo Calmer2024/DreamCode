@@ -1,4 +1,4 @@
-import type { ChangedFile } from "@dreamcode/shared";
+import type { ChangedFile, TodoItem } from "@dreamcode/shared";
 import {
   Activity,
   Bug,
@@ -120,11 +120,12 @@ export function Timeline({
       {state.request && !state.timeline.some((entry) => entry.kind === "user") ? (
         <UserMessage content={state.request.prompt} timestamp={state.requestTimestamp ?? ""} />
       ) : null}
-      {conversationBlocks(state.timeline, state.tools, state.turnUsage)}
+      {state.todoItems.length ? <TodoPanel items={state.todoItems} /> : null}
+      {conversationBlocks(state.timeline, state.tools, state.turnUsage, state.changedFilesByTurn, state.changedFiles)}
       {questionRequest && questionApi && onQuestionResolved ? (
         <QuestionCard api={questionApi} request={questionRequest} onResolved={onQuestionResolved} />
       ) : null}
-      {state.changedFiles.length ? <DiffSummaryCard files={state.changedFiles} /> : null}
+      {!state.timeline.some((entry) => entry.turnId) && state.changedFiles.length ? <DiffSummaryCard files={state.changedFiles} /> : null}
     </section>
   );
 }
@@ -133,9 +134,12 @@ function conversationBlocks(
   entries: DesktopTimelineEntry[],
   tools: DesktopToolEvent[],
   turnUsage: Record<string, DesktopTurnUsage>,
+  changedFilesByTurn: Record<string, ChangedFile[]>,
+  fallbackChangedFiles: ChangedFile[],
 ): ReactNode[] {
   const blocks: ReactNode[] = [];
   let execution: DesktopTimelineEntry[] = [];
+  let executionTurnId: string | undefined;
   const flushExecution = () => {
     if (!execution.length) return;
     blocks.push(
@@ -143,10 +147,14 @@ function conversationBlocks(
         entries={execution}
         tools={tools}
         usage={execution[0]?.turnId ? turnUsage[execution[0].turnId] : undefined}
+        changedFiles={execution[0]?.turnId
+          ? changedFilesByTurn[execution[0].turnId] ?? (Object.keys(changedFilesByTurn).length ? [] : fallbackChangedFiles)
+          : fallbackChangedFiles}
         key={`execution-${execution[0]?.id ?? blocks.length}`}
       />,
     );
     execution = [];
+    executionTurnId = undefined;
   };
 
   for (const entry of entries) {
@@ -154,6 +162,10 @@ function conversationBlocks(
       flushExecution();
       blocks.push(<TimelineItem entry={entry} key={entry.id} />);
     } else {
+      if (execution.length && entry.turnId && executionTurnId && entry.turnId !== executionTurnId) {
+        flushExecution();
+      }
+      if (!executionTurnId && entry.turnId) executionTurnId = entry.turnId;
       execution.push(entry);
     }
   }
@@ -165,10 +177,12 @@ function ExecutionSegment({
   entries,
   tools,
   usage,
+  changedFiles,
 }: {
   entries: DesktopTimelineEntry[];
   tools: DesktopToolEvent[];
   usage?: DesktopTurnUsage;
+  changedFiles: ChangedFile[];
 }) {
   const completed = entries.some((entry) => entry.title === "Turn completed");
   const [now, setNow] = useState(() => Date.now());
@@ -179,6 +193,7 @@ function ExecutionSegment({
   }, [completed]);
   const turnId = entries.find((entry) => entry.turnId)?.turnId;
   const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
+  const runningTools = segmentTools.some((tool) => tool.status === "running" || tool.status === "queued");
   const hasCanonicalTools = segmentTools.length > 0;
   const processEntries = entries.filter(
     (entry) =>
@@ -204,6 +219,7 @@ function ExecutionSegment({
             <ChevronDown aria-hidden="true" />
           </summary>
           <div className="execution-content">
+            {!completed ? <div className="execution-live-status" role="status" aria-live="polite"><span className="status-shimmer">{runningTools ? "正在调用工具" : "正在思考"}</span></div> : null}
             {processEntries.map((entry) => {
               if (entry.kind === "tool" && hasCanonicalTools) {
                 if (processRendered) return null;
@@ -225,7 +241,26 @@ function ExecutionSegment({
           key={entry.id}
         />
       ))}
+      {completed && changedFiles.length ? <DiffSummaryCard files={changedFiles} /> : null}
     </>
+  );
+}
+
+function TodoPanel({ items }: { items: TodoItem[] }) {
+  const [open, setOpen] = useState(true);
+  const completed = items.filter((item) => item.status === "completed").length;
+  return (
+    <section className="todo-panel" aria-label="任务清单">
+      <button type="button" className="todo-panel-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span className="todo-panel-title"><CircleCheck aria-hidden="true" /> 任务清单</span>
+        <span className="todo-panel-count">{completed}/{items.length}</span>
+        <ChevronDown aria-hidden="true" className={open ? "todo-chevron-open" : ""} />
+      </button>
+      {open ? <div className="todo-list">{items.map((item, index) => {
+        const Icon = item.status === "completed" ? CircleCheck : item.status === "blocked" ? CircleX : CircleDot;
+        return <div className={`todo-item todo-${item.status}`} key={`${item.content}-${index}`}><Icon aria-hidden="true" /><span>{item.content}</span></div>;
+      })}</div> : null}
+    </section>
   );
 }
 

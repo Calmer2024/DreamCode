@@ -1,7 +1,7 @@
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { findModelProviderPreset, listModelProviderPresets } from "@dreamcode/models";
 import { contextOptionsForModel } from "@dreamcode/context";
+import { findModelProviderPreset, listModelProviderPresets } from "@dreamcode/models";
 import type { DreamCodeConfig, DreamCodeLlmProfile } from "@dreamcode/store";
 import {
   createLlmProfile,
@@ -28,10 +28,12 @@ import type {
   DesktopBootstrap,
   ProfileConnectionResult,
   RollbackRequest,
+  SkillInstallRequest,
   TestProfileRequest,
   UpdateProfileRequest,
 } from "../shared/contracts";
 import { createDesktopProvider } from "./provider";
+import { DesktopSkillService } from "./skill-service";
 
 export function redactProfiles(config: DreamCodeConfig): DesktopBootstrap["profiles"] {
   return Object.entries(config.profiles).map(([id, profile]) => ({
@@ -49,7 +51,43 @@ export function redactProfiles(config: DreamCodeConfig): DesktopBootstrap["profi
 }
 
 export class DesktopAppService {
-  constructor(private readonly home?: string) {}
+  readonly skills: DesktopSkillService;
+
+  constructor(private readonly home?: string, skills?: DesktopSkillService) {
+    this.skills = skills ?? new DesktopSkillService({ home });
+  }
+
+  listSkills(workspaceRoot?: string) {
+    return this.skills.list(workspaceRoot);
+  }
+
+  rescanSkills(workspaceRoot?: string) {
+    return this.skills.rescan(workspaceRoot);
+  }
+
+  setSkillEnabled(request: { workspaceRoot?: string; skillId: string; enabled: boolean }) {
+    return this.skills.setEnabled(request);
+  }
+
+  setSkillRoots(request: { workspaceRoot?: string; roots: string[] }) {
+    return this.skills.setCustomRoots(request);
+  }
+
+  installSkill(request: SkillInstallRequest) {
+    return this.skills.install(request);
+  }
+
+  updateSkill(request: { workspaceRoot?: string; skillId: string; confirmations?: SkillInstallRequest["confirmations"] }) {
+    return this.skills.update(request);
+  }
+
+  rollbackSkill(request: { workspaceRoot?: string; skillId: string }) {
+    return this.skills.rollback(request);
+  }
+
+  uninstallSkill(request: { workspaceRoot?: string; skillId: string }) {
+    return this.skills.uninstall(request);
+  }
 
   async bootstrap(): Promise<DesktopBootstrap> {
     const config = await loadDreamCodeConfig(this.home);

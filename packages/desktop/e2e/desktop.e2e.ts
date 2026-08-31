@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import {
@@ -124,6 +124,135 @@ test("stops an E2E-only blocking Fake Provider", async () => {
     await cleanupScenario(scenario);
   }
 });
+
+test("runs the complete Skill discovery, invocation, persistence, refresh, and lifecycle flow", async () => {
+  test.slow();
+  const scenario = await prepareScenario("skill-system", "fake");
+  const projectSkillRoot = path.join(scenario.workspace, ".agents", "skills", "review-e2e");
+  const managedSource = path.join(scenario.root, "managed-source");
+  await writeTestSkill(projectSkillRoot, "review-e2e", "Review E2E", "Project Skill discovered by convention.", "1.0.0");
+  await writeTestSkill(managedSource, "managed-e2e", "Managed E2E", "Managed lifecycle Skill.", "1.0.0");
+
+  try {
+    const first = await launchDesktop(scenario);
+    await selectWorkspace(first.page);
+    const textbox = first.page.getByRole("textbox", { name: "给 DreamCode 发送消息" });
+
+    await test.step("discover and invoke with slash and dollar completions", async () => {
+      await textbox.fill("/rev");
+      const slashOption = first.page.getByRole("option", { name: /Review E2E/i });
+      await expect(slashOption).toBeVisible();
+      await expect(slashOption).toHaveAttribute("aria-selected", "true");
+      await textbox.press("Enter");
+      await expect(textbox).toHaveValue("/review-e2e ");
+      await textbox.fill("/review-e2e Inspect workspace.");
+      await first.page.getByRole("button", { name: "发送" }).click();
+      await expect(first.page.getByText(/^已完成 · 耗时 /).last()).toBeVisible({ timeout: 30_000 });
+
+      await textbox.fill("Use $rev");
+      await expect(first.page.getByRole("option", { name: /Review E2E/i })).toBeVisible();
+      await textbox.press("Enter");
+      await expect(textbox).toHaveValue("Use $review-e2e ");
+      await textbox.fill("Use $review-e2e to inspect workspace.");
+      await first.page.getByRole("button", { name: "发送" }).click();
+      await expect(first.page.getByText(/^已完成 · 耗时 /).last()).toBeVisible({ timeout: 30_000 });
+    });
+
+    await test.step("manage enablement, details, filtering, refresh, and installation", async () => {
+      await first.page.getByRole("button", { name: "设置", exact: true }).click();
+      await first.page.getByRole("button", { name: "技能", exact: true }).click();
+      await expect(first.page.getByText("Review E2E", { exact: true })).toBeVisible();
+      await first.page.getByLabel("按来源筛选").selectOption("project");
+      await expect(first.page.getByText("Review E2E", { exact: true })).toBeVisible();
+      const reviewItem = first.page.locator(".skill-list-item").filter({ hasText: "Review E2E" });
+      await reviewItem.getByText("详情", { exact: true }).click();
+      await expect(reviewItem.getByText(projectSkillRoot, { exact: true })).toBeVisible();
+      await reviewItem.getByRole("checkbox").click();
+      await expect(reviewItem.getByRole("checkbox")).not.toBeChecked();
+
+      const refreshedRoot = path.join(scenario.workspace, ".dreamcode", "skills", "refreshed-e2e");
+      await writeTestSkill(refreshedRoot, "refreshed-e2e", "Refreshed E2E", "Appears after a real rescan.", "1.0.0");
+      await first.page.getByRole("button", { name: "重新扫描" }).click();
+      await expect(first.page.getByText("Refreshed E2E", { exact: true })).toBeVisible();
+
+      await first.page.getByRole("button", { name: "添加" }).click();
+      await first.page.getByLabel("技能来源").fill(managedSource);
+      await first.page.getByRole("button", { name: "安装", exact: true }).click();
+      const managedItem = first.page.locator(".skill-list-item").filter({ hasText: "Managed E2E" });
+      await expect(managedItem).toBeVisible();
+      await expect(managedItem.getByRole("button", { name: "更新" })).toBeVisible();
+
+      await writeTestSkill(managedSource, "managed-e2e", "Managed E2E", "Managed lifecycle Skill version two.", "2.0.0");
+      first.page.once("dialog", (dialog) => dialog.accept());
+      await managedItem.getByRole("button", { name: "更新" }).click();
+      await expect(managedItem.getByText("v2.0.0", { exact: true })).toBeVisible();
+      await managedItem.getByRole("button", { name: /恢复上一版/ }).click();
+      await expect(managedItem.getByText("v1.0.0", { exact: true })).toBeVisible();
+    });
+
+    await first.page.getByRole("button", { name: "返回应用", exact: true }).click();
+    await expect.poll(() => first.page.evaluate(
+      async (workspaceRoot) => (await window.dreamcode.listSkills(workspaceRoot)).skills
+        .filter((skill) => skill.enabled && skill.valid && skill.resolution === "resolved")
+        .map((skill) => skill.invocationName ?? skill.name),
+      scenario.workspace,
+    )).toContain("refreshed-e2e");
+    await textbox.fill("");
+    await textbox.evaluate((element) => element.blur());
+    await textbox.focus();
+    await textbox.fill("/re");
+    await expect(first.page.getByRole("option", { name: /Refreshed E2E/i })).toBeVisible();
+    await expect(first.page.getByRole("option", { name: /Review E2E/i })).toHaveCount(0);
+    await closeDesktopApplication(first.app);
+
+    await test.step("persist disabled state and explicit load audit across restart", async () => {
+      const sessions = await readdir(path.join(scenario.home, "sessions"));
+      const events = await readFile(path.join(scenario.home, "sessions", sessions[0] as string, "events.jsonl"), "utf8");
+      expect(events.match(/"type":"skill.loaded"/g)).toHaveLength(2);
+      expect(events).toContain('"name":"review-e2e"');
+      expect(events).toContain('"explicit":true');
+
+      const second = await launchDesktop(scenario);
+      await selectWorkspace(second.page);
+      await second.page.getByRole("button", { name: "设置", exact: true }).click();
+      await second.page.getByRole("button", { name: "技能", exact: true }).click();
+      const reviewItem = second.page.locator(".skill-list-item").filter({ hasText: "Review E2E" });
+      await expect(reviewItem.getByRole("checkbox")).not.toBeChecked();
+
+      const managedItem = second.page.locator(".skill-list-item").filter({ hasText: "Managed E2E" });
+      second.page.once("dialog", (dialog) => dialog.accept());
+      await managedItem.getByRole("button", { name: "卸载" }).click();
+      await expect(managedItem).toHaveCount(0);
+      await closeDesktopApplication(second.app);
+    });
+  } finally {
+    await cleanupScenario(scenario);
+  }
+});
+
+async function writeTestSkill(
+  root: string,
+  name: string,
+  displayName: string,
+  description: string,
+  version: string,
+): Promise<void> {
+  await mkdir(root, { recursive: true });
+  await writeFile(path.join(root, "SKILL.md"), [
+    "---",
+    `name: ${name}`,
+    `description: ${description}`,
+    `version: ${version}`,
+    "---",
+    "",
+    `# ${displayName}`,
+    "",
+    "Follow this deterministic E2E workflow.",
+    "",
+  ].join("\n"), "utf8");
+  await mkdir(path.join(root, "agents"), { recursive: true });
+  await writeFile(path.join(root, "agents", "openai.yaml"), `interface:\n  display_name: ${displayName}\n`, "utf8");
+}
 
 // biome-ignore lint/correctness/noEmptyPattern: Playwright requires an object-destructured fixture argument.
 test("keeps model profile settings aligned and responsive", async ({}, testInfo) => {

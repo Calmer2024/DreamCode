@@ -8,6 +8,7 @@ import type {
   DesktopSessionDetail,
   StartTurnRequest,
 } from "../../shared/contracts";
+import type { TodoItem } from "@dreamcode/shared";
 
 export type DesktopRunState = "idle" | DesktopRunStatus["status"];
 export type DesktopDrawer = "logs" | "terminal";
@@ -91,6 +92,8 @@ export interface DesktopState {
   turnUsage: Record<string, DesktopTurnUsage>;
   tools: DesktopToolEvent[];
   changedFiles: ChangedFile[];
+  changedFilesByTurn: Record<string, ChangedFile[]>;
+  todoItems: TodoItem[];
   activeChangedFilePath?: string;
   terminalEntries: DesktopTerminalEntry[];
   drawer?: DesktopDrawer;
@@ -125,6 +128,8 @@ export function createDesktopState(bootstrap?: DesktopBootstrap): DesktopState {
     turnUsage: {},
     tools: [],
     changedFiles: [],
+    changedFilesByTurn: {},
+    todoItems: [],
     terminalEntries: [],
   };
 }
@@ -171,6 +176,8 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
         turnUsage: {},
         tools: [],
         changedFiles: events.length ? [] : action.session.changedFiles,
+        changedFilesByTurn: {},
+        todoItems: [],
         activeChangedFilePath: undefined,
         terminalEntries: events.length
           ? []
@@ -205,6 +212,8 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
         turnUsage: continuing ? state.turnUsage : {},
         tools: continuing ? state.tools : [],
         changedFiles: continuing ? state.changedFiles : [],
+        changedFilesByTurn: continuing ? state.changedFilesByTurn : {},
+        todoItems: continuing ? state.todoItems : [],
         activeChangedFilePath: continuing ? state.activeChangedFilePath : undefined,
         terminalEntries: continuing ? state.terminalEntries : [],
         error: undefined,
@@ -424,7 +433,15 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
     }
     case "todo.updated": {
       const items = Array.isArray(payload.items) ? payload.items : [];
-      return appendTimeline(next, event, "event", "Todo updated", `${items.length} item(s)`);
+      const todoItems: TodoItem[] = items.flatMap((item) => {
+        const value = asRecord(item);
+        const content = stringValue(value.content);
+        const status = stringValue(value.status);
+        return content && (status === "pending" || status === "in_progress" || status === "completed" || status === "blocked")
+          ? [{ content, status }]
+          : [];
+      });
+      return appendTimeline({ ...next, todoItems }, event, "event", "Todo updated", `${todoItems.length} item(s)`);
     }
     case "artifact.created":
     case "web.source.saved": {
@@ -498,6 +515,9 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         {
           ...next,
           changedFiles: upsertChangedFile(next.changedFiles, changedFile),
+          changedFilesByTurn: event.turnId
+            ? { ...next.changedFilesByTurn, [event.turnId]: upsertChangedFile(next.changedFilesByTurn[event.turnId] ?? [], changedFile) }
+            : next.changedFilesByTurn,
           activeChangedFilePath: next.activeChangedFilePath ?? changedFile.path,
         },
         event,
@@ -514,6 +534,9 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
           ...next,
           runStatus: "completed",
           changedFiles: mergeChangedFiles(next.changedFiles, changedFilesFromSummary(summary)),
+          changedFilesByTurn: event.turnId
+            ? { ...next.changedFilesByTurn, [event.turnId]: mergeChangedFiles(next.changedFilesByTurn[event.turnId] ?? [], changedFilesFromSummary(summary)) }
+            : next.changedFilesByTurn,
         },
         event,
         "status",
@@ -589,6 +612,8 @@ function resetConversation(state: DesktopState, workspaceRoot = state.workspaceR
     turnUsage: {},
     tools: [],
     changedFiles: [],
+    changedFilesByTurn: {},
+    todoItems: [],
     activeChangedFilePath: undefined,
     terminalEntries: [],
     drawer: undefined,

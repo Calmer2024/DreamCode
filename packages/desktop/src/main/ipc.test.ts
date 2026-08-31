@@ -31,6 +31,14 @@ describe("registerDesktopIpc", () => {
       readSession: vi.fn(),
       readChangedFileDiff: vi.fn(),
       rollback: vi.fn(),
+      listSkills: vi.fn(),
+      rescanSkills: vi.fn(),
+      setSkillEnabled: vi.fn(),
+      setSkillRoots: vi.fn(),
+      installSkill: vi.fn(),
+      updateSkill: vi.fn(),
+      rollbackSkill: vi.fn(),
+      uninstallSkill: vi.fn(),
     };
     const runManager = {
       start: vi.fn(),
@@ -65,6 +73,14 @@ describe("registerDesktopIpc", () => {
       "desktop:set-default-profile",
       "desktop:test-profile",
       "desktop:update-web-search-credential",
+      "desktop:list-skills",
+      "desktop:rescan-skills",
+      "desktop:set-skill-enabled",
+      "desktop:set-skill-roots",
+      "desktop:install-skill",
+      "desktop:update-skill",
+      "desktop:rollback-skill",
+      "desktop:uninstall-skill",
       "desktop:save-project",
       "desktop:create-project",
       "desktop:delete-project",
@@ -86,7 +102,7 @@ describe("registerDesktopIpc", () => {
 
     dispose();
 
-    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(26);
+    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(34);
   });
 
   it("serializes invalid object requests before calling a service", async () => {
@@ -228,6 +244,8 @@ describe("createDesktopApi", () => {
       "deleteProfile",
       "deleteProject",
       "deleteSession",
+      "installSkill",
+      "listSkills",
       "onApprovalRequest",
       "onQuestionRequest",
       "onRunEvent",
@@ -237,18 +255,24 @@ describe("createDesktopApi", () => {
       "readDiff",
       "readSession",
       "renameSession",
+      "rescanSkills",
       "resizeTerminal",
       "respondApproval",
       "respondQuestion",
       "rollback",
+      "rollbackSkill",
       "saveProject",
       "setDefaultProfile",
       "setSessionPinned",
+      "setSkillEnabled",
+      "setSkillRoots",
       "startTerminal",
       "startTurn",
       "stopTurn",
       "testProfile",
+      "uninstallSkill",
       "updateProfile",
+      "updateSkill",
       "updateWebSearchCredential",
       "writeTerminal",
     ]);
