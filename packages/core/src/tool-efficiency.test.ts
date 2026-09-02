@@ -12,6 +12,14 @@ describe("tool exposure and turn cache", () => {
     const coding = selectToolSpecs(registry, "Fix the TypeScript build").map((tool) => tool.name);
     expect(coding).toContain("runtime.info");
     expect(coding).toContain("process.run");
+    expect(coding).toEqual(
+      expect.arrayContaining([
+        "process.start",
+        "process.status",
+        "process.logs",
+        "process.stop",
+      ]),
+    );
     expect(coding.some((name) => name.startsWith("web."))).toBe(false);
     expect(coding).toContain("skill.load");
     expect(coding.some((name) => name.startsWith("mcp."))).toBe(false);

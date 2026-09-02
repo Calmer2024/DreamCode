@@ -1,6 +1,7 @@
 import type { ChangedFile, TodoItem } from "@dreamcode/shared";
 import {
   Activity,
+  BrainCircuit,
   Bug,
   ChevronDown,
   CircleCheck,
@@ -12,9 +13,18 @@ import {
   Copy,
   Check,
   FileCode2,
+  FilePenLine,
+  Globe,
   Hammer,
+  Layers3,
+  ListChecks,
+  PackagePlus,
+  PlayCircle,
+  PlusCircle,
   Radio,
   RefreshCw,
+  RotateCcw,
+  Shrink,
   SquareTerminal,
   Telescope,
   Wrench,
@@ -121,11 +131,10 @@ export function Timeline({
         <UserMessage content={state.request.prompt} timestamp={state.requestTimestamp ?? ""} />
       ) : null}
       {state.todoItems.length ? <TodoPanel items={state.todoItems} /> : null}
-      {conversationBlocks(state.timeline, state.tools, state.turnUsage, state.changedFilesByTurn, state.changedFiles)}
+      {conversationBlocks(state.timeline, state.tools, state.turnUsage, state.changedFilesByTurn)}
       {questionRequest && questionApi && onQuestionResolved ? (
         <QuestionCard api={questionApi} request={questionRequest} onResolved={onQuestionResolved} />
       ) : null}
-      {!state.timeline.some((entry) => entry.turnId) && state.changedFiles.length ? <DiffSummaryCard files={state.changedFiles} /> : null}
     </section>
   );
 }
@@ -135,7 +144,6 @@ function conversationBlocks(
   tools: DesktopToolEvent[],
   turnUsage: Record<string, DesktopTurnUsage>,
   changedFilesByTurn: Record<string, ChangedFile[]>,
-  fallbackChangedFiles: ChangedFile[],
 ): ReactNode[] {
   const blocks: ReactNode[] = [];
   let execution: DesktopTimelineEntry[] = [];
@@ -147,9 +155,9 @@ function conversationBlocks(
         entries={execution}
         tools={tools}
         usage={execution[0]?.turnId ? turnUsage[execution[0].turnId] : undefined}
-        changedFiles={execution[0]?.turnId
-          ? changedFilesByTurn[execution[0].turnId] ?? (Object.keys(changedFilesByTurn).length ? [] : fallbackChangedFiles)
-          : fallbackChangedFiles}
+        changedFiles={execution.find((entry) => entry.turnId)?.turnId
+          ? changedFilesByTurn[execution.find((entry) => entry.turnId)?.turnId ?? ""] ?? []
+          : []}
         key={`execution-${execution[0]?.id ?? blocks.length}`}
       />,
     );
@@ -158,6 +166,7 @@ function conversationBlocks(
   };
 
   for (const entry of entries) {
+    if (entry.kind === "session" || entry.kind === "turn") continue;
     if (entry.kind === "user") {
       flushExecution();
       blocks.push(<TimelineItem entry={entry} key={entry.id} />);
@@ -184,13 +193,8 @@ function ExecutionSegment({
   usage?: DesktopTurnUsage;
   changedFiles: ChangedFile[];
 }) {
+  const liveStatusDelayMs = 800;
   const completed = entries.some((entry) => entry.title === "Turn completed");
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (completed) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [completed]);
   const turnId = entries.find((entry) => entry.turnId)?.turnId;
   const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
   const runningTools = segmentTools.some((tool) => tool.status === "running" || tool.status === "queued");
@@ -204,6 +208,18 @@ function ExecutionSegment({
   );
   const notices = entries.filter((entry) => entry.title === "上下文已压缩");
   const summaries = entries.filter((entry) => entry.kind === "assistant");
+  const latestVisibleSummary = [...summaries].reverse().find((entry) => Boolean(entry.detail?.trim()));
+  const hasVisibleOutput = summaries.some((entry) => Boolean(entry.detail?.trim()));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (completed || runningTools || !hasVisibleOutput) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(timer);
+  }, [completed, hasVisibleOutput, runningTools]);
+  const latestOutputAt = latestVisibleSummary ? new Date(latestVisibleSummary.timestamp).valueOf() : Number.NaN;
+  const outputIsFresh = Number.isFinite(latestOutputAt) && now - latestOutputAt < liveStatusDelayMs;
+  const showLiveStatus = !completed && (runningTools || !hasVisibleOutput || !outputIsFresh);
+  const liveStatus = runningTools ? "正在调用工具" : "正在思考";
   let processRendered = false;
 
   return (
@@ -212,14 +228,11 @@ function ExecutionSegment({
         <details className="execution-segment" open={completed ? undefined : true}>
           <summary className="execution-summary">
             <span>
-              {completed
-                ? `已完成 · 耗时 ${formatElapsed(entries)}`
-                : `处理中 · ${formatElapsed(entries, now)}`}
+              {completed ? `已完成 · 耗时 ${formatElapsed(entries)}` : "执行中"}
             </span>
             <ChevronDown aria-hidden="true" />
           </summary>
           <div className="execution-content">
-            {!completed ? <div className="execution-live-status" role="status" aria-live="polite"><span className="status-shimmer">{runningTools ? "正在调用工具" : "正在思考"}</span></div> : null}
             {processEntries.map((entry) => {
               if (entry.kind === "tool" && hasCanonicalTools) {
                 if (processRendered) return null;
@@ -238,9 +251,15 @@ function ExecutionSegment({
         <TimelineItem
           entry={entry}
           usage={index === summaries.length - 1 ? usage : undefined}
+          liveStatus={showLiveStatus && index === summaries.length - 1 ? liveStatus : undefined}
           key={entry.id}
         />
       ))}
+      {!summaries.length && showLiveStatus ? (
+        <div className="execution-live-status" role="status" aria-live="polite">
+          <span className="status-shimmer">{liveStatus}</span>
+        </div>
+      ) : null}
       {completed && changedFiles.length ? <DiffSummaryCard files={changedFiles} /> : null}
     </>
   );
@@ -365,7 +384,15 @@ function CommandRow({ tool }: { tool: DesktopToolEvent }) {
   );
 }
 
-function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: DesktopTurnUsage }) {
+function TimelineItem({
+  entry,
+  usage,
+  liveStatus,
+}: {
+  entry: DesktopTimelineEntry;
+  usage?: DesktopTurnUsage;
+  liveStatus?: string;
+}) {
   if (entry.kind === "user") {
     return <UserMessage content={entry.detail ?? ""} timestamp={entry.timestamp} />;
   }
@@ -374,6 +401,11 @@ function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: D
     return (
       <article className="timeline-entry assistant-entry" data-testid="timeline-assistant">
         {entry.detail ? <MarkdownContent>{entry.detail}</MarkdownContent> : null}
+        {liveStatus ? (
+          <div className="execution-live-status" role="status" aria-live="polite">
+            <span className="status-shimmer">{liveStatus}</span>
+          </div>
+        ) : null}
         {usage?.totalTokens !== undefined ? <TokenUsage usage={usage} /> : null}
       </article>
     );
@@ -381,9 +413,9 @@ function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: D
 
   if (entry.kind === "tool" || entry.kind === "file") {
     const isTool = entry.kind === "tool";
-    const Icon = isTool ? Wrench : FileCode2;
+    const Icon = isTool ? Wrench : FilePenLine;
     const label = isTool ? "工具调用" : "文件变更";
-    const iconName = isTool ? "wrench" : "file-code-2";
+    const iconName = isTool ? "wrench" : "file-pen-line";
     return (
       <article
         aria-label={label}
@@ -405,19 +437,18 @@ function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: D
   }
 
   if (entry.kind === "status" || entry.kind === "turn" || entry.kind === "session") {
-    const status = entry.kind === "status" ? statusPresentation(entry.tone) : undefined;
-    const label = status?.label ?? (entry.kind === "turn" ? "轮次状态" : "会话状态");
-    const Icon = status?.Icon ?? (entry.kind === "turn" ? CircleDot : Radio);
+    const presentation = timelinePresentation(entry);
+    const Icon = presentation.Icon;
     return (
       <article
-        aria-label={label}
+        aria-label={presentation.label}
         className={`timeline-entry lifecycle-entry ${entry.kind}-entry tone-${entry.tone}`}
         data-testid={`timeline-${entry.kind}`}
       >
         <Icon
           aria-hidden="true"
-          data-lucide={status?.iconName}
-          data-testid={entry.kind === "status" ? "timeline-status-icon" : undefined}
+          data-lucide={presentation.iconName}
+          data-testid={entry.kind === "status" ? "timeline-status-icon" : "timeline-lifecycle-icon"}
         />
         <div className="lifecycle-copy">
           <h3>{entry.title}</h3>
@@ -434,7 +465,7 @@ function TimelineItem({ entry, usage }: { entry: DesktopTimelineEntry; usage?: D
       className={`timeline-entry evidence-entry event-entry tone-${entry.tone}`}
       data-testid="timeline-event"
     >
-      <Activity aria-hidden="true" />
+      <EventIcon entry={entry} />
       <div className="evidence-copy">
         <div className="event-heading">
           <h3>{entry.title}</h3>
@@ -534,19 +565,46 @@ function formatTime(timestamp: string): string {
 
 function formatElapsed(
   entries: DesktopTimelineEntry[],
-  now = Date.now(),
 ): string {
   const timestamps = entries.filter((entry) => entry.kind !== "session")
     .map((entry) => new Date(entry.timestamp).valueOf())
     .filter(Number.isFinite);
   if (!timestamps.length) return "0秒";
-  const completed = entries.some((entry) => entry.title === "Turn completed");
-  const end = completed ? Math.max(...timestamps) : now;
+  const end = Math.max(...timestamps);
   const elapsedMs = Math.max(0, end - Math.min(...timestamps));
   const elapsedSeconds = Math.floor(elapsedMs / 1000);
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
   return minutes ? `${minutes}分钟 ${seconds}秒` : `${seconds}秒`;
+}
+
+function EventIcon({ entry }: { entry: DesktopTimelineEntry }) {
+  const key = `${entry.kind}:${entry.title}`;
+  const presentation = {
+    "event:Context built": { Icon: Layers3, iconName: "layers-3" },
+    "event:上下文已压缩": { Icon: Shrink, iconName: "shrink" },
+    "event:Model started": { Icon: BrainCircuit, iconName: "brain-circuit" },
+    "event:Artifact created": { Icon: PackagePlus, iconName: "package-plus" },
+    "event:Source saved": { Icon: Globe, iconName: "globe" },
+    "event:Todo updated": { Icon: ListChecks, iconName: "list-checks" },
+  }[key as "event:Context built" | "event:上下文已压缩" | "event:Model started" | "event:Artifact created" | "event:Source saved" | "event:Todo updated"] ?? { Icon: Activity, iconName: "activity" };
+  const Icon = presentation.Icon;
+  return <Icon aria-hidden="true" data-lucide={presentation.iconName} />;
+}
+
+function timelinePresentation(entry: DesktopTimelineEntry) {
+  if (entry.kind === "status") return statusPresentation(entry.tone);
+  const key = `${entry.kind}:${entry.title}`;
+  const presentations = {
+    "session:Session created": { Icon: PlusCircle, iconName: "plus-circle", label: "会话状态" },
+    "session:Session resumed": { Icon: RotateCcw, iconName: "rotate-ccw", label: "会话状态" },
+    "turn:Turn started": { Icon: PlayCircle, iconName: "play-circle", label: "轮次状态" },
+  } as const;
+  return presentations[key as keyof typeof presentations] ?? (
+    entry.kind === "turn"
+      ? { Icon: CircleDot, iconName: "circle-dot", label: "轮次状态" }
+      : { Icon: Radio, iconName: "radio", label: "会话状态" }
+  );
 }
 
 function QuestionCard({ api, request, onResolved }: { api: Pick<DesktopApi, "respondQuestion">; request: DesktopQuestionRequest; onResolved: () => void }) {

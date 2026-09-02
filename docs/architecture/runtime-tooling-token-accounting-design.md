@@ -163,7 +163,7 @@ stdout 与 stderr 各自最多内联约 4 KiB，采用首尾预览而不是只�
 
 核心工具固定为：
 
-`runtime.info`、`file.read`、`artifact.read`、`file.write`、`file.patch`、`file.list`、`search.grep`、`search.glob`、`process.run`、`shell.run`、`git.status`、`git.diff`、`todo.write`、`question.ask`。
+`runtime.info`、`file.read`、`artifact.read`、`file.write`、`file.patch`、`file.list`、`search.grep`、`search.glob`、`process.run`、`process.start`、`process.status`、`process.logs`、`process.stop`、`shell.run`、`git.status`、`git.diff`、`todo.write`、`question.ask`。
 
 可选工具族为 `web.*`、`skill.*`、`mcp.*`。可选工具必须同时满足“对应功能已配置”和“用户请求明确涉及该能力”才暴露。明确意图由 Core 的确定性暴露策略判断，例如请求中直接要求 Web、指定 Skill，或点名已配置 MCP 能力；策略不通过额外模型调用判断。某工具族在当前用户回合启用后，本回合后续模型请求保持可见，避免工具集合反复变化。新用户回合重新判断。
 
@@ -327,3 +327,14 @@ Core 与 Eval 覆盖：
 - README 与针对性测试已同步。
 
 验证结果：类型检查和全仓构建通过；新增及相关的 65 项定向/回归测试通过，其中 eval runner 覆盖 52 个隔离任务，并新增运行时选择、只读缓存、工具暴露和缓存 usage 四类效率场景。全量 Vitest 中其余 225 项通过，`packages/core/src/core.test.ts` 的 10 项旧测试因工作树在本次实施前已删除 `failing-test-js`、`safety`、`readme-update` 三组旧 fixture 而无法启动；本次实施未恢复或覆盖这些用户删除项。
+
+## 16. 长期进程扩展
+
+Coding Agent 的开发服务器、watcher 与持续测试由宿主级 `ProcessSupervisor` 管理，而不是扩展 `process.run` 的阻塞语义：
+
+- `process.start` 使用无 Shell 的 `program + args[]` 协议，收到 spawn 确认后返回 session 隔离的不透明 `processId`。
+- `process.status` 返回 `running | exited | stopped | failed | orphaned` 等生命周期状态。
+- `process.logs` 从 session 目录中的 stdout/stderr 文件按字节游标增量读取，单次最多 64 KiB，单流达到保留上限后停止追加并明确告警。
+- `process.stop` 幂等停止完整进程树，先尝试正常终止，超过 grace period 后强制终止。
+- Supervisor 在 Desktop、CLI REPL 和 TUI 的宿主生命周期内跨 turn 复用；正常退出、session 删除或项目删除时终止所属活动进程。首版不承诺跨 DreamCode 宿主重启接管进程，旧的活动记录恢复为 `orphaned`。
+- 活动后台进程可能异步修改 workspace，因此其存在期间 Core 禁用回合内只读工具结果缓存。

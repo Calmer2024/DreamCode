@@ -34,7 +34,7 @@ import {
   saveDreamCodeConfig,
   upsertLlmProfile,
 } from "@dreamcode/store";
-import { createDefaultToolRegistry } from "@dreamcode/tools";
+import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
 import { Command } from "commander";
 import { runInkTui } from "./tui.js";
 
@@ -68,6 +68,7 @@ interface ReplState {
   home?: string;
   maxToolCalls: number;
   conversation: ConversationEntry[];
+  processSupervisor: ProcessSupervisor;
 }
 
 interface ConversationEntry {
@@ -270,6 +271,7 @@ export async function main(argv = process.argv): Promise<void> {
 
   const { provider, model } = createCliProvider(prompt, options, config);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const processSupervisor = new ProcessSupervisor();
 
   try {
     for await (const event of runTurn({
@@ -280,7 +282,7 @@ export async function main(argv = process.argv): Promise<void> {
       mode,
       home: options.home,
       maxToolCalls,
-      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers }),
+      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers, processSupervisor }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -289,6 +291,7 @@ export async function main(argv = process.argv): Promise<void> {
     }
   } finally {
     rl.close();
+    await processSupervisor.dispose();
   }
 }
 
@@ -306,6 +309,7 @@ async function runInteractiveShell(input: {
     home: input.options.home,
     maxToolCalls: input.maxToolCalls,
     conversation: [],
+    processSupervisor: new ProcessSupervisor(),
   };
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -334,6 +338,7 @@ async function runInteractiveShell(input: {
     }
   } finally {
     rl.close();
+    await state.processSupervisor.dispose();
   }
 }
 
@@ -355,7 +360,10 @@ async function runInteractiveTurn(
       conversationSummary: buildConversationSummary(state.conversation),
       home: state.home,
       maxToolCalls: state.maxToolCalls,
-      registry: createDefaultToolRegistry({ mcpServers: state.config.mcpServers }),
+      registry: createDefaultToolRegistry({
+        mcpServers: state.config.mcpServers,
+        processSupervisor: state.processSupervisor,
+      }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -888,6 +896,7 @@ async function resumeSessionCommand(
   const maxToolCalls = parseMaxToolCalls(effectiveOptions.maxToolCalls);
   const { provider, model } = createCliProvider(prompt, effectiveOptions, config);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const processSupervisor = new ProcessSupervisor();
   try {
     for await (const event of runTurn({
       sessionId: resolvedSessionId,
@@ -898,7 +907,7 @@ async function resumeSessionCommand(
       mode,
       home: effectiveOptions.home,
       maxToolCalls,
-      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers }),
+      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers, processSupervisor }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -907,6 +916,7 @@ async function resumeSessionCommand(
     }
   } finally {
     rl.close();
+    await processSupervisor.dispose();
   }
 }
 
@@ -1015,6 +1025,7 @@ async function runToolCommand(
   const result = await tool.execute(input, {
     workspaceRoot: path.resolve(options.cwd),
     sessionDir: path.join(home, "sessions", "_cli"),
+    sessionId: "_cli",
     mode: "full",
     toolCallId: `cli_${toolName.replace(/\W/g, "_")}`,
   });

@@ -96,6 +96,7 @@ select:focus-visible {
 .app-shell {
   display: grid;
   grid-template-columns: 272px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
   background: var(--dc-sidebar);
@@ -104,7 +105,9 @@ select:focus-visible {
 .sidebar {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
+  overflow: hidden;
   background: var(--dc-sidebar);
 }
 
@@ -3022,9 +3025,12 @@ details[open] > .tool-process-summary > svg:last-child,
 .execution-live-status {
   display: flex;
   align-items: center;
+  margin-top: 7px;
   min-height: 24px;
+  padding-left: 0;
   color: var(--dc-muted);
-  font-size: 12px;
+  font-size: inherit;
+  line-height: inherit;
 }
 
 .status-shimmer {
@@ -3120,12 +3126,59 @@ details[open] > .tool-process-summary > svg:last-child,
   pointer-events: auto;
 }
 
+.approval-card {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  display: grid;
+  width: min(820px, calc(100% - 48px));
+  gap: 12px;
+  border: 1px solid var(--dc-border);
+  border-radius: 20px;
+  padding: 16px 18px 14px;
+  background: var(--surface, #fff);
+  box-shadow: 0 10px 32px rgb(0 0 0 / 10%);
+}
+
+.approval-card:focus { outline: none; }
+
+.approval-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.approval-card-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--dc-surface-muted, #f2f2f3);
+  color: var(--dc-brand-dark, #5d2c86);
+}
+
+.approval-card-icon svg { width: 16px; height: 16px; }
+.approval-card-heading p { margin: 0 0 2px; color: var(--dc-brand-dark, #5d2c86); font-size: 12px; font-weight: 650; }
+.approval-card-heading h2 { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 600; line-height: 1.45; }
+.approval-card-summary { overflow: hidden; text-overflow: clip; white-space: pre-wrap; color: var(--text-secondary); font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.5; }
+.approval-card-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.approval-card-actions button { min-height: 34px; padding: 7px 14px; }
+.approval-card-error { margin: 0; }
+
 .main-pane.drawer-open .conversation-scroll {
   margin-bottom: var(--drawer-height, min(410px, 46vh));
   transition: margin-bottom var(--motion-collapse);
 }
 
 .main-pane.drawer-open .composer-stack {
+  bottom: calc(var(--drawer-height, min(410px, 46vh)) + 20px);
+}
+
+.main-pane.drawer-open .approval-card {
   bottom: calc(var(--drawer-height, min(410px, 46vh)) + 20px);
 }
 
@@ -3137,6 +3190,10 @@ details[open] > .tool-process-summary > svg:last-child,
   width: 100%;
   transform: none;
   border-radius: 22px;
+}
+
+@media (max-width: 1080px) {
+  .approval-card { width: min(760px, calc(100% - 32px)); }
 }
 
 .skill-suggestions {

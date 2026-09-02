@@ -94,7 +94,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
     messages: projectConversationMessages(priorEvents),
     observations: [],
     todoItems: resumeState?.todoItems ?? [],
-    changedFiles: resumeState?.changedFiles ?? [],
+    // A turn summary must describe only the changes produced by this turn.
+    // Session-level history is replayed separately and must not seed this list.
+    changedFiles: [],
     commands: resumeState?.commands ?? [],
   };
   if (input.conversationSummary?.trim()) {
@@ -374,6 +376,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         const preflightResult = await registry.get(toolCall.name)?.preflight?.(toolCall.input, {
           workspaceRoot: session.workspaceRoot,
           sessionDir: session.sessionDir,
+          sessionId: session.id,
           mode,
           toolCallId: toolCall.id,
           signal: input.signal,
@@ -441,7 +444,11 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         const signature = `${workspaceRevision}:${makeToolCallSignature(toolCall)}`;
         const inspectionCount = (inspectionCounts.get(signature) ?? 0) + 1;
         inspectionCounts.set(signature, inspectionCount);
-        const cached = readOnlyTools.has(toolCall.name) ? readOnlyCache.get(signature) : undefined;
+        const cacheAllowed = !registry.processSupervisor.hasActiveProcess(session.workspaceRoot);
+        const cached =
+          cacheAllowed && readOnlyTools.has(toolCall.name)
+            ? readOnlyCache.get(signature)
+            : undefined;
         const result =
           finalDecision.decision !== "allow"
             ? deniedToolResult(toolCall.id, toolCall.name, finalDecision.reason)
@@ -450,6 +457,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
               : await executeToolWithEvents({
                   registry,
                   toolCall,
+                  sessionId: session.id,
                   sessionDir: session.sessionDir,
                   workspaceRoot: session.workspaceRoot,
                   mode,
@@ -490,7 +498,12 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         state.observations.push(observation);
         state.messages.push(toToolResultMessage(toolCall, result));
         applyResultToState(state, toolCall, result);
-        if (!cached && finalDecision.decision === "allow" && readOnlyTools.has(toolCall.name)) {
+        if (
+          cacheAllowed &&
+          !cached &&
+          finalDecision.decision === "allow" &&
+          readOnlyTools.has(toolCall.name)
+        ) {
           readOnlyCache.set(signature, result);
         }
         if (
@@ -592,6 +605,10 @@ const coreToolNames = new Set([
   "search.grep",
   "search.glob",
   "process.run",
+  "process.start",
+  "process.status",
+  "process.logs",
+  "process.stop",
   "shell.run",
   "git.status",
   "git.diff",
@@ -654,7 +671,7 @@ function requiredSkillCapability(
     return "filesystem.read";
   }
   if (toolName === "file.write" || toolName === "file.patch") return "filesystem.write";
-  if (toolName === "process.run" || toolName === "shell.run") return "process.execute";
+  if (toolName.startsWith("process.") || toolName === "shell.run") return "process.execute";
   if (toolName.startsWith("web.")) return "network.access";
   if (toolName === "mcp.call") return "mcp.use";
   return undefined;
@@ -919,6 +936,7 @@ async function executeToolWithEvents(input: {
   toolCall: NormalizedToolCall;
   workspaceRoot: string;
   sessionDir: string;
+  sessionId: string;
   mode: RunMode;
   signal?: AbortSignal;
   questionHandler?: (question: string) => Promise<string>;
@@ -954,6 +972,7 @@ async function executeToolWithEvents(input: {
     let result = await tool.execute(input.toolCall.input, {
       workspaceRoot: input.workspaceRoot,
       sessionDir: input.sessionDir,
+      sessionId: input.sessionId,
       mode: input.mode,
       toolCallId: input.toolCall.id,
       signal: input.signal,
@@ -1136,7 +1155,9 @@ function applyResultToState(
   }
 
   if (
-    (toolCall.name === "shell.run" || toolCall.name === "process.run") &&
+    (toolCall.name === "shell.run" ||
+      toolCall.name === "process.run" ||
+      toolCall.name === "process.start") &&
     result.status !== "denied"
   ) {
     const data = result.data as { command?: string; exitCode?: number } | undefined;
@@ -1161,7 +1182,7 @@ function deniedToolResult(toolCallId: string, toolName: string, reason: string):
       retryable: false,
     },
     execution:
-      toolName === "process.run" || toolName === "shell.run"
+      toolName === "process.run" || toolName === "process.start" || toolName === "shell.run"
         ? { outcome: "permission_denied", started: false }
         : undefined,
   };

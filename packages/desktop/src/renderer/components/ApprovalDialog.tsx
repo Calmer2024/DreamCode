@@ -1,20 +1,35 @@
-import { CircleHelp, ShieldAlert } from "lucide-react";
-import { useState } from "react";
+import { CircleHelp, FilePenLine, Globe, PlayCircle, ShieldAlert, SquareTerminal, Wrench } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type {
   DesktopApi,
   DesktopApprovalRequest,
   DesktopQuestionRequest,
 } from "../../shared/contracts";
 
-interface ApprovalDialogProps {
+interface ApprovalCardProps {
   api: DesktopApi;
   request: DesktopApprovalRequest;
   onResolved: () => void;
 }
 
-export function ApprovalDialog({ api, request, onResolved }: ApprovalDialogProps) {
+export function ApprovalCard({ api, request, onResolved }: ApprovalCardProps) {
   const [responding, setResponding] = useState(false);
   const [error, setError] = useState<string>();
+  const cardRef = useRef<HTMLElement>(null);
+  const presentation = approvalPresentation(request);
+
+  useEffect(() => {
+    cardRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (responding) return;
+      if (event.key === "Enter" || event.key === "Escape") {
+        event.preventDefault();
+        void respond(event.key === "Enter");
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [responding]);
 
   const respond = async (approved: boolean) => {
     setResponding(true);
@@ -34,38 +49,21 @@ export function ApprovalDialog({ api, request, onResolved }: ApprovalDialogProps
   };
 
   return (
-    <div className="modal-backdrop modal-priority approval-backdrop">
-      <section
-        className="dialog-card approval-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-label="工具审批"
-      >
-        <header className="dialog-header approval-heading">
-          <ShieldAlert aria-hidden="true" />
-          <div>
-            <p className="dialog-kicker">需要审批</p>
-            <h2>{request.tool}</h2>
-          </div>
-        </header>
-        <dl className="approval-evidence">
-          <div>
-            <dt>输入</dt>
-            <dd>
-              <pre>{normalizeInput(request.input)}</pre>
-            </dd>
-          </div>
-          <div>
-            <dt>原因</dt>
-            <dd>{request.reason}</dd>
-          </div>
-        </dl>
+    <section className="approval-card" ref={cardRef} tabIndex={-1} role="region" aria-label="需要审批">
+      <header className="approval-card-heading">
+        <span className="approval-card-icon"> <presentation.Icon aria-hidden="true" /> </span>
+        <div>
+          <p>需要审批</p>
+          <h2>{presentation.message}</h2>
+        </div>
+      </header>
+      <code className="approval-card-summary">{presentation.summary}</code>
         {error ? (
-          <p className="form-error" role="alert">
+          <p className="form-error approval-card-error" role="alert">
             {error}
           </p>
         ) : null}
-        <footer className="dialog-actions">
+        <footer className="approval-card-actions">
           <button
             type="button"
             className="danger-button"
@@ -80,12 +78,33 @@ export function ApprovalDialog({ api, request, onResolved }: ApprovalDialogProps
             disabled={responding}
             onClick={() => void respond(true)}
           >
-            允许
+            允许一次
           </button>
         </footer>
-      </section>
-    </div>
+    </section>
   );
+}
+
+export const ApprovalDialog = ApprovalCard;
+
+function approvalPresentation(request: DesktopApprovalRequest) {
+  const input = request.input && typeof request.input === "object" ? request.input as Record<string, unknown> : {};
+  const command = typeof input.command === "string" ? input.command : undefined;
+  const path = typeof input.path === "string" ? input.path : undefined;
+  const url = typeof input.url === "string" ? input.url : undefined;
+  if (request.tool === "shell.run" || request.tool === "shell_command") {
+    return { Icon: SquareTerminal, message: "是否允许我执行这个命令？", summary: command ?? "命令执行" };
+  }
+  if (request.tool === "process.start") {
+    return { Icon: PlayCircle, message: "是否允许我启动这个进程？", summary: command ?? String(input.label ?? "进程启动") };
+  }
+  if (request.tool === "file.write" || request.tool === "file.patch") {
+    return { Icon: FilePenLine, message: "是否允许我修改这个文件？", summary: path ?? "文件修改" };
+  }
+  if (request.tool.startsWith("web.") || request.tool.includes("fetch")) {
+    return { Icon: Globe, message: "是否允许我访问这个网络资源？", summary: url ?? "网络访问" };
+  }
+  return { Icon: Wrench, message: "是否允许我执行这个操作？", summary: request.tool };
 }
 
 interface QuestionDialogProps {

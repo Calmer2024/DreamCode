@@ -2,6 +2,7 @@ import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { contextOptionsForModel } from "@dreamcode/context";
 import { findModelProviderPreset, listModelProviderPresets } from "@dreamcode/models";
+import { ProcessSupervisor } from "@dreamcode/tools";
 import type { DreamCodeConfig, DreamCodeLlmProfile } from "@dreamcode/store";
 import {
   createLlmProfile,
@@ -53,7 +54,11 @@ export function redactProfiles(config: DreamCodeConfig): DesktopBootstrap["profi
 export class DesktopAppService {
   readonly skills: DesktopSkillService;
 
-  constructor(private readonly home?: string, skills?: DesktopSkillService) {
+  constructor(
+    private readonly home?: string,
+    skills?: DesktopSkillService,
+    private readonly processSupervisor = new ProcessSupervisor(),
+  ) {
     this.skills = skills ?? new DesktopSkillService({ home });
   }
 
@@ -143,7 +148,9 @@ export class DesktopAppService {
   }
 
   async deleteSession(sessionId: string) {
-    await deleteStoredSession(validateSessionId(sessionId), this.home);
+    const validated = validateSessionId(sessionId);
+    await this.processSupervisor.stopSession(validated);
+    await deleteStoredSession(validated, this.home);
     return this.bootstrap();
   }
 
@@ -153,6 +160,7 @@ export class DesktopAppService {
   }
 
   async deleteProject(workspaceRoot: string) {
+    await this.processSupervisor.stopWorkspace(workspaceRoot);
     await deleteSessionsForWorkspace(workspaceRoot, this.home);
     await deleteProjectMetadata(workspaceRoot, this.home);
     return this.bootstrap();

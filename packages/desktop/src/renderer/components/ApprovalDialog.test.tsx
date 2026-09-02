@@ -4,10 +4,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopApi } from "../../shared/contracts";
 import "../../test/setup";
-import { ApprovalDialog, QuestionDialog } from "./ApprovalDialog";
+import { ApprovalCard, QuestionDialog } from "./ApprovalDialog";
 
-describe("ApprovalDialog", () => {
-  it("shows approval evidence and sends allow or deny decisions", async () => {
+describe("ApprovalCard", () => {
+  it("shows a compact command prompt and sends allow-once or deny decisions", async () => {
     const respondApproval = vi.fn().mockResolvedValue(undefined);
     const api = { respondApproval } as unknown as DesktopApi;
     const request = {
@@ -18,13 +18,14 @@ describe("ApprovalDialog", () => {
       reason: "Command execution needs review",
     };
     const { rerender } = render(
-      <ApprovalDialog api={api} request={request} onResolved={vi.fn()} />,
+      <ApprovalCard api={api} request={request} onResolved={vi.fn()} />,
     );
 
-    expect(screen.getByText("shell_command")).toBeVisible();
+    expect(screen.getByRole("region", { name: "需要审批" })).toBeVisible();
+    expect(screen.getByText("是否允许我执行这个命令？")).toBeVisible();
     expect(screen.getByText(/pnpm test/)).toBeVisible();
-    expect(screen.getByText("Command execution needs review")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "允许" }));
+    expect(screen.queryByText("Command execution needs review")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "允许一次" }));
     await waitFor(() =>
       expect(respondApproval).toHaveBeenCalledWith({
         runId: "run_1",
@@ -33,7 +34,7 @@ describe("ApprovalDialog", () => {
       }),
     );
 
-    rerender(<ApprovalDialog api={api} request={request} onResolved={vi.fn()} />);
+    rerender(<ApprovalCard api={api} request={request} onResolved={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
     await waitFor(() =>
       expect(respondApproval).toHaveBeenLastCalledWith({
@@ -42,6 +43,19 @@ describe("ApprovalDialog", () => {
         approved: false,
       }),
     );
+  });
+
+  it("supports Enter and Escape shortcuts", async () => {
+    const respondApproval = vi.fn().mockResolvedValue(undefined);
+    const api = { respondApproval } as unknown as DesktopApi;
+    const request = { runId: "run_1", requestId: "approval_1", tool: "process.start", input: { label: "dev" }, reason: "reason" };
+    const first = render(<ApprovalCard api={api} request={request} onResolved={vi.fn()} />);
+    fireEvent.keyDown(window, { key: "Enter" });
+    await waitFor(() => expect(respondApproval).toHaveBeenCalledWith({ runId: "run_1", requestId: "approval_1", approved: true }));
+    first.unmount();
+    render(<ApprovalCard api={api} request={request} onResolved={vi.fn()} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(respondApproval).toHaveBeenLastCalledWith({ runId: "run_1", requestId: "approval_1", approved: false }));
   });
 });
 

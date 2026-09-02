@@ -13,7 +13,7 @@ import {
   readSessionEvents,
   rollbackSession,
 } from "@dreamcode/store";
-import { createDefaultToolRegistry } from "@dreamcode/tools";
+import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
 import {
   Box,
   type Key,
@@ -55,6 +55,7 @@ export interface InkTuiInput {
   home?: string;
   maxToolCalls: number;
   createProvider: (prompt: string) => { provider: ModelProvider; model?: string };
+  processSupervisor?: ProcessSupervisor;
 }
 
 interface PendingApproval {
@@ -136,12 +137,17 @@ const DREAMCODE_MASCOT_PIXELS = [
 ] as const;
 
 export async function runInkTui(input: InkTuiInput): Promise<void> {
-  const app = render(React.createElement(DreamCodeTui, input), {
+  const processSupervisor = input.processSupervisor ?? new ProcessSupervisor();
+  const app = render(React.createElement(DreamCodeTui, { ...input, processSupervisor }), {
     exitOnCtrlC: false,
     alternateScreen: true,
     maxFps: 24,
   });
-  await app.waitUntilExit();
+  try {
+    await app.waitUntilExit();
+  } finally {
+    await processSupervisor.dispose();
+  }
 }
 
 export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
@@ -164,11 +170,22 @@ export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
     }),
   );
   const abortRef = useRef<AbortController | undefined>(undefined);
+  const processSupervisorRef = useRef<ProcessSupervisor | undefined>(undefined);
+  if (!processSupervisorRef.current) {
+    processSupervisorRef.current = input.processSupervisor ?? new ProcessSupervisor();
+  }
   const sessionIdRef = useRef<string | undefined>(undefined);
   const pendingApprovalRef = useRef<PendingApproval | undefined>(undefined);
   const pendingQuestionRef = useRef<PendingQuestion | undefined>(undefined);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | undefined>();
+
+  useEffect(
+    () => () => {
+      void processSupervisorRef.current?.dispose();
+    },
+    [],
+  );
 
   const requestApproval = useCallback((request: ApprovalRequest): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -226,7 +243,10 @@ export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
           mode: runMode,
           home: input.home,
           maxToolCalls: input.maxToolCalls,
-          registry: createDefaultToolRegistry({ mcpServers: input.config.mcpServers }),
+          registry: createDefaultToolRegistry({
+            mcpServers: input.config.mcpServers,
+            processSupervisor: processSupervisorRef.current,
+          }),
           signal: abortController.signal,
           approvalHandler: requestApproval,
           questionHandler: requestQuestion,

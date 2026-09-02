@@ -25,6 +25,22 @@ import { createTwoFilesPatch } from "diff";
 import fg from "fast-glob";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import {
+  ProcessSupervisor,
+  type ProcessLogCursor,
+  type ProcessScope,
+} from "./process-supervisor.js";
+
+export {
+  ProcessSupervisor,
+  type ManagedProcessInfo,
+  type ManagedProcessState,
+  type ProcessLogCursor,
+  type ProcessLogsResult,
+  type ProcessScope,
+  type ProcessStopResult,
+  type ProcessSupervisorOptions,
+} from "./process-supervisor.js";
 
 export interface McpServerConfig {
   command: string;
@@ -39,12 +55,16 @@ export interface ToolRegistryOptions {
     exaApiKey?: string;
     exaBaseUrl?: string;
   };
+  processSupervisor?: ProcessSupervisor;
 }
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
-  constructor(private readonly configuredOptionalFamilies = new Set<string>()) {}
+  constructor(
+    private readonly configuredOptionalFamilies = new Set<string>(),
+    readonly processSupervisor = new ProcessSupervisor(),
+  ) {}
 
   register(tool: Tool): void {
     if (this.tools.has(tool.name)) {
@@ -93,14 +113,16 @@ function toToolInputSchema(inputSchema: z.ZodTypeAny): Record<string, unknown> {
 export function createDefaultToolRegistry(options: ToolRegistryOptions = {}): ToolRegistry {
   const configuredFamilies = new Set<string>(["web", "skill"]);
   if (Object.keys(options.mcpServers ?? {}).length) configuredFamilies.add("mcp");
-  const registry = new ToolRegistry(configuredFamilies);
-  for (const tool of createBuiltinTools(options)) {
+  const processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
+  const registry = new ToolRegistry(configuredFamilies, processSupervisor);
+  for (const tool of createBuiltinTools({ ...options, processSupervisor })) {
     registry.register(tool);
   }
   return registry;
 }
 
 export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
+  const processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
   return [
     runtimeInfoTool,
     fileReadTool,
@@ -111,6 +133,7 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     searchGrepTool,
     searchGlobTool,
     processRunTool,
+    ...createManagedProcessTools(processSupervisor),
     shellRunTool,
     gitStatusTool,
     gitDiffTool,
@@ -165,6 +188,12 @@ function buildRuntimeInfo(workspaceRoot: string, mode: ToolExecutionContext["mod
       workspaceRoot: path.resolve(workspaceRoot),
       defaultCwd: path.resolve(workspaceRoot),
       maxTimeoutMs: MAX_COMMAND_TIMEOUT_MS,
+      managedProcesses: {
+        supported: true,
+        scope: "session",
+        survivesHostRestart: false,
+        maxLogReadBytes: 64 * 1024,
+      },
     },
     constraints: {
       currentMode: mode,
@@ -518,6 +547,207 @@ const processRunTool: Tool<z.infer<typeof processRunSchema>> = {
     });
   },
 };
+
+const processStartSchema = z.object({
+  program: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  cwd: z.string().min(1).optional(),
+  env: commandEnvironmentSchema.optional(),
+  label: z.string().min(1).max(120).optional(),
+});
+
+const managedProcessIdSchema = z.string().regex(/^proc_[a-f0-9]{32}$/);
+
+const processStatusSchema = z.object({ processId: managedProcessIdSchema });
+
+const processLogsSchema = z.object({
+  processId: managedProcessIdSchema,
+  cursor: z
+    .object({
+      stdoutOffset: z.number().int().nonnegative(),
+      stderrOffset: z.number().int().nonnegative(),
+    })
+    .default({ stdoutOffset: 0, stderrOffset: 0 }),
+  maxBytes: z.number().int().min(1024).max(64 * 1024).default(16 * 1024),
+});
+
+const processStopSchema = z.object({
+  processId: managedProcessIdSchema,
+  graceMs: z.number().int().nonnegative().max(10_000).default(3000),
+  force: z.boolean().default(false),
+});
+
+function createManagedProcessTools(supervisor: ProcessSupervisor): Tool[] {
+  const startTool: Tool<z.infer<typeof processStartSchema>> = {
+    name: "process.start",
+    description:
+      "Start one long-running program without a shell and return a managed processId after spawn. The process remains available across tool calls; use process.logs/status/stop to manage it.",
+    inputSchema: processStartSchema,
+    risk: { tags: ["shell_mutating", "long_running"], runsCommands: true },
+    preflight(rawInput, context) {
+      const parsed = processStartSchema.safeParse(rawInput);
+      return parsed.success
+        ? undefined
+        : commandInputValidationResult(context.toolCallId, parsed.error.issues);
+    },
+    async execute(rawInput, context) {
+      const input = processStartSchema.parse(rawInput);
+      const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
+      const cwdError = await commandCwdError(context.toolCallId, cwd);
+      if (cwdError) return cwdError;
+      const command = [input.program, ...input.args].join(" ");
+      try {
+        const info = await supervisor.start(managedProcessScope(context), {
+          program: input.program,
+          args: input.args,
+          cwd,
+          env: mergeCommandEnvironment(input.env),
+          label: input.label,
+          signal: context.signal,
+        });
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: `Started managed process '${command}' as ${info.processId}.`,
+          data: { ...info, command },
+          execution: { outcome: "background_started", started: true },
+        };
+      } catch (error) {
+        return managedProcessErrorResult(context.toolCallId, error, command);
+      }
+    },
+  };
+
+  const statusTool: Tool<z.infer<typeof processStatusSchema>> = {
+    name: "process.status",
+    description: "Return the current lifecycle state of a managed process in this session.",
+    inputSchema: processStatusSchema,
+    risk: { tags: [] },
+    async execute(rawInput, context) {
+      const input = processStatusSchema.parse(rawInput);
+      try {
+        const info = await supervisor.status(managedProcessScope(context), input.processId);
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: `Managed process ${input.processId} is ${info.state}.`,
+          data: info,
+        };
+      } catch (error) {
+        return managedProcessErrorResult(context.toolCallId, error);
+      }
+    },
+  };
+
+  const logsTool: Tool<z.infer<typeof processLogsSchema>> = {
+    name: "process.logs",
+    description:
+      "Read bounded incremental stdout and stderr from a managed process. Pass nextCursor back as cursor to avoid repeating output.",
+    inputSchema: processLogsSchema,
+    risk: { tags: [] },
+    async execute(rawInput, context) {
+      const input = processLogsSchema.parse(rawInput);
+      try {
+        const logs = await supervisor.logs(
+          managedProcessScope(context),
+          input.processId,
+          input.cursor satisfies ProcessLogCursor,
+          input.maxBytes,
+        );
+        const bytes =
+          Buffer.byteLength(logs.stdout.text, "utf8") + Buffer.byteLength(logs.stderr.text, "utf8");
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: `Read ${bytes} byte(s) of logs from ${input.processId}.`,
+          data: logs,
+          warnings:
+            logs.logsTruncated.stdout || logs.logsTruncated.stderr
+              ? ["Process log retention limit was reached; later output may not have been persisted."]
+              : undefined,
+          usage: { stdoutBytes: Buffer.byteLength(logs.stdout.text), stderrBytes: Buffer.byteLength(logs.stderr.text) },
+        };
+      } catch (error) {
+        return managedProcessErrorResult(context.toolCallId, error);
+      }
+    },
+  };
+
+  const stopTool: Tool<z.infer<typeof processStopSchema>> = {
+    name: "process.stop",
+    description:
+      "Stop a managed process tree in this session. Stop is idempotent and escalates to force after the grace period.",
+    inputSchema: processStopSchema,
+    risk: { tags: ["long_running"], runsCommands: true },
+    async execute(rawInput, context) {
+      const input = processStopSchema.parse(rawInput);
+      try {
+        const stopped = await supervisor.stop(managedProcessScope(context), input.processId, input);
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: stopped.terminationUncertain
+            ? `Stop was requested for ${input.processId}, but termination could not be confirmed.`
+            : `Managed process ${input.processId} is ${stopped.state}.`,
+          data: stopped,
+          warnings: stopped.terminationUncertain
+            ? ["The complete process tree may not have terminated."]
+            : undefined,
+        };
+      } catch (error) {
+        return managedProcessErrorResult(context.toolCallId, error);
+      }
+    },
+  };
+
+  return [startTool, statusTool, logsTool, stopTool];
+}
+
+function managedProcessScope(context: ToolExecutionContext): ProcessScope {
+  return {
+    sessionId: context.sessionId ?? path.resolve(context.sessionDir),
+    sessionDir: context.sessionDir,
+    workspaceRoot: context.workspaceRoot,
+  };
+}
+
+function managedProcessErrorResult(toolCallId: string, error: unknown, command?: string): ToolResult {
+  const code =
+    error && typeof error === "object" && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "process_management_failed";
+  const category: NonNullable<ToolResult["error"]>["category"] =
+    code === "program_not_found" || code === "process_not_found"
+      ? "environment"
+      : code === "start_aborted"
+        ? "cancelled"
+        : "execution";
+  return {
+    toolCallId,
+    status: code === "start_aborted" ? "cancelled" : "error",
+    summary: command
+      ? `Could not start managed process '${command}': ${toErrorMessage(error)}`
+      : toErrorMessage(error),
+    error: {
+      code,
+      category,
+      reason: code,
+      message: toErrorMessage(error),
+      retryable: code === "process_limit_exceeded",
+    },
+    execution: command
+      ? {
+          outcome:
+            code === "program_not_found"
+              ? "program_not_found"
+              : code === "start_aborted"
+                ? "aborted"
+                : "spawn_failed",
+          started: false,
+        }
+      : undefined,
+  };
+}
 
 const shellRunSchema = z.object({
   command: z.string().min(1),

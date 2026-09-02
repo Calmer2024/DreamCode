@@ -7,7 +7,7 @@ import {
   type DreamCodeLlmProfile,
   loadDreamCodeConfig,
 } from "@dreamcode/store";
-import { createDefaultToolRegistry } from "@dreamcode/tools";
+import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
 import type {
   ApprovalResponse,
   DesktopApprovalRequest,
@@ -45,6 +45,7 @@ export interface DesktopRunManagerOptions {
     profile: DreamCodeLlmProfile,
   ) => { provider: ModelProvider; model?: string };
   createRegistry?: typeof createDefaultToolRegistry;
+  processSupervisor?: ProcessSupervisor;
   getSkillRegistry?: (workspaceRoot: string) => Promise<SkillRegistry>;
   emitEvent?: (event: DesktopRunEvent) => unknown;
   emitApproval?: (request: DesktopApprovalRequest) => unknown;
@@ -57,6 +58,7 @@ export class DesktopRunManager {
   readonly #loadConfig: NonNullable<DesktopRunManagerOptions["loadConfig"]>;
   readonly #createProvider: NonNullable<DesktopRunManagerOptions["createProvider"]>;
   readonly #createRegistry: NonNullable<DesktopRunManagerOptions["createRegistry"]>;
+  readonly #processSupervisor: ProcessSupervisor;
   readonly #getSkillRegistry?: DesktopRunManagerOptions["getSkillRegistry"];
   readonly #emitEvent: NonNullable<DesktopRunManagerOptions["emitEvent"]>;
   readonly #emitApproval: NonNullable<DesktopRunManagerOptions["emitApproval"]>;
@@ -69,6 +71,7 @@ export class DesktopRunManager {
     this.#loadConfig = options.loadConfig ?? loadDreamCodeConfig;
     this.#createProvider = options.createProvider ?? createDesktopProvider;
     this.#createRegistry = options.createRegistry ?? createDefaultToolRegistry;
+    this.#processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
     this.#getSkillRegistry = options.getSkillRegistry;
     this.#emitEvent = options.emitEvent ?? (() => undefined);
     this.#emitApproval = options.emitApproval ?? (() => undefined);
@@ -121,11 +124,11 @@ export class DesktopRunManager {
 
   async dispose(): Promise<void> {
     const run = this.#active;
-    if (!run) {
-      return;
+    if (run) {
+      this.#interrupt(run, "Desktop run manager disposed.");
+      await run.completion;
     }
-    this.#interrupt(run, "Desktop run manager disposed.");
-    await run.completion;
+    await this.#processSupervisor.dispose();
   }
 
   async #execute(run: ActiveRun, request: StartTurnRequest): Promise<void> {
@@ -170,6 +173,7 @@ export class DesktopRunManager {
         registry: this.#createRegistry({
           mcpServers: config.mcpServers,
           webSearch: { exaApiKey: config.exaApiKey },
+          processSupervisor: this.#processSupervisor,
         }),
         skillRegistry: await this.#getSkillRegistry?.(request.workspaceRoot),
         signal: run.abortController.signal,

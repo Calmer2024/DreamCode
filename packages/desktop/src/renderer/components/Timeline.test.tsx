@@ -50,6 +50,9 @@ describe("Timeline", () => {
         entry("status", "Turn completed", "All tests passed"),
       ],
       changedFiles: [{ path: "src/app.ts", operation: "update", diff: "--- a\n+++ b\n-old\n+new" }],
+      changedFilesByTurn: {
+        turn_1: [{ path: "src/app.ts", operation: "update", diff: "--- a\n+++ b\n-old\n+new" }],
+      },
       turnUsage: {
         turn_1: { inputTokens: 12_000, outputTokens: 800, totalTokens: 12_800 },
       },
@@ -119,7 +122,7 @@ describe("Timeline", () => {
     );
 
     expect(screen.getAllByText(request.prompt)).toHaveLength(1);
-    expect(within(screen.getByLabelText("轮次状态")).queryByText(request.prompt)).toBeNull();
+    expect(screen.queryByTestId("timeline-turn")).not.toBeInTheDocument();
     expect(screen.getByTestId("timeline-user")).toHaveTextContent(request.prompt);
   });
 
@@ -146,6 +149,52 @@ describe("Timeline", () => {
     expect(notice?.closest("details")).toBeNull();
   });
 
+  it("shows the active status at the bottom without an elapsed timer", () => {
+    const state: DesktopState = {
+      ...createDesktopState(),
+      workspaceRoot: "D:\\Projects\\DreamCode",
+      timeline: [
+        entry("turn", "Turn started", "guided"),
+        entry("event", "Model started", "openai / gpt-5"),
+        { ...entry("assistant", "Assistant", "正在输出内容"), turnId: "turn_1" },
+      ],
+    };
+
+    render(<Timeline state={state} profileUsable onConfigure={vi.fn()} onChooseWorkspace={vi.fn()} />);
+
+    expect(screen.getByText("执行中")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("正在思考");
+    expect(screen.queryByText(/处理中|分钟|秒/)).toBeNull();
+    expect(screen.getByTestId("timeline-assistant").compareDocumentPosition(screen.getByRole("status")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders only the diff belonging to each turn", () => {
+    const filesForTurn = (path: string, line: string) => [{ path, operation: "update" as const, diff: `--- a/${path}\n+++ b/${path}\n-${line}\n+${line}-changed` }];
+    const state: DesktopState = {
+      ...createDesktopState(),
+      workspaceRoot: "D:\\Projects\\DreamCode",
+      timeline: [
+        { ...entry("status", "Turn completed", "done"), turnId: "turn_1" },
+        { ...entry("turn", "Turn started", "guided"), id: "turn-2", turnId: "turn_2" },
+        { ...entry("assistant", "Assistant", "second turn"), id: "assistant-2", turnId: "turn_2" },
+        { ...entry("status", "Turn completed", "done"), id: "status-2", turnId: "turn_2" },
+      ],
+      changedFilesByTurn: {
+        turn_1: filesForTurn("src/first.ts", "first"),
+        turn_2: filesForTurn("src/second.ts", "second"),
+      },
+    };
+
+    render(<Timeline state={state} profileUsable onConfigure={vi.fn()} onChooseWorkspace={vi.fn()} />);
+
+    const cards = screen.getAllByLabelText("已编辑 1 个文件");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveTextContent("src/first.ts");
+    expect(cards[1]).toHaveTextContent("src/second.ts");
+    expect(cards[0]).not.toHaveTextContent("src/second.ts");
+    expect(cards[1]).not.toHaveTextContent("src/first.ts");
+  });
+
   it("composes process evidence and aggregates file changes into a review card", () => {
     const state: DesktopState = {
       ...createDesktopState(),
@@ -161,6 +210,9 @@ describe("Timeline", () => {
       changedFiles: [
         { path: "src/app.ts", operation: "update", diff: "--- a\n+++ b\n-before\n+after" },
       ],
+      changedFilesByTurn: {
+        turn_1: [{ path: "src/app.ts", operation: "update", diff: "--- a\n+++ b\n-before\n+after" }],
+      },
     };
 
     render(
@@ -178,15 +230,8 @@ describe("Timeline", () => {
     expect(changes).toHaveTextContent("-before");
 
     expect(screen.queryByTestId("timeline-status")).not.toBeInTheDocument();
-    for (const [label, testId] of [
-      ["轮次状态", "timeline-turn"],
-      ["会话状态", "timeline-session"],
-    ] as const) {
-      expect(screen.getByLabelText(label)).toHaveClass("lifecycle-entry");
-      expect(screen.getByTestId(testId)).toContainElement(
-        within(screen.getByLabelText(label)).getByRole("heading", { level: 3 }),
-      );
-    }
+    expect(screen.queryByTestId("timeline-turn")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("timeline-session")).not.toBeInTheDocument();
 
     const evidence = screen.getByLabelText("事件证据");
     expect(evidence).toHaveClass("evidence-entry", "event-entry");

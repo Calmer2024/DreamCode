@@ -10,7 +10,7 @@ import type {
   DesktopRunStatus,
   StartTurnRequest,
 } from "../../shared/contracts";
-import { ApprovalDialog } from "../components/ApprovalDialog";
+import { ApprovalCard } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
 import { ConfigDialog } from "../components/ConfigDialog";
 import { DetailDrawer, type DetailTab } from "../components/DetailDrawer";
@@ -134,12 +134,13 @@ export function App({ api = window.dreamcode }: AppProps) {
   const timeline = selectTimeline(state);
   const running = state.runStatus === "running" && Boolean(state.activeRunId);
   const busy = running || starting;
+  const approvalPending = Boolean(approvalRequest);
   const selectedProfile = state.profiles.find((profile) => profile.id === profileId);
   const selectedPreset = state.presets.find((preset) => preset.id === selectedProfile?.provider);
   const displayedContextUsage = contextUsageForModel(selectedPreset, modelId, state.contextUsage);
   const profileUsable = Boolean(selectedProfile && isProfileUsable(selectedProfile));
   const canSubmit = Boolean(
-    prompt.trim() && state.workspaceRoot?.trim() && profileUsable && modelId.trim() && !busy,
+    prompt.trim() && state.workspaceRoot?.trim() && profileUsable && modelId.trim() && !busy && !approvalPending,
   );
 
   const taskTitle =
@@ -155,7 +156,8 @@ export function App({ api = window.dreamcode }: AppProps) {
     const mainPane = mainPaneRef.current;
     const composerStack = composerStackRef.current;
     if (!mainPane || !composerStack) return;
-    const composer = composerStack.querySelector<HTMLElement>(".composer-stack") ?? composerStack;
+    const composer = composerStack.querySelector<HTMLElement>(".composer-stack, .approval-card");
+    if (!composer) return;
     const updateHeight = () => {
       mainPane.style.setProperty("--composer-height", `${composer.getBoundingClientRect().height}px`);
     };
@@ -164,7 +166,7 @@ export function App({ api = window.dreamcode }: AppProps) {
     const observer = new ResizeObserver(updateHeight);
     observer.observe(composer);
     return () => observer.disconnect();
-  }, [loading, state.workspaceRoot, state.activeSessionId, state.request, timeline.length]);
+  }, [approvalRequest, loading, state.workspaceRoot, state.activeSessionId, state.request, timeline.length]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -459,7 +461,13 @@ export function App({ api = window.dreamcode }: AppProps) {
             </div>
           ) : null}
           <div ref={composerStackRef} className="composer-stack-anchor">
-          <Composer
+          {approvalRequest ? (
+            <ApprovalCard
+              api={api}
+              request={approvalRequest}
+              onResolved={() => setApprovalRequest(undefined)}
+            />
+          ) : <Composer
             api={api}
             workspaceRoot={state.workspaceRoot}
             prompt={prompt}
@@ -481,7 +489,7 @@ export function App({ api = window.dreamcode }: AppProps) {
             onModelChange={setModelId}
             onSubmit={() => void submit()}
             onStop={() => void stop()}
-          />
+          />}
           </div>
         </main>
         {state.drawer ? (
@@ -492,13 +500,6 @@ export function App({ api = window.dreamcode }: AppProps) {
             workspaceRoot={state.workspaceRoot}
             initialTab={drawerTab}
             onClose={() => dispatch({ type: "drawer.close" })}
-          />
-        ) : null}
-        {approvalRequest ? (
-          <ApprovalDialog
-            api={api}
-            request={approvalRequest}
-            onResolved={() => setApprovalRequest(undefined)}
           />
         ) : null}
         {workspacePendingRemoval ? (

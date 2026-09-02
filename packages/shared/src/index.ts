@@ -102,6 +102,12 @@ export interface RuntimeInfo {
     workspaceRoot: string;
     defaultCwd: string;
     maxTimeoutMs: number;
+    managedProcesses?: {
+      supported: boolean;
+      scope: "session";
+      survivesHostRestart: boolean;
+      maxLogReadBytes: number;
+    };
   };
   constraints: {
     currentMode: RunMode;
@@ -120,6 +126,7 @@ export type ExecutionOutcome =
   | "unsupported_shell"
   | "program_not_found"
   | "spawn_failed"
+  | "background_started"
   | "exited_zero"
   | "exited_nonzero"
   | "timed_out"
@@ -219,6 +226,7 @@ export interface SkillTurnContext {
 export interface ToolExecutionContext {
   workspaceRoot: string;
   sessionDir: string;
+  sessionId?: string;
   mode: RunMode;
   toolCallId: string;
   signal?: AbortSignal;

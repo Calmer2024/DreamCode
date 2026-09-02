@@ -17,6 +17,81 @@ test.afterEach(async () => {
   await closeAllDesktopApplications();
 });
 
+test("keeps the sidebar footer and composer inside the viewport with many sessions", async () => {
+  const scenario = await prepareScenario("readme-update");
+  const createdAt = "2026-08-31T12:00:00.000Z";
+  const workspaceRoots = Array.from({ length: 4 }, (_, index) =>
+    index === 0 ? scenario.workspace : path.join(scenario.root, `workspace-${index + 1}`),
+  );
+  const sessions = workspaceRoots.flatMap((workspaceRoot, projectIndex) =>
+    Array.from({ length: 4 }, (_, sessionIndex) => {
+      const id = `sess_layout_${projectIndex + 1}_${sessionIndex + 1}`;
+      return {
+        id,
+        workspaceRoot,
+        status: "completed",
+        title: `Layout regression session ${projectIndex + 1}-${sessionIndex + 1}`,
+        firstPrompt: `Layout regression session ${projectIndex + 1}-${sessionIndex + 1}`,
+        createdAt,
+        updatedAt: createdAt,
+        changedFileCount: 0,
+        commandCount: 0,
+        totalCostUsd: 0,
+        eventLogPath: path.join(scenario.home, "sessions", id, "events.jsonl"),
+      };
+    }),
+  );
+
+  await writeFile(
+    path.join(scenario.home, "config.json"),
+    `${JSON.stringify({
+      version: 2,
+      profiles: {},
+      projects: workspaceRoots.map((workspaceRoot, index) => ({
+        workspaceRoot,
+        name: `Layout project ${index + 1}`,
+        createdAt,
+      })),
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(scenario.home, "index.sqlite.json"),
+    `${JSON.stringify({ version: 1, rebuiltAt: createdAt, sessions })}\n`,
+    "utf8",
+  );
+
+  try {
+    const desktop = await launchDesktop(scenario);
+    await expect(desktop.page.getByRole("button", { name: "设置", exact: true })).toBeVisible();
+    await expect(desktop.page.locator(".composer-stack")).toBeVisible();
+
+    const geometry = await desktop.page.evaluate(() => {
+      const bounds = (selector: string) => {
+        const element = document.querySelector(selector);
+        if (!(element instanceof HTMLElement)) throw new Error(`Missing ${selector}`);
+        return element.getBoundingClientRect().toJSON();
+      };
+      return {
+        viewportHeight: window.innerHeight,
+        appShell: bounds(".app-shell"),
+        sidebar: bounds(".sidebar"),
+        mainPane: bounds(".main-pane"),
+        sidebarFooter: bounds(".sidebar-footer"),
+        composer: bounds(".composer-stack"),
+      };
+    });
+
+    expect(geometry.appShell.bottom).toBe(geometry.viewportHeight);
+    expect(geometry.sidebar.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    expect(geometry.mainPane.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    expect(geometry.sidebarFooter.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+  } finally {
+    await cleanupScenario(scenario);
+  }
+});
+
 test("launches, completes a Fake task, reviews inline changes, restarts, and resumes the Session", async () => {
   test.slow();
   const scenario = await prepareScenario("failing-test-js");

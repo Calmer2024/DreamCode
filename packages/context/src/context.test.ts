@@ -37,6 +37,9 @@ describe("ContextBuilder structured history", () => {
       ]),
     );
     expect(result.maxTokens).toBe(64_000);
+    const systemMessage = result.messages.find((message) => message.role === "system");
+    expect(systemMessage?.content).toContain("Respond in the same language as the user's latest message.");
+    expect(systemMessage?.content).toContain("Keep code, commands, file paths, identifiers, and tool output unchanged");
   });
 
   it("compacts older complete interactions while retaining recent messages", async () => {

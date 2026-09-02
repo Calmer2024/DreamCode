@@ -284,6 +284,9 @@ describe("runTurn fake model integration", () => {
     );
 
     expect(secondEvents.some((event) => event.type === "session.resumed")).toBe(true);
+    const secondCompleted = secondEvents.find((event) => event.type === "turn.completed");
+    expect(secondCompleted).toBeDefined();
+    expect((secondCompleted!.payload as { summary: FinalSummary }).summary.changedFiles).toEqual([]);
     const replayed = await readReplayedSession(sessionId!, home);
     expect(replayed.turns).toHaveLength(2);
     expect(replayed.changedFiles.map((file) => file.path)).toContain("DREAMCODE_NOTES.md");

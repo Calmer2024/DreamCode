@@ -111,6 +111,158 @@ describe("builtin tools", () => {
     expect(large.streams?.stdout.artifactRef).toMatch(/^artifact:\/\//);
   });
 
+  it("starts, observes, reads, and stops a managed long-running process", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-managed-process-"));
+    const sessionDir = path.join(workspaceRoot, "session");
+    const registry = createDefaultToolRegistry();
+    const context = {
+      workspaceRoot,
+      sessionDir,
+      sessionId: "session_managed",
+      mode: "yolo" as const,
+    };
+
+    try {
+      const started = await registry.get("process.start")!.execute(
+        {
+          program: process.execPath,
+          args: [
+            "-e",
+            "console.log('managed-ready'); setInterval(() => console.error('managed-tick'), 25)",
+          ],
+          label: "test-server",
+        },
+        { ...context, toolCallId: "managed_start" },
+      );
+      expect(started.status).toBe("success");
+      expect(started.execution).toMatchObject({ outcome: "background_started", started: true });
+      const processId = (started.data as { processId: string }).processId;
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const status = await registry
+        .get("process.status")!
+        .execute({ processId }, { ...context, toolCallId: "managed_status" });
+      expect(status.data).toMatchObject({ processId, state: "running", alive: true });
+
+      const nextTurnRegistry = createDefaultToolRegistry({
+        processSupervisor: registry.processSupervisor,
+      });
+      const nextTurnStatus = await nextTurnRegistry
+        .get("process.status")!
+        .execute({ processId }, { ...context, toolCallId: "managed_status_next_turn" });
+      expect(nextTurnStatus.data).toMatchObject({ processId, state: "running", alive: true });
+
+      const logs = await registry
+        .get("process.logs")!
+        .execute({ processId }, { ...context, toolCallId: "managed_logs" });
+      expect((logs.data as { stdout: { text: string } }).stdout.text).toContain("managed-ready");
+      expect((logs.data as { nextCursor: { stdoutOffset: number } }).nextCursor.stdoutOffset).toBeGreaterThan(0);
+      const nextCursor = (
+        logs.data as { nextCursor: { stdoutOffset: number; stderrOffset: number } }
+      ).nextCursor;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const incrementalLogs = await registry.get("process.logs")!.execute(
+        { processId, cursor: nextCursor },
+        { ...context, toolCallId: "managed_logs_incremental" },
+      );
+      expect((incrementalLogs.data as { stdout: { text: string } }).stdout.text).not.toContain(
+        "managed-ready",
+      );
+
+      const stopped = await registry
+        .get("process.stop")!
+        .execute({ processId, graceMs: 500 }, { ...context, toolCallId: "managed_stop" });
+      expect(stopped.status).toBe("success");
+      expect(stopped.data).toMatchObject({ processId, state: "stopped" });
+
+      const stoppedAgain = await registry
+        .get("process.stop")!
+        .execute({ processId }, { ...context, toolCallId: "managed_stop_again" });
+      expect(stoppedAgain.status).toBe("success");
+    } finally {
+      await registry.processSupervisor.dispose();
+    }
+  });
+
+  it("isolates managed process IDs between sessions", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-process-scope-"));
+    const registry = createDefaultToolRegistry();
+    try {
+      const started = await registry.get("process.start")!.execute(
+        { program: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] },
+        {
+          workspaceRoot,
+          sessionDir: path.join(workspaceRoot, "session-a"),
+          sessionId: "session_a",
+          mode: "yolo",
+          toolCallId: "scope_start",
+        },
+      );
+      const processId = (started.data as { processId: string }).processId;
+      const foreign = await registry.get("process.status")!.execute(
+        { processId },
+        {
+          workspaceRoot,
+          sessionDir: path.join(workspaceRoot, "session-b"),
+          sessionId: "session_b",
+          mode: "yolo",
+          toolCallId: "scope_status",
+        },
+      );
+      expect(foreign).toMatchObject({
+        status: "error",
+        error: { code: "process_not_found" },
+      });
+    } finally {
+      await registry.processSupervisor.dispose();
+    }
+  });
+
+  it("retains status and logs for fast exits and classifies start failures", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-process-exit-"));
+    const registry = createDefaultToolRegistry();
+    const context = {
+      workspaceRoot,
+      sessionDir: path.join(workspaceRoot, "session"),
+      sessionId: "session_exit",
+      mode: "yolo" as const,
+    };
+    try {
+      const started = await registry.get("process.start")!.execute(
+        { program: process.execPath, args: ["-e", "console.log('before-exit'); process.exit(7)"] },
+        { ...context, toolCallId: "fast_start" },
+      );
+      expect(started.status).toBe("success");
+      const processId = (started.data as { processId: string }).processId;
+      let status = await registry
+        .get("process.status")!
+        .execute({ processId }, { ...context, toolCallId: "fast_status_0" });
+      for (let attempt = 1; attempt <= 20 && (status.data as { alive: boolean }).alive; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        status = await registry
+          .get("process.status")!
+          .execute({ processId }, { ...context, toolCallId: `fast_status_${attempt}` });
+      }
+      expect(status.data).toMatchObject({ state: "exited", alive: false, exitCode: 7 });
+      const logs = await registry
+        .get("process.logs")!
+        .execute({ processId }, { ...context, toolCallId: "fast_logs" });
+      expect((logs.data as { stdout: { text: string } }).stdout.text).toContain("before-exit");
+
+      const missing = await registry.get("process.start")!.execute(
+        { program: `definitely-missing-${Date.now()}` },
+        { ...context, toolCallId: "missing_start" },
+      );
+      expect(missing).toMatchObject({
+        status: "error",
+        error: { code: "program_not_found" },
+        execution: { outcome: "program_not_found", started: false },
+      });
+    } finally {
+      await registry.processSupervisor.dispose();
+    }
+  });
+
   it("rejects multi-step and stateful shell expressions but permits pipelines", () => {
     expect(validateShellCommand("git status | findstr main", "cmd")).toEqual([]);
     expect(validateShellCommand("git status && git diff", "cmd")[0]?.code).toBe(

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ProcessSupervisor } from "@dreamcode/tools";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { DesktopAppService } from "./app-service";
 import { registerDesktopIpc } from "./ipc";
@@ -107,7 +108,8 @@ export async function startDesktopApplication(): Promise<void> {
   await app.whenReady();
 
   let mainWindow: DesktopWindow | undefined;
-  const service = new DesktopAppService();
+  const processSupervisor = new ProcessSupervisor();
+  const service = new DesktopAppService(undefined, undefined, processSupervisor);
   const send = (channel: string, payload: unknown) => {
     const window = mainWindow;
     if (window && !window.isDestroyed()) {
@@ -115,6 +117,7 @@ export async function startDesktopApplication(): Promise<void> {
     }
   };
   const runManager = new DesktopRunManager({
+    processSupervisor,
     getSkillRegistry: (workspaceRoot) => service.skills.registryFor(workspaceRoot),
     emitEvent: (message) => send("desktop:run-event", message),
     emitApproval: (request) => send("desktop:approval-request", request),

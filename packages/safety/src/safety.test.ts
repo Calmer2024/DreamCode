@@ -118,6 +118,44 @@ describe("permission engine", () => {
     expect(full.decision).toBe("allow");
     expect(full.risk).toContain("read_external_path");
   });
+
+  it("applies long-running process lifecycle permissions", () => {
+    const workspaceRoot = process.cwd();
+    const planStart = engine.decide({
+      mode: "plan",
+      workspaceRoot,
+      toolCall: {
+        id: "process_start_plan",
+        name: "process.start",
+        input: { program: "node", args: ["server.js"] },
+      },
+    });
+    const guidedStart = engine.decide({
+      mode: "guided",
+      workspaceRoot,
+      toolCall: {
+        id: "process_start_guided",
+        name: "process.start",
+        input: { program: "node", args: ["server.js"] },
+      },
+    });
+    const status = engine.decide({
+      mode: "plan",
+      workspaceRoot,
+      toolCall: { id: "process_status", name: "process.status", input: { processId: "proc_x" } },
+    });
+    const stop = engine.decide({
+      mode: "plan",
+      workspaceRoot,
+      toolCall: { id: "process_stop", name: "process.stop", input: { processId: "proc_x" } },
+    });
+
+    expect(planStart.decision).toBe("deny");
+    expect(planStart.risk).toContain("long_running");
+    expect(guidedStart.decision).toBe("ask");
+    expect(status.decision).toBe("allow");
+    expect(stop.decision).toBe("allow");
+  });
 });
 
 describe("permission capability contract", () => {

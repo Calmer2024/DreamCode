@@ -314,7 +314,15 @@ export class PermissionEngine {
       return this.decideFileTool({ mode, workspaceRoot, toolName, toolInput });
     }
 
-    if (toolName === "shell.run" || toolName === "process.run") {
+    if (toolName === "process.status" || toolName === "process.logs") {
+      return allow("Reading a session-owned managed process is allowed.", []);
+    }
+
+    if (toolName === "process.stop") {
+      return allow("Stopping a session-owned managed process is allowed.", ["long_running"]);
+    }
+
+    if (toolName === "shell.run" || toolName === "process.run" || toolName === "process.start") {
       const command =
         toolName === "shell.run"
           ? stringField(toolInput, "command")
@@ -323,13 +331,20 @@ export class PermissionEngine {
         return deny(`${toolName} requires a command.`, ["shell_mutating"]);
       }
       const classified = PermissionRuleCatalog.classify(command);
+      const classifiedRisk =
+        toolName === "process.start"
+          ? [...new Set([...classified.risk, "long_running" as const])]
+          : classified.risk;
+      if (toolName === "process.start" && mode === "plan") {
+        return deny("Plan mode does not allow starting long-running processes.", classifiedRisk);
+      }
       if (mode === "plan" && classified.risk.includes("shell_mutating")) {
-        return deny("Plan mode does not allow mutating shell commands.", classified.risk);
+        return deny("Plan mode does not allow mutating shell commands.", classifiedRisk);
       }
       const cwd = stringField(toolInput, "cwd") ?? ".";
       const externalCwd = !resolveWorkspacePath(workspaceRoot, cwd).isInside;
       if (externalCwd) {
-        const externalRisk = [...new Set([...classified.risk, "read_external_path" as const])];
+        const externalRisk = [...new Set([...classifiedRisk, "read_external_path" as const])];
         if (classified.decision === "deny") {
           return deny(classified.reason, externalRisk);
         }
@@ -341,13 +356,16 @@ export class PermissionEngine {
         }
         return ask("Using a cwd outside the workspace requires approval in this mode.", externalRisk);
       }
+      if (toolName === "process.start" && mode === "guided" && classified.decision !== "deny") {
+        return ask("Guided mode requires approval before starting a long-running process.", classifiedRisk);
+      }
       if (mode === "guided" && classified.decision === "allow") {
-        return allow(classified.reason, classified.risk);
+        return allow(classified.reason, classifiedRisk);
       }
       if (mode === "full" && classified.decision !== "deny") {
-        return allow("Full mode allows this non-hard-denied shell command.", classified.risk);
+        return allow("Full mode allows this non-hard-denied shell command.", classifiedRisk);
       }
-      return decision(classified.decision, classified.reason, classified.risk);
+      return decision(classified.decision, classified.reason, classifiedRisk);
     }
 
     if (mode === "full") {

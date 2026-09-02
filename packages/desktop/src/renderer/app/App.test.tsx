@@ -685,7 +685,7 @@ describe("DreamCode desktop shell", () => {
         reason: "Needs review",
       }),
     );
-    fireEvent.click(await screen.findByRole("button", { name: "允许" }));
+    fireEvent.click(await screen.findByRole("button", { name: "允许一次" }));
     await waitFor(() =>
       expect(respondApproval).toHaveBeenCalledWith({
         runId: "run_1",
