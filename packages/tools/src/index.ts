@@ -4,7 +4,6 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  buildPermissionCapabilityContract,
   isSecretPath,
   resolveExistingWorkspacePath,
   resolveWorkspacePath,
@@ -12,13 +11,13 @@ import {
 import type {
   ChangedFile,
   ExecutionOutcome,
-  RuntimeInfo,
   ShellKind,
   TodoItem,
   Tool,
   ToolExecutionContext,
   ToolModelSpec,
   ToolResult,
+  RunMode,
 } from "@dreamcode/shared";
 import { todoItemSchema, toErrorMessage } from "@dreamcode/shared";
 import { createTwoFilesPatch } from "diff";
@@ -26,19 +25,19 @@ import fg from "fast-glob";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
-  ProcessSupervisor,
   type ProcessLogCursor,
   type ProcessScope,
+  ProcessSupervisor,
 } from "./process-supervisor.js";
 
 export {
-  ProcessSupervisor,
   type ManagedProcessInfo,
   type ManagedProcessState,
   type ProcessLogCursor,
   type ProcessLogsResult,
   type ProcessScope,
   type ProcessStopResult,
+  ProcessSupervisor,
   type ProcessSupervisorOptions,
 } from "./process-supervisor.js";
 
@@ -85,13 +84,25 @@ export class ToolRegistry {
     return this.configuredOptionalFamilies.has(family);
   }
 
-  toModelSpecs(): ToolModelSpec[] {
-    return this.list().map((tool) => ({
+  toModelSpecs(mode?: RunMode): ToolModelSpec[] {
+    return this.list().filter((tool) => isToolExposedInMode(tool.name, mode)).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: toToolInputSchema(tool.inputSchema),
     }));
   }
+}
+
+function isToolExposedInMode(toolName: string, mode?: RunMode): boolean {
+  if (!mode) return true;
+  if (mode === "plan") {
+    return !toolName.startsWith("file.write") &&
+      !toolName.startsWith("file.patch") &&
+      !toolName.startsWith("web.") &&
+      !toolName.startsWith("mcp.") &&
+      toolName !== "job_kill";
+  }
+  return true;
 }
 
 function toToolInputSchema(inputSchema: z.ZodTypeAny): Record<string, unknown> {
@@ -124,7 +135,6 @@ export function createDefaultToolRegistry(options: ToolRegistryOptions = {}): To
 export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
   const processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
   return [
-    runtimeInfoTool,
     fileReadTool,
     artifactReadTool,
     fileWriteTool,
@@ -132,9 +142,8 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     fileListTool,
     searchGrepTool,
     searchGlobTool,
-    processRunTool,
-    ...createManagedProcessTools(processSupervisor),
-    shellRunTool,
+    createPlatformShellTool(processSupervisor),
+    ...createJobTools(processSupervisor),
     gitStatusTool,
     gitDiffTool,
     todoWriteTool,
@@ -145,113 +154,97 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     skillReadResourceTool,
     createMcpListTool(options.mcpServers ?? {}),
     createMcpCallTool(options.mcpServers ?? {}),
-];
+  ];
 }
 
 const MAX_COMMAND_TIMEOUT_MS = 120_000;
 const STREAM_PREVIEW_BYTES = 4 * 1024;
 
-const runtimeInfoTool: Tool<Record<string, never>, RuntimeInfo> = {
-  name: "runtime.info",
-  description:
-    "Return the current OS, command dialect, path style, stateless execution semantics, and safety constraints. Call before platform-specific shell work.",
-  inputSchema: z.object({}),
-  risk: { tags: [] },
-  async execute(_rawInput, context) {
-    const info = buildRuntimeInfo(context.workspaceRoot, context.mode);
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: `Runtime is ${info.platform.os}/${info.platform.arch}; default shell is ${info.command.defaultShell}.`,
-      data: info,
-    };
-  },
-};
+// Runtime details stay internal to execution and permission decisions. The model
+// selects the platform-specific tool directly.
 
-function buildRuntimeInfo(workspaceRoot: string, mode: ToolExecutionContext["mode"]): RuntimeInfo {
-  const windows = process.platform === "win32";
-  return {
-    platform: {
-      os: process.platform,
-      arch: process.arch,
-      pathSeparator: path.sep,
-      lineEnding: windows ? "crlf" : "lf",
-    },
-    command: {
-      defaultShell: windows ? "cmd" : "sh",
-      supportedShells: windows ? ["cmd", "powershell"] : ["sh", "bash"],
-      environmentVariableStyle: windows ? "percent" : "posix",
-      pathStyle: windows ? "windows" : "posix",
-    },
-    execution: {
-      stateless: true,
-      workspaceRoot: path.resolve(workspaceRoot),
-      defaultCwd: path.resolve(workspaceRoot),
-      maxTimeoutMs: MAX_COMMAND_TIMEOUT_MS,
-      managedProcesses: {
-        supported: true,
-        scope: "session",
-        survivesHostRestart: false,
-        maxLogReadBytes: 64 * 1024,
-      },
-    },
-    constraints: {
-      currentMode: mode,
-      externalCwdPolicy: "mode_dependent",
-      processRunUsesShell: false,
-      shellRunAllowsPipeline: true,
-      shellRunAllowsMultipleSteps: false,
-      externalCwdUsesPermissionEngine: true,
-    },
-    permission: buildPermissionCapabilityContract(mode, process.platform),
-  };
-}
+const fileReadSchema = z
+  .object({
+    path: z.string().min(1),
+    startLine: z.number().int().positive().optional(),
+    endLine: z.number().int().positive().optional(),
+    maxBytes: z.number().int().positive().max(200000).default(40000),
+  })
+  .refine((input) => !input.startLine || !input.endLine || input.endLine >= input.startLine, {
+    message: "endLine must be greater than or equal to startLine.",
+  });
 
-const fileReadSchema = z.object({
-  path: z.string().min(1),
-  maxBytes: z.number().int().positive().max(200000).default(40000),
-});
+type FileReadInput = z.infer<typeof fileReadSchema>;
 
-const fileReadTool: Tool<z.infer<typeof fileReadSchema>> = {
+const fileReadTool: Tool<FileReadInput> = {
   name: "file.read",
   description: "Read a UTF-8 text file inside the workspace. Secret-like files are refused.",
   inputSchema: fileReadSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
+  schedule: (rawInput) => ({
+    mode: "parallel",
+    resources: [
+      {
+        key: `workspace:${String((rawInput as { path?: unknown })?.path ?? ".")}`,
+        access: "read",
+      },
+    ],
+  }),
   async execute(rawInput, context) {
     const input = fileReadSchema.parse(rawInput);
-    if (isSecretPath(input.path)) {
-      return denied(context.toolCallId, "Refused to read a secret-like file.");
-    }
-
-    const resolved = await safeExistingInside(context.workspaceRoot, input.path);
-    if (!resolved.ok) {
-      return errorResult(context.toolCallId, resolved.summary, resolved.code);
-    }
-
-    const content = await readFile(resolved.absolutePath);
-    if (content.includes(0)) {
-      return errorResult(context.toolCallId, "Refused to read a binary file.", "binary_file");
-    }
-
-    const text = content.toString("utf8");
-    const truncated = Buffer.byteLength(text, "utf8") > input.maxBytes;
-    const visible = truncated ? text.slice(0, input.maxBytes) : text;
-
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: truncated
-        ? `Read ${resolved.relativePath} (${content.length} bytes, truncated).`
-        : `Read ${resolved.relativePath} (${content.length} bytes).`,
-      data: {
-        path: resolved.relativePath,
-        content: visible,
-        bytes: content.length,
-        truncated,
-      },
-    };
+    return readWorkspaceFile(input, context);
   },
 };
+
+async function readWorkspaceFile(
+  input: FileReadInput,
+  context: ToolExecutionContext,
+): Promise<ToolResult> {
+  if (isSecretPath(input.path)) {
+    return denied(context.toolCallId, "Refused to read a secret-like file.");
+  }
+
+  const resolved = await safeExistingInside(context.workspaceRoot, input.path);
+  if (!resolved.ok) {
+    return errorResult(context.toolCallId, resolved.summary, resolved.code);
+  }
+
+  const content = await readFile(resolved.absolutePath);
+  if (content.includes(0)) {
+    return errorResult(context.toolCallId, "Refused to read a binary file.", "binary_file");
+  }
+
+  const text = content.toString("utf8");
+  const lines = text.split(/\r?\n/);
+  const startLine = input.startLine ?? 1;
+  const endLine = Math.min(input.endLine ?? lines.length, lines.length);
+  const selected = lines.slice(startLine - 1, endLine).join("\n");
+  const selectedBytes = Buffer.from(selected, "utf8");
+  const truncated = selectedBytes.length > input.maxBytes;
+  const visible = truncated
+    ? selectedBytes
+        .subarray(0, input.maxBytes)
+        .toString("utf8")
+        .replace(/\uFFFD$/, "")
+    : selected;
+
+  return {
+    toolCallId: context.toolCallId,
+    status: "success",
+    summary: truncated
+      ? `Read ${resolved.relativePath} (${content.length} bytes, truncated).`
+      : `Read ${resolved.relativePath} (${content.length} bytes).`,
+    data: {
+      path: resolved.relativePath,
+      content: visible,
+      bytes: content.length,
+      truncated,
+      startLine,
+      endLine,
+      totalLines: lines.length,
+    },
+  };
+}
 
 const artifactReadSchema = z.object({
   ref: z.string().startsWith("artifact://"),
@@ -264,6 +257,7 @@ const artifactReadTool: Tool<z.infer<typeof artifactReadSchema>> = {
   description: "Read a byte range from a large tool output previously saved as artifact://... .",
   inputSchema: artifactReadSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
+  schedule: { mode: "parallel" },
   async execute(rawInput, context) {
     const input = artifactReadSchema.parse(rawInput);
     const name = decodeURIComponent(input.ref.slice("artifact://".length));
@@ -412,6 +406,7 @@ const fileListTool: Tool<z.infer<typeof fileListSchema>> = {
   description: "List files and directories inside the workspace.",
   inputSchema: fileListSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
+  schedule: { mode: "parallel" },
   async execute(rawInput, context) {
     const input = fileListSchema.parse(rawInput);
     const resolved = resolveWorkspacePath(context.workspaceRoot, input.path);
@@ -447,6 +442,7 @@ const searchGrepTool: Tool<z.infer<typeof searchGrepSchema>> = {
   description: "Search workspace text with ripgrep when available, falling back to JavaScript.",
   inputSchema: searchGrepSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
+  schedule: { mode: "parallel", maxConcurrency: 4 },
   async execute(rawInput, context) {
     const input = searchGrepSchema.parse(rawInput);
     const rgResult = await runRipgrep(input, context.workspaceRoot, context.signal);
@@ -475,6 +471,7 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
   description: "Find workspace files by glob pattern, respecting common ignore files.",
   inputSchema: searchGlobSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
+  schedule: { mode: "parallel", maxConcurrency: 4 },
   async execute(rawInput, context) {
     const input = searchGlobSchema.parse(rawInput);
     const entries = await fg(input.pattern, {
@@ -500,209 +497,6 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
 
 const commandEnvironmentSchema = z.record(z.string());
 
-const processRunSchema = z.object({
-  program: z.string().min(1),
-  args: z.array(z.string()).default([]),
-  cwd: z.string().min(1).optional(),
-  env: commandEnvironmentSchema.optional(),
-  timeoutMs: z.number().int().positive().max(MAX_COMMAND_TIMEOUT_MS).default(30000),
-});
-
-const processRunTool: Tool<z.infer<typeof processRunSchema>> = {
-  name: "process.run",
-  description:
-    "Run one program without a shell. Pass arguments, cwd, and per-call environment explicitly; calls are stateless. Prefer this over shell.run.",
-  inputSchema: processRunSchema,
-  risk: { tags: ["shell_mutating"], runsCommands: true },
-  preflight(rawInput, context) {
-    const parsed = processRunSchema.safeParse(rawInput);
-    return parsed.success
-      ? undefined
-      : commandInputValidationResult(context.toolCallId, parsed.error.issues);
-  },
-  async execute(rawInput, context) {
-    const input = processRunSchema.parse(rawInput);
-    const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
-    const cwdError = await commandCwdError(context.toolCallId, cwd);
-    if (cwdError) return cwdError;
-    const started = Date.now();
-    const result = await runProcess(input.program, input.args, {
-      cwd,
-      env: mergeCommandEnvironment(input.env),
-      timeoutMs: input.timeoutMs,
-      signal: context.signal,
-    });
-    return makeCommandToolResult({
-      context,
-      command: [input.program, ...input.args].join(" "),
-      result,
-      started,
-      prefix: `process-${context.toolCallId}`,
-      data: {
-        command: [input.program, ...input.args].join(" "),
-        program: input.program,
-        args: input.args,
-        cwd,
-      },
-    });
-  },
-};
-
-const processStartSchema = z.object({
-  program: z.string().min(1),
-  args: z.array(z.string()).default([]),
-  cwd: z.string().min(1).optional(),
-  env: commandEnvironmentSchema.optional(),
-  label: z.string().min(1).max(120).optional(),
-});
-
-const managedProcessIdSchema = z.string().regex(/^proc_[a-f0-9]{32}$/);
-
-const processStatusSchema = z.object({ processId: managedProcessIdSchema });
-
-const processLogsSchema = z.object({
-  processId: managedProcessIdSchema,
-  cursor: z
-    .object({
-      stdoutOffset: z.number().int().nonnegative(),
-      stderrOffset: z.number().int().nonnegative(),
-    })
-    .default({ stdoutOffset: 0, stderrOffset: 0 }),
-  maxBytes: z.number().int().min(1024).max(64 * 1024).default(16 * 1024),
-});
-
-const processStopSchema = z.object({
-  processId: managedProcessIdSchema,
-  graceMs: z.number().int().nonnegative().max(10_000).default(3000),
-  force: z.boolean().default(false),
-});
-
-function createManagedProcessTools(supervisor: ProcessSupervisor): Tool[] {
-  const startTool: Tool<z.infer<typeof processStartSchema>> = {
-    name: "process.start",
-    description:
-      "Start one long-running program without a shell and return a managed processId after spawn. The process remains available across tool calls; use process.logs/status/stop to manage it.",
-    inputSchema: processStartSchema,
-    risk: { tags: ["shell_mutating", "long_running"], runsCommands: true },
-    preflight(rawInput, context) {
-      const parsed = processStartSchema.safeParse(rawInput);
-      return parsed.success
-        ? undefined
-        : commandInputValidationResult(context.toolCallId, parsed.error.issues);
-    },
-    async execute(rawInput, context) {
-      const input = processStartSchema.parse(rawInput);
-      const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
-      const cwdError = await commandCwdError(context.toolCallId, cwd);
-      if (cwdError) return cwdError;
-      const command = [input.program, ...input.args].join(" ");
-      try {
-        const info = await supervisor.start(managedProcessScope(context), {
-          program: input.program,
-          args: input.args,
-          cwd,
-          env: mergeCommandEnvironment(input.env),
-          label: input.label,
-          signal: context.signal,
-        });
-        return {
-          toolCallId: context.toolCallId,
-          status: "success",
-          summary: `Started managed process '${command}' as ${info.processId}.`,
-          data: { ...info, command },
-          execution: { outcome: "background_started", started: true },
-        };
-      } catch (error) {
-        return managedProcessErrorResult(context.toolCallId, error, command);
-      }
-    },
-  };
-
-  const statusTool: Tool<z.infer<typeof processStatusSchema>> = {
-    name: "process.status",
-    description: "Return the current lifecycle state of a managed process in this session.",
-    inputSchema: processStatusSchema,
-    risk: { tags: [] },
-    async execute(rawInput, context) {
-      const input = processStatusSchema.parse(rawInput);
-      try {
-        const info = await supervisor.status(managedProcessScope(context), input.processId);
-        return {
-          toolCallId: context.toolCallId,
-          status: "success",
-          summary: `Managed process ${input.processId} is ${info.state}.`,
-          data: info,
-        };
-      } catch (error) {
-        return managedProcessErrorResult(context.toolCallId, error);
-      }
-    },
-  };
-
-  const logsTool: Tool<z.infer<typeof processLogsSchema>> = {
-    name: "process.logs",
-    description:
-      "Read bounded incremental stdout and stderr from a managed process. Pass nextCursor back as cursor to avoid repeating output.",
-    inputSchema: processLogsSchema,
-    risk: { tags: [] },
-    async execute(rawInput, context) {
-      const input = processLogsSchema.parse(rawInput);
-      try {
-        const logs = await supervisor.logs(
-          managedProcessScope(context),
-          input.processId,
-          input.cursor satisfies ProcessLogCursor,
-          input.maxBytes,
-        );
-        const bytes =
-          Buffer.byteLength(logs.stdout.text, "utf8") + Buffer.byteLength(logs.stderr.text, "utf8");
-        return {
-          toolCallId: context.toolCallId,
-          status: "success",
-          summary: `Read ${bytes} byte(s) of logs from ${input.processId}.`,
-          data: logs,
-          warnings:
-            logs.logsTruncated.stdout || logs.logsTruncated.stderr
-              ? ["Process log retention limit was reached; later output may not have been persisted."]
-              : undefined,
-          usage: { stdoutBytes: Buffer.byteLength(logs.stdout.text), stderrBytes: Buffer.byteLength(logs.stderr.text) },
-        };
-      } catch (error) {
-        return managedProcessErrorResult(context.toolCallId, error);
-      }
-    },
-  };
-
-  const stopTool: Tool<z.infer<typeof processStopSchema>> = {
-    name: "process.stop",
-    description:
-      "Stop a managed process tree in this session. Stop is idempotent and escalates to force after the grace period.",
-    inputSchema: processStopSchema,
-    risk: { tags: ["long_running"], runsCommands: true },
-    async execute(rawInput, context) {
-      const input = processStopSchema.parse(rawInput);
-      try {
-        const stopped = await supervisor.stop(managedProcessScope(context), input.processId, input);
-        return {
-          toolCallId: context.toolCallId,
-          status: "success",
-          summary: stopped.terminationUncertain
-            ? `Stop was requested for ${input.processId}, but termination could not be confirmed.`
-            : `Managed process ${input.processId} is ${stopped.state}.`,
-          data: stopped,
-          warnings: stopped.terminationUncertain
-            ? ["The complete process tree may not have terminated."]
-            : undefined,
-        };
-      } catch (error) {
-        return managedProcessErrorResult(context.toolCallId, error);
-      }
-    },
-  };
-
-  return [startTool, statusTool, logsTool, stopTool];
-}
-
 function managedProcessScope(context: ToolExecutionContext): ProcessScope {
   return {
     sessionId: context.sessionId ?? path.resolve(context.sessionDir),
@@ -711,7 +505,11 @@ function managedProcessScope(context: ToolExecutionContext): ProcessScope {
   };
 }
 
-function managedProcessErrorResult(toolCallId: string, error: unknown, command?: string): ToolResult {
+function managedProcessErrorResult(
+  toolCallId: string,
+  error: unknown,
+  command?: string,
+): ToolResult {
   const code =
     error && typeof error === "object" && "code" in error && typeof error.code === "string"
       ? error.code
@@ -749,69 +547,135 @@ function managedProcessErrorResult(toolCallId: string, error: unknown, command?:
   };
 }
 
-const shellRunSchema = z.object({
+const platformShellSchema = z.object({
   command: z.string().min(1),
-  shell: z.enum(["powershell", "cmd", "bash", "sh"]).optional(),
+  description: z.string().min(1),
   cwd: z.string().min(1).optional(),
   env: commandEnvironmentSchema.optional(),
   timeoutMs: z.number().int().positive().max(MAX_COMMAND_TIMEOUT_MS).default(30000),
+  run_in_background: z.boolean().default(false),
 });
 
-const shellRunTool: Tool<z.infer<typeof shellRunSchema>> = {
-  name: "shell.run",
-  description:
-    "Run one shell expression or pipeline when shell features are required. Multi-step chains and persistent cd/variable state are rejected; use cwd/env fields.",
-  inputSchema: shellRunSchema,
-  risk: { tags: ["shell_mutating"], runsCommands: true },
-  preflight(rawInput, context) {
-    const parsed = shellRunSchema.safeParse(rawInput);
-    if (!parsed.success) {
-      return commandInputValidationResult(context.toolCallId, parsed.error.issues);
-    }
-    const shell =
-      parsed.data.shell ?? buildRuntimeInfo(context.workspaceRoot, context.mode).command.defaultShell;
-    const violations = validateShellCommand(parsed.data.command, shell);
-    return violations.length ? commandValidationResult(context.toolCallId, violations) : undefined;
-  },
-  async execute(rawInput, context) {
-    const input = shellRunSchema.parse(rawInput);
-    const shell = input.shell ?? buildRuntimeInfo(context.workspaceRoot, context.mode).command.defaultShell;
-    const violations = validateShellCommand(input.command, shell);
-    if (violations.length) {
-      return commandValidationResult(context.toolCallId, violations);
-    }
-    const shellProgram = shellExecutable(shell);
-    if (!shellProgram) {
-      return commandErrorResult({
-        toolCallId: context.toolCallId,
-        status: "error",
-        outcome: "unsupported_shell",
-        category: "environment",
-        reason: "unsupported_shell",
-        message: `Shell '${shell}' is not supported on ${process.platform}.`,
-        retryable: false,
+function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
+  const windows = process.platform === "win32";
+  const name = windows ? "pwsh" : "bash";
+  const shell: ShellKind = windows ? "powershell" : "bash";
+  const program = windows ? "pwsh" : "bash";
+  const description = windows
+    ? "Execute a PowerShell command (pwsh -Command). Each call runs in a fresh PowerShell process. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop it."
+    : "Execute a Bash command (bash -c). Each call runs in a fresh shell. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop it.";
+  return {
+    name,
+    description,
+    inputSchema: platformShellSchema,
+    risk: { tags: ["shell_mutating"], runsCommands: true },
+    schedule: { mode: "exclusive" },
+    preflight(rawInput, context) {
+      const parsed = platformShellSchema.safeParse(rawInput);
+      if (!parsed.success) return commandInputValidationResult(context.toolCallId, parsed.error.issues);
+      const violations = validateShellCommand(parsed.data.command, shell);
+      return violations.length ? commandValidationResult(context.toolCallId, violations) : undefined;
+    },
+    async execute(rawInput, context) {
+      const input = platformShellSchema.parse(rawInput);
+      const violations = validateShellCommand(input.command, shell);
+      if (violations.length) return commandValidationResult(context.toolCallId, violations);
+      const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
+      const cwdError = await commandCwdError(context.toolCallId, cwd);
+      if (cwdError) return cwdError;
+      const args = windows ? ["-NoProfile", "-Command", input.command] : ["-c", input.command];
+      if (input.run_in_background) {
+        try {
+          const info = await supervisor.start(managedProcessScope(context), {
+            program,
+            args,
+            cwd,
+            env: mergeCommandEnvironment(input.env),
+            label: input.description,
+            signal: context.signal,
+          });
+          return {
+            toolCallId: context.toolCallId,
+            status: "success",
+            summary: `Started background job ${info.processId}.`,
+            data: { kind: "background", jobId: info.processId },
+            execution: { outcome: "background_started", started: true },
+          };
+        } catch (error) {
+          return managedProcessErrorResult(context.toolCallId, error, input.command);
+        }
+      }
+      const started = Date.now();
+      const result = await runShellExpression(input.command, program, args, {
+        cwd,
+        env: mergeCommandEnvironment(input.env),
+        timeoutMs: input.timeoutMs,
+        signal: context.signal,
       });
-    }
-    const started = Date.now();
-    const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
-    const cwdError = await commandCwdError(context.toolCallId, cwd);
-    if (cwdError) return cwdError;
-    const result = await runShellExpression(input.command, shellProgram, {
-      cwd,
-      env: mergeCommandEnvironment(input.env),
-      timeoutMs: input.timeoutMs,
-      signal: context.signal,
-    });
-    return makeCommandToolResult({
-      context,
-      command: input.command,
-      result,
-      started,
-      prefix: `shell-${context.toolCallId}`,
-      data: { command: input.command, shell, cwd },
-    });
-  },
-};
+      return makeCommandToolResult({
+        context,
+        command: input.command,
+        result,
+        started,
+        prefix: `${name}-${context.toolCallId}`,
+        data: { kind: "foreground", command: input.command, cwd },
+      });
+    },
+  };
+}
+
+const jobIdSchema = z.string().regex(/^proc_[a-f0-9]{32}$/);
+const jobScope = (context: ToolExecutionContext): ProcessScope => managedProcessScope(context);
+
+function createJobTools(supervisor: ProcessSupervisor): Tool[] {
+  const outputSchema = z.object({
+    job_id: jobIdSchema,
+    wait: z.boolean().default(false),
+    timeout_ms: z.number().int().nonnegative().max(MAX_COMMAND_TIMEOUT_MS).default(1000),
+    cursor: z.object({ stdoutOffset: z.number().int().nonnegative(), stderrOffset: z.number().int().nonnegative() }).default({ stdoutOffset: 0, stderrOffset: 0 }),
+    max_bytes: z.number().int().min(1024).max(64 * 1024).default(16 * 1024),
+  });
+  const output: Tool = {
+    name: "job_output",
+    description: "Read output and lifecycle status for a background job. Set wait=true to wait briefly for completion.",
+    inputSchema: outputSchema,
+    risk: { tags: [] },
+    async execute(rawInput, context) {
+      const input = outputSchema.parse(rawInput);
+      if (input.wait) {
+        const deadline = Date.now() + input.timeout_ms;
+        while (Date.now() < deadline) {
+          const status = await supervisor.status(jobScope(context), input.job_id);
+          if (!status.alive) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      try {
+        const [status, logs] = await Promise.all([
+          supervisor.status(jobScope(context), input.job_id),
+          supervisor.logs(jobScope(context), input.job_id, input.cursor, input.max_bytes),
+        ]);
+        return { toolCallId: context.toolCallId, status: "success", summary: `Read output for job ${input.job_id}.`, data: { text: [logs.stdout.text, logs.stderr.text].filter(Boolean).join("\n"), job: { id: status.processId, status: status.state, label: status.label, startedAt: status.startedAt, finishedAt: status.endedAt }, nextCursor: logs.nextCursor, hasMore: logs.hasMore } };
+      } catch (error) { return managedProcessErrorResult(context.toolCallId, error); }
+    },
+  };
+  const list: Tool = {
+    name: "job_list",
+    description: "List background jobs in the current session.",
+    inputSchema: z.object({}),
+    risk: { tags: [] },
+    async execute(_rawInput, context) { return { toolCallId: context.toolCallId, status: "success", summary: "Listed background jobs.", data: { jobs: (await supervisor.list(jobScope(context))).map((job) => ({ id: job.processId, status: job.state, label: job.label, startedAt: job.startedAt, finishedAt: job.endedAt })) } }; },
+  };
+  const killSchema = z.object({ job_id: jobIdSchema, reason: z.string().max(500).optional() });
+  const kill: Tool = {
+    name: "job_kill",
+    description: "Stop a background job and its process tree.",
+    inputSchema: killSchema,
+    risk: { tags: ["long_running"], runsCommands: true },
+    async execute(rawInput, context) { const input = killSchema.parse(rawInput); try { const result = await supervisor.stop(jobScope(context), input.job_id); return { toolCallId: context.toolCallId, status: "success", summary: `Stopped job ${input.job_id}.`, data: { ...result, reason: input.reason } }; } catch (error) { return managedProcessErrorResult(context.toolCallId, error); } },
+  };
+  return [output, list, kill];
+}
 
 const gitStatusTool: Tool = {
   name: "git.status",
@@ -1067,7 +931,11 @@ const skillLoadTool: Tool<z.infer<typeof skillLoadSchema>> = {
   async execute(rawInput, context) {
     const input = skillLoadSchema.parse(rawInput);
     if (!context.skills) {
-      return errorResult(context.toolCallId, "Skill Registry is unavailable.", "skill_registry_unavailable");
+      return errorResult(
+        context.toolCallId,
+        "Skill Registry is unavailable.",
+        "skill_registry_unavailable",
+      );
     }
     try {
       const loaded = await context.skills.load(input.skillId);
@@ -1101,7 +969,11 @@ const skillReadResourceTool: Tool<z.infer<typeof skillReadResourceSchema>> = {
   async execute(rawInput, context) {
     const input = skillReadResourceSchema.parse(rawInput);
     if (!context.skills) {
-      return errorResult(context.toolCallId, "Skill Registry is unavailable.", "skill_registry_unavailable");
+      return errorResult(
+        context.toolCallId,
+        "Skill Registry is unavailable.",
+        "skill_registry_unavailable",
+      );
     }
     try {
       const resource = await context.skills.readResource(
@@ -1634,10 +1506,7 @@ export interface ShellCommandViolation {
   position?: number;
 }
 
-export function validateShellCommand(
-  command: string,
-  shell: ShellKind,
-): ShellCommandViolation[] {
+export function validateShellCommand(command: string, shell: ShellKind): ShellCommandViolation[] {
   const violations: ShellCommandViolation[] = [];
   const pipelineSegments: string[] = [];
   let segmentStart = 0;
@@ -1666,10 +1535,16 @@ export function validateShellCommand(
     if (quote) continue;
 
     const pair = command.slice(index, index + 2);
-    if (character === ";" || character === "\n" || character === "\r" || pair === "&&" || pair === "||") {
+    if (
+      character === ";" ||
+      character === "\n" ||
+      character === "\r" ||
+      pair === "&&" ||
+      pair === "||"
+    ) {
       violations.push({
         code: "multiple_shell_steps",
-        message: "shell.run accepts one expression or pipeline; run independent steps separately.",
+        message: "The shell tool accepts one expression or pipeline; run independent steps separately.",
         position: index,
       });
       if (pair === "&&" || pair === "||") index += 1;
@@ -1702,7 +1577,8 @@ export function validateShellCommand(
     if (stateful) {
       violations.push({
         code: "stateful_shell_construct",
-        message: "Use the cwd or env field instead of shell state that cannot persist across calls.",
+        message:
+          "Use the cwd or env field instead of shell state that cannot persist across calls.",
         position: command.indexOf(segment),
       });
     }
@@ -1711,23 +1587,10 @@ export function validateShellCommand(
   return violations.filter(
     (violation, index, all) =>
       all.findIndex(
-        (candidate) => candidate.code === violation.code && candidate.position === violation.position,
+        (candidate) =>
+          candidate.code === violation.code && candidate.position === violation.position,
       ) === index,
   );
-}
-
-function shellExecutable(shell: ShellKind): string | undefined {
-  if (shell === "cmd") {
-    if (process.platform !== "win32") return undefined;
-    return process.env.ComSpec || "cmd.exe";
-  }
-  if (shell === "powershell") {
-    if (process.platform !== "win32") return undefined;
-    return "powershell.exe";
-  }
-  if (shell === "bash") return "bash";
-  if (shell === "sh") return "sh";
-  return undefined;
 }
 
 function resolveCommandCwd(workspaceRoot: string, cwd: string | undefined): string {
@@ -1849,6 +1712,7 @@ async function runProcess(
 async function runShellExpression(
   command: string,
   shell: string,
+  args: string[],
   options: {
     cwd: string;
     env?: NodeJS.ProcessEnv;
@@ -1857,10 +1721,10 @@ async function runShellExpression(
   },
 ): Promise<ProcessResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    const child = spawn(shell, args, {
       cwd: options.cwd,
       env: options.env,
-      shell,
+      shell: false,
       detached: process.platform !== "win32",
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -1984,14 +1848,24 @@ async function makeCommandToolResult(input: {
         : "error";
 
   const warnings: string[] = [];
-  const stdout = await makeOutputStream(input.context, input.prefix, "stdout", result.stdout, warnings);
-  const stderr = await makeOutputStream(input.context, input.prefix, "stderr", result.stderr, warnings);
+  const stdout = await makeOutputStream(
+    input.context,
+    input.prefix,
+    "stdout",
+    result.stdout,
+    warnings,
+  );
+  const stderr = await makeOutputStream(
+    input.context,
+    input.prefix,
+    "stderr",
+    result.stderr,
+    warnings,
+  );
   const stdoutRef = artifactAbsolutePath(input.context, stdout.artifactRef);
   const stderrRef = artifactAbsolutePath(input.context, stderr.artifactRef);
   const error =
-    status === "success"
-      ? undefined
-      : commandExecutionError(outcome, result.spawnErrorCode);
+    status === "success" ? undefined : commandExecutionError(outcome, result.spawnErrorCode);
   const summary =
     outcome === "exited_zero"
       ? `Command '${input.command}' completed successfully.`
@@ -2027,8 +1901,8 @@ async function makeCommandToolResult(input: {
     streams: { stdout, stderr },
     stdoutRef,
     stderrRef,
-    artifactRefs: [stdout.artifactRef, stderr.artifactRef].filter(
-      (ref): ref is string => Boolean(ref),
+    artifactRefs: [stdout.artifactRef, stderr.artifactRef].filter((ref): ref is string =>
+      Boolean(ref),
     ),
     warnings: warnings.length ? warnings : undefined,
     error,
@@ -2058,7 +1932,8 @@ function commandExecutionError(
         : outcome === "program_not_found"
           ? "environment"
           : "execution";
-  const retryable = outcome === "spawn_failed" && ["EAGAIN", "EMFILE", "ENFILE"].includes(spawnErrorCode ?? "");
+  const retryable =
+    outcome === "spawn_failed" && ["EAGAIN", "EMFILE", "ENFILE"].includes(spawnErrorCode ?? "");
   return {
     code: reason,
     category,
@@ -2122,7 +1997,11 @@ function artifactAbsolutePath(
   artifactRef: string | undefined,
 ): string | undefined {
   if (!artifactRef) return undefined;
-  return path.join(context.sessionDir, "artifacts", decodeURIComponent(artifactRef.slice("artifact://".length)));
+  return path.join(
+    context.sessionDir,
+    "artifacts",
+    decodeURIComponent(artifactRef.slice("artifact://".length)),
+  );
 }
 
 async function persistLargeOutputs(
@@ -2224,6 +2103,25 @@ function truncate(text: string, maxChars: number): string {
   return text.length > maxChars
     ? `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`
     : text;
+}
+
+async function mapWithLimit<TInput, TOutput>(
+  values: readonly TInput[],
+  limit: number,
+  worker: (value: TInput, index: number) => Promise<TOutput>,
+): Promise<TOutput[]> {
+  const output = new Array<TOutput>(values.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= values.length) return;
+      output[index] = await worker(values[index]!, index);
+    }
+  });
+  await Promise.all(runners);
+  return output;
 }
 
 function toPosixPath(inputPath: string): string {

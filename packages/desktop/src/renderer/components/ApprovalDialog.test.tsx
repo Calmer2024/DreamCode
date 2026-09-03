@@ -48,7 +48,7 @@ describe("ApprovalCard", () => {
   it("supports Enter and Escape shortcuts", async () => {
     const respondApproval = vi.fn().mockResolvedValue(undefined);
     const api = { respondApproval } as unknown as DesktopApi;
-    const request = { runId: "run_1", requestId: "approval_1", tool: "process.start", input: { label: "dev" }, reason: "reason" };
+    const request = { runId: "run_1", requestId: "approval_1", tool: "pwsh", input: { command: "npm run dev", description: "start dev server" }, reason: "reason" };
     const first = render(<ApprovalCard api={api} request={request} onResolved={vi.fn()} />);
     fireEvent.keyDown(window, { key: "Enter" });
     await waitFor(() => expect(respondApproval).toHaveBeenCalledWith({ runId: "run_1", requestId: "approval_1", approved: true }));

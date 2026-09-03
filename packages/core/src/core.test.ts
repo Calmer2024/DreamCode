@@ -435,7 +435,7 @@ describe("runTurn fake model integration", () => {
     }).initialize();
     const loaded = new Set([snapshot.resolve("executor")!.skillId]);
 
-    expect(getUndeclaredSkillCapability(snapshot, loaded, "process.run")).toBeUndefined();
+    expect(getUndeclaredSkillCapability(snapshot, loaded, process.platform === "win32" ? "pwsh" : "bash")).toBeUndefined();
     expect(getUndeclaredSkillCapability(snapshot, loaded, "file.write")).toBe("filesystem.write");
   });
 });

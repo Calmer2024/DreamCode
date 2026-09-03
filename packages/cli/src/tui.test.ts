@@ -340,7 +340,7 @@ describe("DreamCode Ink TUI", () => {
       tools: [
         {
           id: "call_1",
-          name: "shell.run",
+          name: process.platform === "win32" ? "pwsh" : "bash",
           status: "running",
         },
       ],
@@ -350,7 +350,7 @@ describe("DreamCode Ink TUI", () => {
       (line) => line.text,
     );
 
-    expect(lines).toContain("• Using tool... · shell.run");
+    expect(lines).toContain(`• Using tool... · ${process.platform === "win32" ? "pwsh" : "bash"}`);
   });
 
   it("targets the hardware cursor at the input row for IME composition", () => {

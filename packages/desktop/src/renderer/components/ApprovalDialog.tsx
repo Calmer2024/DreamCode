@@ -1,4 +1,4 @@
-import { CircleHelp, FilePenLine, Globe, PlayCircle, ShieldAlert, SquareTerminal, Wrench } from "lucide-react";
+import { CircleHelp, FilePenLine, Globe, ShieldAlert, SquareTerminal, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type {
   DesktopApi,
@@ -92,11 +92,8 @@ function approvalPresentation(request: DesktopApprovalRequest) {
   const command = typeof input.command === "string" ? input.command : undefined;
   const path = typeof input.path === "string" ? input.path : undefined;
   const url = typeof input.url === "string" ? input.url : undefined;
-  if (request.tool === "shell.run" || request.tool === "shell_command") {
+  if (request.tool === "bash" || request.tool === "pwsh" || request.tool === "shell_command") {
     return { Icon: SquareTerminal, message: "是否允许我执行这个命令？", summary: command ?? "命令执行" };
-  }
-  if (request.tool === "process.start") {
-    return { Icon: PlayCircle, message: "是否允许我启动这个进程？", summary: command ?? String(input.label ?? "进程启动") };
   }
   if (request.tool === "file.write" || request.tool === "file.patch") {
     return { Icon: FilePenLine, message: "是否允许我修改这个文件？", summary: path ?? "文件修改" };

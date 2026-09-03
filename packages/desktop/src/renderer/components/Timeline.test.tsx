@@ -44,7 +44,7 @@ describe("Timeline", () => {
       },
       timeline: [
         entry("user", "User message", "Fix the timeline"),
-        entry("tool", "Running shell.run", "pnpm test"),
+        entry("tool", `Running ${process.platform === "win32" ? "pwsh" : "bash"}`, "pnpm test"),
         entry("file", "update src/app.ts", "diff --git"),
         entry("assistant", "Assistant", "## All tests passed"),
         entry("status", "Turn completed", "All tests passed"),
@@ -200,7 +200,7 @@ describe("Timeline", () => {
       ...createDesktopState(),
       workspaceRoot: "D:\\Projects\\DreamCode",
       timeline: [
-        entry("tool", "Running shell.run", "pnpm test"),
+        entry("tool", `Running ${process.platform === "win32" ? "pwsh" : "bash"}`, "pnpm test"),
         entry("file", "update src/app.ts", "diff --git"),
         entry("status", "Turn completed", "All tests passed"),
         entry("turn", "Turn started", "guided"),
@@ -221,7 +221,7 @@ describe("Timeline", () => {
 
     const tool = screen.getByLabelText("工具调用");
     expect(tool).toHaveClass("compact-card", "tool-entry");
-    expect(within(tool).getByRole("heading", { level: 3 })).toHaveTextContent("shell.run");
+    expect(within(tool).getByRole("heading", { level: 3 })).toHaveTextContent(process.platform === "win32" ? "pwsh" : "bash");
     expect(within(tool).getByTestId("timeline-tool-icon")).toHaveAttribute("data-lucide", "wrench");
 
     const changes = screen.getByLabelText("已编辑 1 个文件");

@@ -93,7 +93,25 @@ describe("permission engine", () => {
     expect(secretRead.decision).toBe("deny");
   });
 
-  it("classifies process.run and routes external cwd through the current mode", () => {
+  it("evaluates shell commands through the unified shell tool", () => {
+    const commands = engine.decide({
+      mode: "yolo",
+      workspaceRoot: "/repo/project",
+      toolCall: {
+        id: "commands",
+        name: process.platform === "win32" ? "pwsh" : "bash",
+        input: {
+          command: "pnpm add left-pad",
+          run_in_background: false,
+        },
+      },
+    });
+
+    expect(commands.decision).toBe("ask");
+    expect(commands.risk).toContain("install_dependency");
+  });
+
+  it("classifies shell commands and routes external cwd through the current mode", () => {
     const workspaceRoot = process.cwd();
     const externalCwd = path.resolve(workspaceRoot, "..");
     const guided = engine.decide({
@@ -101,8 +119,8 @@ describe("permission engine", () => {
       workspaceRoot,
       toolCall: {
         id: "process_guided",
-        name: "process.run",
-        input: { program: "npm", args: ["test"], cwd: externalCwd },
+        name: process.platform === "win32" ? "pwsh" : "bash",
+        input: { command: "npm test", cwd: externalCwd },
       },
     });
     const full = engine.decide({
@@ -110,8 +128,8 @@ describe("permission engine", () => {
       workspaceRoot,
       toolCall: {
         id: "process_full",
-        name: "process.run",
-        input: { program: "npm", args: ["test"], cwd: externalCwd },
+        name: process.platform === "win32" ? "pwsh" : "bash",
+        input: { command: "npm test", cwd: externalCwd },
       },
     });
     expect(guided.decision).toBe("ask");
@@ -126,8 +144,8 @@ describe("permission engine", () => {
       workspaceRoot,
       toolCall: {
         id: "process_start_plan",
-        name: "process.start",
-        input: { program: "node", args: ["server.js"] },
+        name: process.platform === "win32" ? "pwsh" : "bash",
+        input: { command: "node server.js", run_in_background: true },
       },
     });
     const guidedStart = engine.decide({
@@ -135,19 +153,19 @@ describe("permission engine", () => {
       workspaceRoot,
       toolCall: {
         id: "process_start_guided",
-        name: "process.start",
-        input: { program: "node", args: ["server.js"] },
+        name: process.platform === "win32" ? "pwsh" : "bash",
+        input: { command: "node server.js", run_in_background: true },
       },
     });
     const status = engine.decide({
       mode: "plan",
       workspaceRoot,
-      toolCall: { id: "process_status", name: "process.status", input: { processId: "proc_x" } },
+      toolCall: { id: "job_output", name: "job_output", input: { job_id: "proc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
     });
     const stop = engine.decide({
       mode: "plan",
       workspaceRoot,
-      toolCall: { id: "process_stop", name: "process.stop", input: { processId: "proc_x" } },
+      toolCall: { id: "job_kill", name: "job_kill", input: { job_id: "proc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
     });
 
     expect(planStart.decision).toBe("deny");

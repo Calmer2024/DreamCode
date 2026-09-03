@@ -38,8 +38,11 @@ describe("ContextBuilder structured history", () => {
     );
     expect(result.maxTokens).toBe(64_000);
     const systemMessage = result.messages.find((message) => message.role === "system");
+    expect(systemMessage?.content).toContain("You are DreamCode, an AI agent.");
+    expect(systemMessage?.content).toContain("powered by the configured model");
     expect(systemMessage?.content).toContain("Respond in the same language as the user's latest message.");
-    expect(systemMessage?.content).toContain("Keep code, commands, file paths, identifiers, and tool output unchanged");
+    expect(systemMessage?.content).toContain("Current Policy Context:");
+    expect(systemMessage?.content).not.toContain("Keep code, commands, file paths, identifiers");
   });
 
   it("compacts older complete interactions while retaining recent messages", async () => {
@@ -115,8 +118,8 @@ describe("ContextBuilder structured history", () => {
       model: "fixture-model",
       tools: [
         {
-          name: "runtime.info",
-          description: "runtime",
+          name: "job_list",
+          description: "jobs",
           inputSchema: { type: "object", properties: {} },
         },
       ],

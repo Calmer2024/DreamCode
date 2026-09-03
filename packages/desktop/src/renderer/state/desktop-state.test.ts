@@ -12,6 +12,8 @@ import {
   selectWorkspaceGroups,
 } from "./desktop-state";
 
+const shellToolName = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent) ? "pwsh" : "bash";
+
 const bootstrap: DesktopBootstrap = {
   profiles: [],
   presets: [],
@@ -198,10 +200,10 @@ describe("desktop state reducer", () => {
       agentEvent("user.message", { content: "Please inspect the failing test." }),
       agentEvent("model.started", { provider: "openai", model: "gpt-5", toolCount: 3 }),
       agentEvent("model.tool_call", {
-        toolCall: { id: "call_queued", name: "shell.run", input: { command: "pnpm test" } },
+        toolCall: { id: "call_queued", name: shellToolName, input: { command: "pnpm test" } },
       }),
       agentEvent("permission.decided", {
-        tool: "shell.run",
+        tool: shellToolName,
         decision: { decision: "allow", reason: "Read-only test command" },
       }),
       agentEvent("todo.updated", { items: [{ content: "Run tests", status: "completed" }] }),
@@ -216,7 +218,7 @@ describe("desktop state reducer", () => {
     expect(selectTimeline(state).map((entry) => entry.title)).toEqual([
       "User message",
       "Model started",
-      "Tool requested: shell.run",
+      `Tool requested: ${shellToolName}`,
       "Permission allow",
       "Todo updated",
       "Artifact created",
@@ -225,7 +227,7 @@ describe("desktop state reducer", () => {
       "Mcp server started",
     ]);
     expect(state.tools).toContainEqual(
-      expect.objectContaining({ id: "call_queued", name: "shell.run", status: "queued" }),
+      expect.objectContaining({ id: "call_queued", name: shellToolName, status: "queued" }),
     );
     expect(state.rawEvents).toHaveLength(9);
   });
@@ -251,7 +253,7 @@ describe("desktop state reducer", () => {
   it("keeps a live shell command exit code in the terminal entry", () => {
     const shellCompleted = agentEvent("tool.completed", {
       toolCallId: "call_shell",
-      tool: "shell.run",
+      tool: shellToolName,
       status: "error",
       summary: "Command 'pnpm test' exited with 1.",
       data: { command: "pnpm test", exitCode: 1, stdout: "one failed test" },
@@ -262,7 +264,7 @@ describe("desktop state reducer", () => {
     });
 
     expect(selectTerminalEntries(state)).toEqual([
-      expect.objectContaining({ tool: "shell.run", text: "one failed test", exitCode: 1 }),
+        expect.objectContaining({ tool: shellToolName, text: "one failed test", exitCode: 1 }),
     ]);
   });
 
@@ -373,7 +375,7 @@ describe("desktop state reducer", () => {
     expect(state.tools).toEqual([]);
     expect(selectTimeline(state)).toEqual([]);
     expect(selectTerminalEntries(state)).toEqual([
-      expect.objectContaining({ tool: "shell.run", text: "pnpm test", status: "success" }),
+        expect.objectContaining({ tool: shellToolName, text: "pnpm test", status: "success" }),
     ]);
   });
 

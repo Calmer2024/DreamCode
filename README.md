@@ -142,27 +142,28 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - `dreamcode rollback <session-id> --file <path>`
   - `dreamcode index rebuild`
 - 派生索引: `~/.dreamcode/index.sqlite.json`, 可从 JSONL sessions 重建；JSONL 仍是事实源。
-- Agent 主循环: 支持停止限制、多轮模型/工具循环, 并把工具观察结果回灌到上下文。
+- Agent 主循环: 支持单条 assistant message 提出多个 ToolCall；只读调用组成有界并发 wave，Shell、写入、后台任务和交互工具作为 exclusive barrier。
 - Fake 模型 provider: 用于确定性的集成测试。
 - OpenAI-compatible 模型 provider 基础设施:
   - 内置 `openai`、`deepseek`、`qwen`、`kimi`、`zhipu`、`siliconflow`、`minimax` preset。
   - 支持 `openai-compatible` 自定义 provider。
   - CLI 支持 `--provider`、`--model`、`--api-key`、`--api-key-env`、`--base-url`、`--list-providers`。
 - Tool Registry: 注册经过 Zod 校验的内置工具:
-  - `runtime.info`
   - `file.read`, `file.write`, `file.patch`, `file.list`
   - `search.grep`, `search.glob`
-  - `process.run`, `process.start`, `process.status`, `process.logs`, `process.stop`, `shell.run`
+  - Windows: `pwsh`; Unix: `bash`
+  - `job_output`, `job_list`, `job_kill`
   - `git.status`, `git.diff`
   - `todo.write`, `question.ask`
   - `web.search`, `web.fetch`
   - `skill.load`, `skill.read_resource`
   - `mcp.list`, `mcp.call`
-  - Core 默认只发送 coding 核心工具 schema；Web、Skill、MCP 工具族仅在已配置且用户请求明确需要时暴露。
-- 命令执行采用两层无状态协议：普通程序使用结构化 `process.run`；管道、重定向等明确 Shell 能力使用受语义校验的 `shell.run`。
-- 长期程序由 session 隔离的 Process Supervisor 管理：`process.start` 启动后立即返回不透明 `processId`，后续通过 `process.status`、增量游标式 `process.logs` 和幂等 `process.stop` 管理。日志直接落盘并受容量限制，宿主正常退出或 session 删除时清理活动进程。
+  - Core 默认将 Tool Registry 中的全部工具 schema 发送给模型，包括 Web、Skill 和 MCP；实际执行仍由 Permission Engine 控制。
+- 命令执行采用平台专属 Shell：Windows 使用 `pwsh`，Unix 使用 `bash`；长任务通过 `run_in_background` 启动，并使用 `job_output`、`job_list`、`job_kill` 管理。
+- 长期程序由 session 隔离的 Process Supervisor 管理，日志直接落盘并受容量限制，宿主正常退出或 session 删除时清理活动进程。
 - 命令结果提供机器可读的错误分类、execution outcome、4 KiB stdout/stderr 首尾预览和完整 artifact 引用。
-- 文件快照和回滚: `file.write` / `file.patch` 写入前保存 snapshot, 同时保存 patch artifact。
+- Tool Result Aggregator 保证每个 ToolCall 都有独立结果，同时对一次模型步骤的全部工具结果施加共享字符预算，避免 N 个结果线性放大下一轮上下文。
+- `file.read` 支持行范围读取；文件快照和回滚由 `file.write` / `file.patch` 在写入前保存 snapshot，同时保存 patch artifact。
 - Permission Engine: 实现 Safe YOLO v0 规则:
   - 自动允许低风险 workspace 读写、搜索、只读 git、常见 test/lint/build 命令。
   - 对安装依赖、未知 shell 命令、疑似网络命令、workspace 外读取进行询问。

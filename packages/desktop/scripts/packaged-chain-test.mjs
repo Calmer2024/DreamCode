@@ -68,7 +68,7 @@ try {
   assertions.commandExitCodeZero = events.some(
     (event) =>
       event.type === "tool.completed" &&
-      event.payload?.tool === "shell.run" &&
+      event.payload?.tool === (process.platform === "win32" ? "pwsh" : "bash") &&
       event.payload?.data?.exitCode === 0,
   );
   assertions.permissionContractInjected = events.some(

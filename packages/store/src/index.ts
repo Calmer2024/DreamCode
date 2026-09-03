@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentEvent, ChangedFile, FinalSummary, Session, TodoItem } from "@dreamcode/shared";
 import { createId, makeEvent, nowIso } from "@dreamcode/shared";
-import { type SkillLocator, type SkillStateProvider, skillLocatorStateKey } from "@dreamcode/skills";
+import {
+  type SkillLocator,
+  type SkillStateProvider,
+  skillLocatorStateKey,
+} from "@dreamcode/skills";
 
 const configWriteQueues = new Map<string, Promise<void>>();
 const skillStateWriteQueues = new Map<string, Promise<void>>();
@@ -68,7 +72,8 @@ export class PersistedSkillState implements SkillStateProvider {
 
   isEnabled(locator: SkillLocator): boolean | undefined {
     const key = skillLocatorStateKey(locator);
-    return (locator.source === "project" ? this.project.states[key] : this.user.states[key])?.enabled;
+    return (locator.source === "project" ? this.project.states[key] : this.user.states[key])
+      ?.enabled;
   }
 
   async setEnabled(locator: SkillLocator, enabled: boolean): Promise<void> {
@@ -101,7 +106,10 @@ export class PersistedSkillState implements SkillStateProvider {
   }
 
   listInstallations(): readonly ManagedSkillInstallation[] {
-    return [...Object.values(this.user.installations), ...Object.values(this.project.installations)];
+    return [
+      ...Object.values(this.user.installations),
+      ...Object.values(this.project.installations),
+    ];
   }
 
   getInstallation(skillId: string): ManagedSkillInstallation | undefined {
@@ -439,6 +447,7 @@ export async function deleteSessionsForWorkspace(
 export class JsonlEventLog {
   readonly filePath: string;
   private pendingModelDelta?: AgentEvent<{ text?: string; chunkCount?: number }>;
+  private appendQueue: Promise<void> = Promise.resolve();
 
   constructor(readonly sessionDir: string) {
     this.filePath = path.join(sessionDir, "events.jsonl");
@@ -454,6 +463,12 @@ export class JsonlEventLog {
   }
 
   async append(event: AgentEvent): Promise<void> {
+    const write = this.appendQueue.catch(() => undefined).then(() => this.appendUnsafe(event));
+    this.appendQueue = write;
+    await write;
+  }
+
+  private async appendUnsafe(event: AgentEvent): Promise<void> {
     if (event.type === "model.delta" && isModelDeltaPayload(event.payload)) {
       if (
         this.pendingModelDelta &&
@@ -488,6 +503,7 @@ export class JsonlEventLog {
   }
 
   async readAll(): Promise<AgentEvent[]> {
+    await this.appendQueue;
     await this.flushPendingModelDelta();
     try {
       const content = await readFile(this.filePath, "utf8");
@@ -683,7 +699,7 @@ export function replaySession(events: AgentEvent[]): ReplayedSessionState {
             data?: { command?: string; exitCode?: number };
             summary?: string;
           };
-          if (payload.tool === "shell.run" && payload.data?.command) {
+          if ((payload.tool === "bash" || payload.tool === "pwsh") && payload.data?.command) {
             state.commands.push({
               command: payload.data.command,
               exitCode: payload.data.exitCode,
@@ -1090,7 +1106,9 @@ async function loadUserSkillState(filePath: string): Promise<UserSkillStateFile>
     version: 1,
     states: normalizeEnabledStates(raw.states),
     customRoots: Array.isArray(raw.customRoots)
-      ? raw.customRoots.filter((root): root is string => typeof root === "string" && Boolean(root.trim()))
+      ? raw.customRoots.filter(
+          (root): root is string => typeof root === "string" && Boolean(root.trim()),
+        )
       : [],
     installations: normalizeInstallations(raw.installations, "user"),
   };
@@ -1100,7 +1118,9 @@ async function loadProjectSkillState(filePath: string): Promise<ProjectSkillStat
   const raw = await readOptionalJson(filePath);
   if (raw === undefined) return { version: 1, states: {}, installations: {} };
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1) {
-    throw new Error(`Failed to read DreamCode project Skill state at ${filePath}: unsupported schema.`);
+    throw new Error(
+      `Failed to read DreamCode project Skill state at ${filePath}: unsupported schema.`,
+    );
   }
   return {
     version: 1,
@@ -1116,7 +1136,8 @@ async function readOptionalJson(filePath: string): Promise<Record<string, unknow
       ? (value as Record<string, unknown>)
       : { value };
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+      return undefined;
     throw new Error(
       `Failed to read Skill state at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -1127,7 +1148,12 @@ function normalizeEnabledStates(value: unknown): Record<string, { enabled: boole
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const result: Record<string, { enabled: boolean }> = {};
   for (const [key, state] of Object.entries(value)) {
-    if (state && typeof state === "object" && !Array.isArray(state) && typeof state.enabled === "boolean") {
+    if (
+      state &&
+      typeof state === "object" &&
+      !Array.isArray(state) &&
+      typeof state.enabled === "boolean"
+    ) {
       result[key] = { enabled: state.enabled };
     }
   }

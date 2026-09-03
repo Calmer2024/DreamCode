@@ -508,7 +508,7 @@ MVP 必备:
 | `file.list` | 列目录 | allow |
 | `search.grep` | 内容搜索 | allow |
 | `search.glob` | 路径搜索 | allow |
-| `shell.run` | 执行命令 | 按风险分类 |
+| `pwsh` / `bash` | 执行平台 Shell 命令 | 按风险分类 |
 | `git.status` | 查看 git 状态 | allow |
 | `git.diff` | 查看 diff | allow |
 | `web.fetch` | 抓取网页 | allow/ask by config |
@@ -1013,7 +1013,7 @@ dreamcode config
 ├───────────────────────────────┼────────────────────────────┤
 │ 工具事件                       │ 文件 / Diff / 审批         │
 │ search.grep ok                 │ src/foo.ts 已修改          │
-│ shell.run npm test failed      │ 审批: 安装依赖?            │
+│ pwsh / bash npm test failed    │ 审批: 安装依赖?            │
 └───────────────────────────────┴────────────────────────────┘
 ```
 

@@ -191,6 +191,20 @@ export class ProcessSupervisor {
     return publicInfo(record);
   }
 
+  async list(scope: ProcessScope): Promise<ManagedProcessInfo[]> {
+    const records = [...this.#records.values()].filter(
+      (record) =>
+        record.scope.sessionId === scope.sessionId &&
+        path.resolve(record.scope.workspaceRoot) === path.resolve(scope.workspaceRoot),
+    );
+    return Promise.all(
+      records.map(async (record) => {
+        await Promise.all([record.stdoutWrite, record.stderrWrite]);
+        return publicInfo(record);
+      }),
+    );
+  }
+
   async logs(
     scope: ProcessScope,
     processId: string,
@@ -492,6 +506,7 @@ async function waitForSpawn(child: ChildProcess, signal?: AbortSignal): Promise<
   if (signal?.aborted) {
     return Promise.reject(processError("start_aborted", "Process start was aborted."));
   }
+
   return new Promise((resolve, reject) => {
     let settled = false;
     const cleanup = () => signal?.removeEventListener("abort", onAbort);

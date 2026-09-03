@@ -84,42 +84,6 @@ export interface ToolError {
 
 export type ShellKind = "powershell" | "cmd" | "bash" | "sh";
 
-export interface RuntimeInfo {
-  platform: {
-    os: NodeJS.Platform;
-    arch: string;
-    pathSeparator: string;
-    lineEnding: "crlf" | "lf";
-  };
-  command: {
-    defaultShell: ShellKind;
-    supportedShells: ShellKind[];
-    environmentVariableStyle: "percent" | "powershell" | "posix";
-    pathStyle: "windows" | "posix";
-  };
-  execution: {
-    stateless: true;
-    workspaceRoot: string;
-    defaultCwd: string;
-    maxTimeoutMs: number;
-    managedProcesses?: {
-      supported: boolean;
-      scope: "session";
-      survivesHostRestart: boolean;
-      maxLogReadBytes: number;
-    };
-  };
-  constraints: {
-    currentMode: RunMode;
-    externalCwdPolicy: "mode_dependent";
-    processRunUsesShell: false;
-    shellRunAllowsPipeline: true;
-    shellRunAllowsMultipleSteps: false;
-    externalCwdUsesPermissionEngine: true;
-  };
-  permission?: PermissionCapabilityContract;
-}
-
 export type ExecutionOutcome =
   | "validation_failed"
   | "permission_denied"
@@ -234,11 +198,33 @@ export interface ToolExecutionContext {
   skills?: SkillTurnContext;
 }
 
+export type ToolExecutionMode = "parallel" | "exclusive";
+
+export interface ToolResourceClaim {
+  key: string;
+  access: "read" | "write";
+}
+
+export interface ToolSchedulePlan {
+  mode: ToolExecutionMode;
+  resources?: ToolResourceClaim[];
+  concurrencyGroup?: string;
+  maxConcurrency?: number;
+  /** Logical operations consumed from the turn budget, including items inside a batch tool. */
+  actionCost?: number;
+}
+
+export type ToolSchedulePolicy =
+  | ToolSchedulePlan
+  | ((input: unknown, context: ToolExecutionContext) => ToolSchedulePlan);
+
 export interface Tool<TInput = unknown, TOutput = unknown> {
   name: string;
   description: string;
   inputSchema: z.ZodType<TInput, z.ZodTypeDef, unknown>;
   risk: ToolRiskProfile;
+  /** Defaults to exclusive so tools must opt in to concurrent execution. */
+  schedule?: ToolSchedulePolicy;
   timeoutMs?: number;
   preflight?(
     input: unknown,
@@ -319,11 +305,14 @@ export interface PermissionCapabilityContract {
   rulesVersion: string;
   generatedFor: { platform: string; currentMode: RunMode };
   defaultDecision: PermissionDecisionKind;
-  modes: Record<RunMode, {
-    allow: PermissionCapabilityCategory[];
-    ask: PermissionCapabilityCategory[];
-    deny: PermissionCapabilityCategory[];
-  }>;
+  modes: Record<
+    RunMode,
+    {
+      allow: PermissionCapabilityCategory[];
+      ask: PermissionCapabilityCategory[];
+      deny: PermissionCapabilityCategory[];
+    }
+  >;
   currentModeSummary: {
     allow: PermissionCapabilityCategory[];
     ask: PermissionCapabilityCategory[];
@@ -364,6 +353,7 @@ export type AgentEventType =
   | "model.usage"
   | "permission.decided"
   | "approval.remembered"
+  | "tool.schedule.planned"
   | "tool.started"
   | "tool.completed"
   | "artifact.created"
@@ -417,7 +407,6 @@ export interface ContextBuildInput {
   tools?: ToolModelSpec[];
   model?: string;
   estimateInputTokens?: (input: RequestTokenEstimateInput) => Promise<RequestTokenEstimate>;
-  runtimeSnapshot?: string;
   skillCatalog?: string;
 }
 

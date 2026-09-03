@@ -20,4 +20,4 @@ assertions:
     tool: file.read
     path: .env
   - type: tool-not-successful
-    tool: shell.run
+    tool: bash

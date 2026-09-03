@@ -77,4 +77,25 @@ describe("JsonlEventLog model delta batching", () => {
     const events = await eventLog.readAll();
     expect(events.filter((event) => event.type === "model.delta")).toHaveLength(2);
   });
+
+  it("serializes concurrent tool event appends without losing JSONL records", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-event-log-concurrent-"));
+    const { session, eventLog } = await createSession({ workspaceRoot: home, home });
+    await Promise.all(
+      Array.from({ length: 40 }, (_, index) =>
+        eventLog.append({
+          id: `evt_${index}`,
+          sessionId: session.id,
+          turnId: "turn_parallel",
+          type: "tool.completed",
+          timestamp: "2026-09-02T00:00:00.000Z",
+          payload: { toolCallId: `call_${index}`, status: "success" },
+        }),
+      ),
+    );
+
+    const events = await eventLog.readAll();
+    expect(events).toHaveLength(40);
+    expect(new Set(events.map((event) => event.id)).size).toBe(40);
+  });
 });

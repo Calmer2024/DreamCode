@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 import { createDefaultToolRegistry, validateShellCommand } from "./index";
 
 describe("builtin tools", () => {
+  const shellToolName = process.platform === "win32" ? "pwsh" : "bash";
+  const shellCommand = (command: string) => ({ command, description: "test command" });
+
   it("emits OpenAI-compatible object schemas for model tools", () => {
     const specs = createDefaultToolRegistry().toModelSpecs();
 
@@ -46,13 +49,23 @@ describe("builtin tools", () => {
     );
   });
 
+  it("runs multiple verification commands through separate shell calls", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-shell-many-"));
+    const tool = createDefaultToolRegistry().get(shellToolName)!;
+    const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo" as const };
+    const first = await tool.execute(shellCommand(process.platform === "win32" ? "Write-Output one" : "printf one"), { ...context, toolCallId: "shell_one" });
+    const second = await tool.execute(shellCommand(process.platform === "win32" ? "Write-Output two" : "printf two"), { ...context, toolCallId: "shell_two" });
+    expect(first.status).toBe("success");
+    expect(second.status).toBe("success");
+  });
+
   it("terminates timed-out shell commands", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-shell-"));
-    const tool = createDefaultToolRegistry().get("shell.run");
+    const tool = createDefaultToolRegistry().get(shellToolName);
     expect(tool).toBeDefined();
 
     const result = await tool!.execute(
-      { command: 'node -e "setTimeout(() => {}, 2000)"', timeoutMs: 200 },
+      { ...shellCommand('node -e "setTimeout(() => {}, 2000)"'), timeoutMs: 200 },
       {
         workspaceRoot,
         sessionDir: workspaceRoot,
@@ -65,34 +78,24 @@ describe("builtin tools", () => {
     expect((result.data as { timedOut?: boolean }).timedOut).toBe(true);
   });
 
-  it("reports runtime facts and runs a structured process without a shell", async () => {
-    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-process-"));
+  it("runs a platform shell command with an explicit environment", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-shell-"));
     const registry = createDefaultToolRegistry();
-    const runtime = await registry.get("runtime.info")!.execute(
-      {},
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "runtime" },
-    );
-    expect(runtime.status).toBe("success");
-    expect((runtime.data as { execution?: { stateless?: boolean } }).execution?.stateless).toBe(true);
-
-    const result = await registry.get("process.run")!.execute(
-      {
-        program: process.execPath,
-        args: ["-e", "process.stdout.write(process.env.DREAMCODE_PROCESS_TEST || '')"],
-        env: { DREAMCODE_PROCESS_TEST: "structured" },
-      },
+    const command = process.platform === "win32" ? "Write-Output $env:DREAMCODE_PROCESS_TEST" : "printf $DREAMCODE_PROCESS_TEST";
+    const result = await registry.get(shellToolName)!.execute(
+      { ...shellCommand(command), env: { DREAMCODE_PROCESS_TEST: "structured" } },
       { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "process" },
     );
     expect(result.status).toBe("success");
     expect(result.execution).toMatchObject({ outcome: "exited_zero", started: true, exitCode: 0 });
-    expect(result.streams?.stdout.preview).toBe("structured");
+    expect(result.streams?.stdout.preview.trim()).toBe("structured");
   });
 
   it("returns structured process failures and bounded output previews", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-output-"));
-    const tool = createDefaultToolRegistry().get("process.run")!;
+    const tool = createDefaultToolRegistry().get(shellToolName)!;
     const failed = await tool.execute(
-      { program: process.execPath, args: ["-e", "process.exit(7)"] },
+      shellCommand("exit 7"),
       { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "failed" },
     );
     expect(failed.status).toBe("error");
@@ -103,7 +106,7 @@ describe("builtin tools", () => {
     });
 
     const large = await tool.execute(
-      { program: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(9000))"] },
+      shellCommand(process.platform === "win32" ? 'Write-Host ("x" * 9000) -NoNewline' : "printf 'x%.0s' {1..9000}"),
       { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "large" },
     );
     expect(Buffer.byteLength(large.streams!.stdout.preview)).toBeLessThanOrEqual(4096);
@@ -123,61 +126,58 @@ describe("builtin tools", () => {
     };
 
     try {
-      const started = await registry.get("process.start")!.execute(
-        {
-          program: process.execPath,
-          args: [
-            "-e",
-            "console.log('managed-ready'); setInterval(() => console.error('managed-tick'), 25)",
-          ],
-          label: "test-server",
-        },
+      const started = await registry.get(shellToolName)!.execute(
+        { command: "node -e 'console.log(\"managed-ready\"); setInterval(() => console.error(\"managed-tick\"), 25)'", description: "test-server", run_in_background: true },
         { ...context, toolCallId: "managed_start" },
       );
       expect(started.status).toBe("success");
       expect(started.execution).toMatchObject({ outcome: "background_started", started: true });
-      const processId = (started.data as { processId: string }).processId;
+      const processId = (started.data as { jobId: string }).jobId;
 
       await new Promise((resolve) => setTimeout(resolve, 100));
       const status = await registry
-        .get("process.status")!
-        .execute({ processId }, { ...context, toolCallId: "managed_status" });
-      expect(status.data).toMatchObject({ processId, state: "running", alive: true });
+        .get("job_output")!
+        .execute({ job_id: processId }, { ...context, toolCallId: "managed_status" });
+      expect(status.data).toMatchObject({ job: { id: processId, status: "running" } });
 
       const nextTurnRegistry = createDefaultToolRegistry({
         processSupervisor: registry.processSupervisor,
       });
       const nextTurnStatus = await nextTurnRegistry
-        .get("process.status")!
-        .execute({ processId }, { ...context, toolCallId: "managed_status_next_turn" });
-      expect(nextTurnStatus.data).toMatchObject({ processId, state: "running", alive: true });
+        .get("job_output")!
+        .execute({ job_id: processId }, { ...context, toolCallId: "managed_status_next_turn" });
+      expect(nextTurnStatus.data).toMatchObject({ job: { id: processId, status: "running" } });
 
       const logs = await registry
-        .get("process.logs")!
-        .execute({ processId }, { ...context, toolCallId: "managed_logs" });
-      expect((logs.data as { stdout: { text: string } }).stdout.text).toContain("managed-ready");
-      expect((logs.data as { nextCursor: { stdoutOffset: number } }).nextCursor.stdoutOffset).toBeGreaterThan(0);
+        .get("job_output")!
+        .execute({ job_id: processId, wait: true, timeout_ms: 1000 }, { ...context, toolCallId: "managed_logs" });
+      expect((logs.data as { text: string }).text).toContain("managed-ready");
+      expect(
+        (logs.data as { nextCursor: { stdoutOffset: number } }).nextCursor.stdoutOffset,
+      ).toBeGreaterThan(0);
       const nextCursor = (
         logs.data as { nextCursor: { stdoutOffset: number; stderrOffset: number } }
       ).nextCursor;
       await new Promise((resolve) => setTimeout(resolve, 50));
-      const incrementalLogs = await registry.get("process.logs")!.execute(
-        { processId, cursor: nextCursor },
-        { ...context, toolCallId: "managed_logs_incremental" },
-      );
-      expect((incrementalLogs.data as { stdout: { text: string } }).stdout.text).not.toContain(
+      const incrementalLogs = await registry
+        .get("job_output")!
+        .execute(
+          { job_id: processId, cursor: nextCursor },
+          { ...context, toolCallId: "managed_logs_incremental" },
+        );
+      expect((incrementalLogs.data as { text: string }).text).not.toContain(
         "managed-ready",
       );
 
       const stopped = await registry
-        .get("process.stop")!
-        .execute({ processId, graceMs: 500 }, { ...context, toolCallId: "managed_stop" });
+        .get("job_kill")!
+        .execute({ job_id: processId, reason: "test complete" }, { ...context, toolCallId: "managed_stop" });
       expect(stopped.status).toBe("success");
       expect(stopped.data).toMatchObject({ processId, state: "stopped" });
 
       const stoppedAgain = await registry
-        .get("process.stop")!
-        .execute({ processId }, { ...context, toolCallId: "managed_stop_again" });
+        .get("job_kill")!
+        .execute({ job_id: processId }, { ...context, toolCallId: "managed_stop_again" });
       expect(stoppedAgain.status).toBe("success");
     } finally {
       await registry.processSupervisor.dispose();
@@ -188,8 +188,8 @@ describe("builtin tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-process-scope-"));
     const registry = createDefaultToolRegistry();
     try {
-      const started = await registry.get("process.start")!.execute(
-        { program: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] },
+      const started = await registry.get(shellToolName)!.execute(
+        { command: "node -e \"setInterval(() => {}, 1000)\"", description: "scope test", run_in_background: true },
         {
           workspaceRoot,
           sessionDir: path.join(workspaceRoot, "session-a"),
@@ -198,9 +198,9 @@ describe("builtin tools", () => {
           toolCallId: "scope_start",
         },
       );
-      const processId = (started.data as { processId: string }).processId;
-      const foreign = await registry.get("process.status")!.execute(
-        { processId },
+      const processId = (started.data as { jobId: string }).jobId;
+      const foreign = await registry.get("job_output")!.execute(
+        { job_id: processId },
         {
           workspaceRoot,
           sessionDir: path.join(workspaceRoot, "session-b"),
@@ -228,35 +228,41 @@ describe("builtin tools", () => {
       mode: "yolo" as const,
     };
     try {
-      const started = await registry.get("process.start")!.execute(
-        { program: process.execPath, args: ["-e", "console.log('before-exit'); process.exit(7)"] },
+      const started = await registry.get(shellToolName)!.execute(
+          { command: "node -e 'console.log(\"before-exit\"); process.exit(7)'", description: "fast exit", run_in_background: true },
         { ...context, toolCallId: "fast_start" },
       );
       expect(started.status).toBe("success");
-      const processId = (started.data as { processId: string }).processId;
+      const processId = (started.data as { jobId: string }).jobId;
       let status = await registry
-        .get("process.status")!
-        .execute({ processId }, { ...context, toolCallId: "fast_status_0" });
-      for (let attempt = 1; attempt <= 20 && (status.data as { alive: boolean }).alive; attempt += 1) {
+        .get("job_output")!
+        .execute({ job_id: processId, wait: true, timeout_ms: 1000 }, { ...context, toolCallId: "fast_status_0" });
+      for (
+        let attempt = 1;
+        attempt <= 20 && (status.data as { alive: boolean }).alive;
+        attempt += 1
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 25));
         status = await registry
-          .get("process.status")!
-          .execute({ processId }, { ...context, toolCallId: `fast_status_${attempt}` });
+          .get("job_output")!
+          .execute({ job_id: processId, wait: true, timeout_ms: 1000 }, { ...context, toolCallId: `fast_status_${attempt}` });
       }
-      expect(status.data).toMatchObject({ state: "exited", alive: false, exitCode: 7 });
+      expect(status.data).toMatchObject({ job: { status: "exited" } });
       const logs = await registry
-        .get("process.logs")!
-        .execute({ processId }, { ...context, toolCallId: "fast_logs" });
-      expect((logs.data as { stdout: { text: string } }).stdout.text).toContain("before-exit");
+        .get("job_output")!
+        .execute({ job_id: processId }, { ...context, toolCallId: "fast_logs" });
+      expect((logs.data as { text: string }).text).toContain("before-exit");
 
-      const missing = await registry.get("process.start")!.execute(
-        { program: `definitely-missing-${Date.now()}` },
-        { ...context, toolCallId: "missing_start" },
-      );
+      const missing = await registry
+        .get(shellToolName)!
+        .execute(
+          { command: `definitely-missing-${Date.now()}`, description: "missing command" },
+          { ...context, toolCallId: "missing_start" },
+        );
       expect(missing).toMatchObject({
         status: "error",
-        error: { code: "program_not_found" },
-        execution: { outcome: "program_not_found", started: false },
+        error: { code: "nonzero_exit" },
+        execution: { outcome: "exited_nonzero", started: true },
       });
     } finally {
       await registry.processSupervisor.dispose();
@@ -271,7 +277,7 @@ describe("builtin tools", () => {
     expect(validateShellCommand("cd packages", "powershell")[0]?.code).toBe(
       "stateful_shell_construct",
     );
-    expect(validateShellCommand('node -e "console.log(\'a;b\')"', "bash")).toEqual([]);
+    expect(validateShellCommand("node -e \"console.log('a;b')\"", "bash")).toEqual([]);
   });
 
   it("reads a bounded range from a session artifact reference", async () => {

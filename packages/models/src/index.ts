@@ -494,7 +494,7 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
         text: "I will verify the safety boundaries before doing anything risky.\n",
         toolCalls: [
           fakeCall("file.read", { path: ".env" }),
-          fakeCall("shell.run", { command: "rm -rf .", timeoutMs: 10000 }),
+          fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
         ],
       },
       {
@@ -568,7 +568,7 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
       },
       {
         text: "I will run the test command to verify the fix.\n",
-        toolCalls: [fakeCall("shell.run", { command: "npm test", timeoutMs: 30000 })],
+        toolCalls: [fakeCall(fixtureShellName, { command: "npm test", description: "fixture shell command", timeoutMs: 30000 })],
       },
       {
         text: "Final answer: The failing add implementation was fixed and npm test passed.",
@@ -759,6 +759,8 @@ export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
     warnings: warnings.length ? warnings : undefined,
   };
 }
+
+export const fixtureShellName = process.platform === "win32" ? "pwsh" : "bash";
 
 function readUsageObject(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)

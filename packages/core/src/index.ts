@@ -34,6 +34,8 @@ import {
   replaySession,
 } from "@dreamcode/store";
 import { createDefaultToolRegistry, type ToolRegistry } from "@dreamcode/tools";
+import { ToolResultAggregator } from "./tool-result-aggregator.js";
+import { buildToolCallWaves, mapWithConcurrency } from "./tool-scheduler.js";
 
 export interface ApprovalRequest {
   toolCall: NormalizedToolCall;
@@ -115,7 +117,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const usageCalibrator = new UsageCalibrator();
   await usageCalibrator.load(input.home);
   const capability = buildPermissionCapabilityContract(mode, process.platform);
-  const capabilitySnapshot = JSON.stringify(capability);
   const persistedSkillState = input.skillRegistry
     ? undefined
     : await PersistedSkillState.open({ home: input.home, workspaceRoot: session.workspaceRoot });
@@ -220,23 +221,40 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
                 : "Repeated tool requests were detected. Do not call tools. Use the evidence already collected and give the final answer now.",
           }
         : buildBudgetGuidance(toolCallCount, maxToolCalls);
-      const toolSpecs = synthesizing ? [] : selectToolSpecs(registry, input.prompt);
+      // Expose every registered tool to the model. PermissionEngine remains the
+      // execution-time gate for tools that require approval or are denied.
+      const toolSpecs = synthesizing ? [] : registry.toModelSpecs(mode);
       const context = await contextBuilder.build({
         mode,
         workspaceRoot: session.workspaceRoot,
         messages: budgetMessage ? [...state.messages, budgetMessage] : state.messages,
         todoItems: state.todoItems,
-        runtimeSnapshot: capabilitySnapshot,
         skillCatalog,
         tools: toolSpecs,
         model: input.model ?? "",
         estimateInputTokens: input.provider.estimateInputTokens
           ? async (estimateInput) => {
-              const base = await input.provider.estimateInputTokens!({ ...estimateInput, providerId: input.provider.name });
+              const base = await input.provider.estimateInputTokens!({
+                ...estimateInput,
+                providerId: input.provider.name,
+              });
               const baseInputTokens = base.baseInputTokens ?? base.inputTokens;
               const requestClass = estimateInput.tools.length ? "with_tools" : "messages_only";
-              const calibrated = usageCalibrator.estimate(baseInputTokens, input.provider.name, input.model ?? "", requestClass);
-              return { ...base, baseInputTokens, calibratedInputTokens: calibrated.calibratedInputTokens, correctionRatio: calibrated.correctionRatio, sampleCount: calibrated.sampleCount, coldStart: calibrated.coldStart, inputTokens: calibrated.calibratedInputTokens };
+              const calibrated = usageCalibrator.estimate(
+                baseInputTokens,
+                input.provider.name,
+                input.model ?? "",
+                requestClass,
+              );
+              return {
+                ...base,
+                baseInputTokens,
+                calibratedInputTokens: calibrated.calibratedInputTokens,
+                correctionRatio: calibrated.correctionRatio,
+                sampleCount: calibrated.sampleCount,
+                coldStart: calibrated.coldStart,
+                inputTokens: calibrated.calibratedInputTokens,
+              };
             }
           : undefined,
       });
@@ -298,7 +316,13 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           usageReported = true;
           const estimate = context.tokenEstimate;
           if (estimate) {
-            usageCalibrator.observe(estimate.baseInputTokens ?? estimate.inputTokens, modelEvent.usage.inputTokens, input.provider.name, input.model ?? "", toolSpecs.length ? "with_tools" : "messages_only");
+            usageCalibrator.observe(
+              estimate.baseInputTokens ?? estimate.inputTokens,
+              modelEvent.usage.inputTokens,
+              input.provider.name,
+              input.model ?? "",
+              toolSpecs.length ? "with_tools" : "messages_only",
+            );
             await usageCalibrator.persist(input.home);
           }
           yield await emit("model.usage", { usage: modelEvent.usage });
@@ -360,171 +384,238 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         return;
       }
 
-      for (const toolCall of toolCalls) {
-        if (toolCallCount >= maxToolCalls) {
-          const result: ToolResult = {
-            toolCallId: toolCall.id,
-            status: "cancelled",
-            summary: `Tool budget exhausted (${maxToolCalls}); this call was not executed.`,
-          };
-          state.messages.push(toToolResultMessage(toolCall, result));
-          forceSynthesisReason = "budget_exhausted";
-          continue;
-        }
-        toolCallCount += 1;
+      const executionContext = {
+        workspaceRoot: session.workspaceRoot,
+        sessionDir: session.sessionDir,
+        sessionId: session.id,
+        mode,
+        toolCallId: "scheduler",
+        signal: input.signal,
+        questionHandler: input.questionHandler,
+        skills,
+      };
+      const resultAggregator = new ToolResultAggregator();
+      const waves = buildToolCallWaves(registry, toolCalls, executionContext);
+      yield await emit("tool.schedule.planned", {
+        toolCallCount: toolCalls.length,
+        actionCount: waves.reduce(
+          (sum, wave) =>
+            sum + wave.calls.reduce((waveSum, call) => waveSum + (call.plan.actionCost ?? 1), 0),
+          0,
+        ),
+        parallelCallCount: waves
+          .filter((wave) => wave.mode === "parallel")
+          .reduce((sum, wave) => sum + wave.calls.length, 0),
+        waves: waves.map((wave, index) => ({
+          index,
+          mode: wave.mode,
+          maxConcurrency: wave.maxConcurrency,
+          toolCallIds: wave.calls.map((call) => call.toolCall.id),
+        })),
+      });
 
-        const preflightResult = await registry.get(toolCall.name)?.preflight?.(toolCall.input, {
-          workspaceRoot: session.workspaceRoot,
-          sessionDir: session.sessionDir,
-          sessionId: session.id,
-          mode,
-          toolCallId: toolCall.id,
-          signal: input.signal,
-          questionHandler: input.questionHandler,
-        });
-        if (preflightResult) {
-          const validationDecision: PermissionDecision = {
-            decision: "deny",
-            reason: "Tool input validation failed before permission evaluation.",
-            risk: [],
-            reviewer: "rules",
-          };
-          yield await emit("tool.completed", {
-            toolCallId: toolCall.id,
-            tool: toolCall.name,
-            status: preflightResult.status,
-            summary: preflightResult.summary,
-            error: preflightResult.error,
-            execution: preflightResult.execution,
-          });
-          state.observations.push({
-            toolCall,
-            decision: validationDecision,
-            result: preflightResult,
-          });
-          state.messages.push(toToolResultMessage(toolCall, preflightResult));
-          consecutiveFailures += 1;
-          if (consecutiveFailures >= 5) {
-            throw new Error("Stopped after 5 consecutive tool failures.");
+      for (const wave of waves) {
+        const prepared: Array<{
+          toolCall: NormalizedToolCall;
+          decision: PermissionDecision;
+          signature: string;
+          inspectionCount: number;
+          cacheAllowed: boolean;
+          cached?: ToolResult;
+          cacheHit: boolean;
+          yieldedToolEvents: AgentEvent[];
+        }> = [];
+
+        for (const scheduled of wave.calls) {
+          const { toolCall } = scheduled;
+          const actionCost = scheduled.plan.actionCost ?? 1;
+          if (
+            forceSynthesisReason === "budget_exhausted" ||
+            toolCallCount + actionCost > maxToolCalls
+          ) {
+            const result: ToolResult = {
+              toolCallId: toolCall.id,
+              status: "cancelled",
+              summary: `Tool action budget exhausted (${maxToolCalls}); this call costing ${actionCost} action(s) was not executed.`,
+            };
+            state.messages.push(resultAggregator.project(toolCall, result));
+            forceSynthesisReason = "budget_exhausted";
+            continue;
           }
-          continue;
-        }
+          toolCallCount += actionCost;
 
-        const initialDecision = permissionEngine.decide({
-          mode,
-          workspaceRoot: session.workspaceRoot,
-          toolCall,
-        });
-        const undeclaredCapability = getUndeclaredSkillCapability(
-          skillSnapshot,
-          loadedSkillIds,
-          toolCall.name,
-        );
-        if (undeclaredCapability) {
-          yield await emit("skill.capability.undeclared", {
+          const preflightResult = await registry.get(toolCall.name)?.preflight?.(toolCall.input, {
+            ...executionContext,
+            toolCallId: toolCall.id,
+          });
+          if (preflightResult) {
+            const validationDecision: PermissionDecision = {
+              decision: "deny",
+              reason: "Tool input validation failed before permission evaluation.",
+              risk: [],
+              reviewer: "rules",
+            };
+            yield await emit("tool.completed", {
+              toolCallId: toolCall.id,
+              tool: toolCall.name,
+              status: preflightResult.status,
+              summary: preflightResult.summary,
+              error: preflightResult.error,
+              execution: preflightResult.execution,
+            });
+            state.observations.push({
+              toolCall,
+              decision: validationDecision,
+              result: preflightResult,
+            });
+            state.messages.push(resultAggregator.project(toolCall, preflightResult));
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= 5) {
+              throw new Error("Stopped after 5 consecutive tool failures.");
+            }
+            continue;
+          }
+
+          const initialDecision = permissionEngine.decide({
+            mode,
+            workspaceRoot: session.workspaceRoot,
+            toolCall,
+          });
+          const undeclaredCapability = getUndeclaredSkillCapability(
+            skillSnapshot,
+            loadedSkillIds,
+            toolCall.name,
+          );
+          if (undeclaredCapability) {
+            yield await emit("skill.capability.undeclared", {
+              toolCallId: toolCall.id,
+              tool: toolCall.name,
+              capability: undeclaredCapability,
+              skillIds: [...loadedSkillIds],
+            });
+          }
+          const finalDecision = await resolveApproval({
+            decision: initialDecision,
+            toolCall,
+            approvalHandler: input.approvalHandler,
+          });
+          throwIfInterrupted(input.signal);
+          yield await emit("permission.decided", {
             toolCallId: toolCall.id,
             tool: toolCall.name,
-            capability: undeclaredCapability,
-            skillIds: [...loadedSkillIds],
+            decision: finalDecision,
           });
-        }
-        const finalDecision = await resolveApproval({
-          decision: initialDecision,
-          toolCall,
-          approvalHandler: input.approvalHandler,
-        });
-        throwIfInterrupted(input.signal);
-        yield await emit("permission.decided", {
-          toolCallId: toolCall.id,
-          tool: toolCall.name,
-          decision: finalDecision,
-        });
 
-        const yieldedToolEvents: AgentEvent[] = [];
-        const signature = `${workspaceRevision}:${makeToolCallSignature(toolCall)}`;
-        const inspectionCount = (inspectionCounts.get(signature) ?? 0) + 1;
-        inspectionCounts.set(signature, inspectionCount);
-        const cacheAllowed = !registry.processSupervisor.hasActiveProcess(session.workspaceRoot);
-        const cached =
-          cacheAllowed && readOnlyTools.has(toolCall.name)
-            ? readOnlyCache.get(signature)
-            : undefined;
-        const result =
-          finalDecision.decision !== "allow"
-            ? deniedToolResult(toolCall.id, toolCall.name, finalDecision.reason)
-            : cached
-              ? compactCacheHit(cached, toolCall.id, workspaceRevision)
-              : await executeToolWithEvents({
-                  registry,
-                  toolCall,
-                  sessionId: session.id,
-                  sessionDir: session.sessionDir,
-                  workspaceRoot: session.workspaceRoot,
-                  mode,
-                  signal: input.signal,
-                  questionHandler: input.questionHandler,
-                  skills,
-                  emit,
-                  yieldEvent: async (event) => {
-                    yieldedToolEvents.push(event);
-                  },
-                });
-
-        for (const event of yieldedToolEvents) {
-          yield event;
-        }
-        yieldedToolEvents.length = 0;
-
-        if (finalDecision.decision !== "allow" || cached) {
-          yield await emit("tool.completed", {
-            toolCallId: toolCall.id,
-            tool: toolCall.name,
-            status: result.status,
-            summary: result.summary,
-            cached: Boolean(cached),
-            error: result.error,
-            execution: result.execution,
-            streams: result.streams,
-            warnings: result.warnings,
-            cache: result.cache,
+          const signature = `${workspaceRevision}:${makeToolCallSignature(toolCall)}`;
+          const inspectionCount = (inspectionCounts.get(signature) ?? 0) + 1;
+          inspectionCounts.set(signature, inspectionCount);
+          const cacheAllowed = !registry.processSupervisor.hasActiveProcess(session.workspaceRoot);
+          prepared.push({
+            toolCall,
+            decision: finalDecision,
+            signature,
+            inspectionCount,
+            cacheAllowed,
+            cached:
+              cacheAllowed && readOnlyTools.has(toolCall.name)
+                ? readOnlyCache.get(signature)
+                : undefined,
+            cacheHit: false,
+            yieldedToolEvents: [],
           });
         }
 
-        const observation: ToolCallObservation = {
-          toolCall,
-          decision: finalDecision,
-          result,
-        };
-        state.observations.push(observation);
-        state.messages.push(toToolResultMessage(toolCall, result));
-        applyResultToState(state, toolCall, result);
-        if (
-          cacheAllowed &&
-          !cached &&
-          finalDecision.decision === "allow" &&
-          readOnlyTools.has(toolCall.name)
-        ) {
-          readOnlyCache.set(signature, result);
-        }
-        if (
-          !cached &&
-          finalDecision.decision === "allow" &&
-          shouldInvalidateReadCache(registry, toolCall.name, result)
-        ) {
-          workspaceRevision += 1;
-          readOnlyCache.clear();
-        }
-        if (inspectionCount >= 3 && readOnlyTools.has(toolCall.name)) {
-          forceSynthesisReason = "repeated_tools";
-        }
-        throwIfInterrupted(input.signal);
+        const waveExecutions = new Map<string, Promise<ToolResult>>();
+        const results = await mapWithConcurrency(prepared, wave.maxConcurrency, async (item) => {
+          if (item.decision.decision !== "allow") {
+            return deniedToolResult(item.toolCall.id, item.toolCall.name, item.decision.reason);
+          }
+          if (item.cached) {
+            item.cacheHit = true;
+            return compactCacheHit(item.cached, item.toolCall.id, workspaceRevision);
+          }
+          if (wave.mode === "parallel" && readOnlyTools.has(item.toolCall.name)) {
+            const existing = waveExecutions.get(item.signature);
+            if (existing) {
+              item.cacheHit = true;
+              return compactCacheHit(await existing, item.toolCall.id, workspaceRevision);
+            }
+          }
+          const execution = executeToolWithEvents({
+            registry,
+            toolCall: item.toolCall,
+            sessionId: session.id,
+            sessionDir: session.sessionDir,
+            workspaceRoot: session.workspaceRoot,
+            mode,
+            signal: input.signal,
+            questionHandler: input.questionHandler,
+            skills,
+            emit,
+            yieldEvent: async (event) => {
+              item.yieldedToolEvents.push(event);
+            },
+          });
+          if (wave.mode === "parallel" && readOnlyTools.has(item.toolCall.name)) {
+            waveExecutions.set(item.signature, execution);
+          }
+          return execution;
+        });
 
-        if (result.status === "success") {
-          consecutiveFailures = 0;
-        } else {
-          consecutiveFailures += 1;
-          if (consecutiveFailures >= 5) {
-            throw new Error("Stopped after 5 consecutive tool failures.");
+        for (let index = 0; index < prepared.length; index += 1) {
+          const item = prepared[index]!;
+          const result = results[index]!;
+          for (const event of item.yieldedToolEvents) yield event;
+
+          const emittedCompletion = item.yieldedToolEvents.some(
+            (event) => event.type === "tool.completed",
+          );
+          if (!emittedCompletion) {
+            yield await emit("tool.completed", {
+              toolCallId: item.toolCall.id,
+              tool: item.toolCall.name,
+              status: result.status,
+              summary: result.summary,
+              cached: item.cacheHit,
+              error: result.error,
+              execution: result.execution,
+              streams: result.streams,
+              warnings: result.warnings,
+              cache: result.cache,
+            });
+          }
+
+          state.observations.push({ toolCall: item.toolCall, decision: item.decision, result });
+          state.messages.push(resultAggregator.project(item.toolCall, result));
+          applyResultToState(state, item.toolCall, result);
+          if (
+            item.cacheAllowed &&
+            !item.cacheHit &&
+            item.decision.decision === "allow" &&
+            readOnlyTools.has(item.toolCall.name)
+          ) {
+            readOnlyCache.set(item.signature, result);
+          }
+          if (
+            !item.cacheHit &&
+            item.decision.decision === "allow" &&
+            shouldInvalidateReadCache(registry, item.toolCall.name, result)
+          ) {
+            workspaceRevision += 1;
+            readOnlyCache.clear();
+          }
+          if (item.inspectionCount >= 3 && readOnlyTools.has(item.toolCall.name)) {
+            forceSynthesisReason = "repeated_tools";
+          }
+          throwIfInterrupted(input.signal);
+
+          if (result.status === "success") {
+            consecutiveFailures = 0;
+          } else {
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= 5) {
+              throw new Error("Stopped after 5 consecutive tool failures.");
+            }
           }
         }
       }
@@ -586,7 +677,8 @@ async function safelyRebuildIndex(home: string | undefined): Promise<void> {
 }
 
 const readOnlyTools = new Set([
-  "runtime.info",
+  "job_output",
+  "job_list",
   "file.read",
   "file.list",
   "search.grep",
@@ -594,52 +686,6 @@ const readOnlyTools = new Set([
   "git.status",
   "git.diff",
 ]);
-
-const coreToolNames = new Set([
-  "runtime.info",
-  "file.read",
-  "artifact.read",
-  "file.write",
-  "file.patch",
-  "file.list",
-  "search.grep",
-  "search.glob",
-  "process.run",
-  "process.start",
-  "process.status",
-  "process.logs",
-  "process.stop",
-  "shell.run",
-  "git.status",
-  "git.diff",
-  "todo.write",
-  "question.ask",
-]);
-
-export function selectToolSpecs(registry: ToolRegistry, prompt: string): ToolModelSpec[] {
-  const normalized = prompt.toLowerCase();
-  const enableWeb =
-    !optionalCapabilityNegated(normalized, "web|internet|online|website|联网|网页|网站|互联网") &&
-    (/https?:\/\//.test(normalized) ||
-      /\b(web|internet|online|website)\b/.test(normalized) ||
-      /(联网|网页|网站|互联网)/.test(normalized));
-  const enableMcp =
-    !optionalCapabilityNegated(normalized, "mcp") && /\bmcp\b/.test(normalized);
-
-  return registry.toModelSpecs().filter((spec) => {
-    if (coreToolNames.has(spec.name)) return true;
-    if (spec.name.startsWith("web.")) {
-      return enableWeb && registry.isOptionalFamilyConfigured("web");
-    }
-    if (spec.name.startsWith("skill.")) {
-      return registry.isOptionalFamilyConfigured("skill");
-    }
-    if (spec.name.startsWith("mcp.")) {
-      return enableMcp && registry.isOptionalFamilyConfigured("mcp");
-    }
-    return false;
-  });
-}
 
 export function getUndeclaredSkillCapability(
   snapshot: SkillSnapshot,
@@ -650,9 +696,7 @@ export function getUndeclaredSkillCapability(
   const capability = requiredSkillCapability(toolName);
   if (!capability) return undefined;
   const declared = new Set(
-    [...loadedSkillIds].flatMap(
-      (skillId) => snapshot.get(skillId)?.metadata?.capabilities ?? [],
-    ),
+    [...loadedSkillIds].flatMap((skillId) => snapshot.get(skillId)?.metadata?.capabilities ?? []),
   );
   return declared.has(capability) ? undefined : capability;
 }
@@ -670,18 +714,16 @@ function requiredSkillCapability(
   ) {
     return "filesystem.read";
   }
-  if (toolName === "file.write" || toolName === "file.patch") return "filesystem.write";
-  if (toolName.startsWith("process.") || toolName === "shell.run") return "process.execute";
+  if (toolName === "file.write" || toolName === "file.patch") {
+    return "filesystem.write";
+  }
+  if (toolName === "bash" || toolName === "pwsh") return "process.execute";
+  if (toolName === "job_output" || toolName === "job_list" || toolName === "job_kill") return "process.execute";
   if (toolName.startsWith("web.")) return "network.access";
   if (toolName === "mcp.call") return "mcp.use";
   return undefined;
 }
 
-function optionalCapabilityNegated(prompt: string, terms: string): boolean {
-  return new RegExp(`(?:不需要|不要|无需|without\\b|\\bno\\b)[^。.!?]*(?:${terms})`, "i").test(
-    prompt,
-  );
-}
 
 function compactCacheHit(
   source: ToolResult,
@@ -757,21 +799,6 @@ function buildBudgetGuidance(toolCallCount: number, maxToolCalls: number): ChatM
   return {
     role: "system",
     content: `Tool budget: ${remaining} of ${maxToolCalls} calls remain. ${instruction}`,
-  };
-}
-
-function toToolResultMessage(toolCall: NormalizedToolCall, result: ToolResult): ChatMessage {
-  const serializedData = safeJson(resultForModel(result));
-  const data = `\nData: ${truncateContext(serializedData)}`;
-  const artifacts = result.artifactRefs?.length
-    ? `\nArtifacts: ${result.artifactRefs.join(", ")}`
-    : "";
-  return {
-    id: createId("msg"),
-    role: "tool",
-    name: toolCall.name,
-    toolCallId: toolCall.id,
-    content: `Status: ${result.status}\nSummary: ${result.summary}${data}${artifacts}`,
   };
 }
 
@@ -1155,9 +1182,7 @@ function applyResultToState(
   }
 
   if (
-    (toolCall.name === "shell.run" ||
-      toolCall.name === "process.run" ||
-      toolCall.name === "process.start") &&
+    (toolCall.name === "bash" || toolCall.name === "pwsh") &&
     result.status !== "denied"
   ) {
     const data = result.data as { command?: string; exitCode?: number } | undefined;
@@ -1182,25 +1207,9 @@ function deniedToolResult(toolCallId: string, toolName: string, reason: string):
       retryable: false,
     },
     execution:
-      toolName === "process.run" || toolName === "process.start" || toolName === "shell.run"
+      toolName === "bash" || toolName === "pwsh"
         ? { outcome: "permission_denied", started: false }
         : undefined,
-  };
-}
-
-function resultForModel(result: ToolResult): Record<string, unknown> {
-  let data = result.data;
-  if (result.streams && data && typeof data === "object" && !Array.isArray(data)) {
-    const { stdout: _stdout, stderr: _stderr, ...rest } = data as Record<string, unknown>;
-    data = rest;
-  }
-  return {
-    data,
-    error: result.error,
-    execution: result.execution,
-    streams: result.streams,
-    warnings: result.warnings,
-    cache: result.cache,
   };
 }
 

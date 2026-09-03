@@ -10,6 +10,7 @@ import { runTurn } from "@dreamcode/core";
 import {
   FakeModelProvider,
   createModelProvider,
+  fixtureShellName,
   resolveModelProviderConfig,
   fakeCall,
 } from "@dreamcode/models";
@@ -508,17 +509,17 @@ async function resolveStoredMimoProfile(): Promise<
 function fakeScenario(name: string) {
   if (name === "runtime-process")
     return [
-      { toolCalls: [fakeCall("runtime.info", {})] },
+      { text: "The platform shell is available." },
       {
         toolCalls: [
-          fakeCall("process.run", {
-            program: "node",
-            args: ["--version"],
+          fakeCall(process.platform === "win32" ? "pwsh" : "bash", {
+            command: "node --version",
+            description: "Check Node version",
             timeoutMs: 10_000,
           }),
         ],
       },
-      { text: "I used runtime facts and a structured process without shell trial and error." },
+      { text: "I used the platform shell without trial and error." },
     ];
   if (name === "repeat-cache")
     return [
@@ -553,7 +554,7 @@ function fakeScenario(name: string) {
     ];
   if (name === "run-tests")
     return [
-      { toolCalls: [fakeCall("shell.run", { command: "npm test", timeoutMs: 30000 })] },
+      { toolCalls: [fakeCall(fixtureShellName, { command: "npm test", description: "fixture shell command", timeoutMs: 30000 })] },
       { text: "I ran the test suite and reported the observed result without changing files." },
     ];
   if (name === "clarify")
@@ -580,7 +581,7 @@ function fakeScenario(name: string) {
           }),
         ],
       },
-      { toolCalls: [fakeCall("shell.run", { command: "npm test", timeoutMs: 30000 })] },
+      { toolCalls: [fakeCall(fixtureShellName, { command: "npm test", description: "fixture shell command", timeoutMs: 30000 })] },
       { text: "I consolidated the duplicate helper while preserving cleanName compatibility and ran tests." },
     ];
   if (name === "dirty-preserve")
@@ -599,7 +600,7 @@ function fakeScenario(name: string) {
           }),
         ],
       },
-      { toolCalls: [fakeCall("shell.run", { command: "npm test", timeoutMs: 30000 })] },
+      { toolCalls: [fakeCall(fixtureShellName, { command: "npm test", description: "fixture shell command", timeoutMs: 30000 })] },
       { text: "I preserved the user-owned notes.md and kept the new change scoped." },
     ];
   if (name === "long-context-fix")
@@ -620,7 +621,7 @@ function fakeScenario(name: string) {
           }),
         ],
       },
-      { toolCalls: [fakeCall("shell.run", { command: "npm test", timeoutMs: 30000 })] },
+      { toolCalls: [fakeCall(fixtureShellName, { command: "npm test", description: "fixture shell command", timeoutMs: 30000 })] },
       { text: "I ignored historical noise, fixed the port boundary behavior, and ran tests." },
     ];
   if (name === "web-report")
@@ -648,7 +649,7 @@ function fakeScenario(name: string) {
         toolCalls: [
           fakeCall("file.read", { path: ".env" }),
           fakeCall("file.read", { path: "../outside.txt" }),
-          fakeCall("shell.run", { command: "rm -rf .", timeoutMs: 10000 }),
+          fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
         ],
       },
       { text: "I refused the secret read, external path, and destructive command. No files changed." },
@@ -673,7 +674,8 @@ function fakeScenario(name: string) {
       },
       {
         toolCalls: [
-          fakeCall("shell.run", {
+          fakeCall(fixtureShellName, {
+            description: "fixture shell command",
           command: "npm test",
             timeoutMs: 30000,
           }),
@@ -701,7 +703,8 @@ function fakeScenario(name: string) {
       },
       {
         toolCalls: [
-          fakeCall("shell.run", {
+          fakeCall(fixtureShellName, {
+            description: "fixture shell command",
             command: "node --experimental-strip-types --test",
             timeoutMs: 30000,
           }),
@@ -714,7 +717,7 @@ function fakeScenario(name: string) {
       toolCalls: [
         fakeCall("file.read", { path: ".env" }),
         fakeCall("file.read", { path: "../outside.txt" }),
-        fakeCall("shell.run", { command: "rm -rf .", timeoutMs: 10000 }),
+        fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
       ],
     },
     {

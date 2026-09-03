@@ -2,12 +2,12 @@ import { access, realpath } from "node:fs/promises";
 import path from "node:path";
 import type {
   NormalizedToolCall,
+  PermissionCapabilityCategory,
+  PermissionCapabilityContract,
   PermissionDecision,
   PermissionDecisionKind,
   RiskTag,
   RunMode,
-  PermissionCapabilityContract,
-  PermissionCapabilityCategory,
 } from "@dreamcode/shared";
 
 export interface ResolvedWorkspacePath {
@@ -193,14 +193,42 @@ export const PermissionRuleCatalog = {
     return classifyCommand(command);
   },
   categories: [
-    { id: "workspace_read", summary: "Read workspace files and inspect repository state.", examples: ["rg pattern .", "git status"] },
-    { id: "tests_checks", summary: "Run tests, lint, typecheck, and builds.", examples: ["pnpm test", "npm run typecheck"] },
-    { id: "dependency_install", summary: "Install or update dependencies and package metadata.", examples: ["pnpm install"] },
-    { id: "network", summary: "Access public network resources.", examples: ["curl https://example.com"] },
-    { id: "workspace_write", summary: "Write or patch files inside the workspace.", examples: ["file.write README.md"] },
-    { id: "external_read", summary: "Read paths outside the workspace.", examples: ["file.read C:/temp/report.txt"] },
+    {
+      id: "workspace_read",
+      summary: "Read workspace files and inspect repository state.",
+      examples: ["rg pattern .", "git status"],
+    },
+    {
+      id: "tests_checks",
+      summary: "Run tests, lint, typecheck, and builds.",
+      examples: ["pnpm test", "npm run typecheck"],
+    },
+    {
+      id: "dependency_install",
+      summary: "Install or update dependencies and package metadata.",
+      examples: ["pnpm install"],
+    },
+    {
+      id: "network",
+      summary: "Access public network resources.",
+      examples: ["curl https://example.com"],
+    },
+    {
+      id: "workspace_write",
+      summary: "Write or patch files inside the workspace.",
+      examples: ["file.write README.md"],
+    },
+    {
+      id: "external_read",
+      summary: "Read paths outside the workspace.",
+      examples: ["file.read C:/temp/report.txt"],
+    },
     { id: "mcp", summary: "Call configured external MCP tools.", examples: ["mcp.call"] },
-    { id: "destructive", summary: "Destructive deletion, history rewrite, or system commands.", examples: ["rm -rf /", "Remove-Item -Recurse -Force"] },
+    {
+      id: "destructive",
+      summary: "Destructive deletion, history rewrite, or system commands.",
+      examples: ["rm -rf /", "Remove-Item -Recurse -Force"],
+    },
     { id: "other_command", summary: "Commands not covered by the safe allowlist.", examples: [] },
   ] as PermissionCapabilityCategory[],
 };
@@ -211,28 +239,64 @@ export function buildPermissionCapabilityContract(
 ): PermissionCapabilityContract {
   const categories = PermissionRuleCatalog.categories.map((category) => ({
     ...category,
-    examples: category.examples?.filter((example) => platform !== "win32" || !example.startsWith("rm ")),
+    examples: category.examples?.filter(
+      (example) => platform !== "win32" || !example.startsWith("rm "),
+    ),
   }));
   const byId = (id: string) => categories.find((category) => category.id === id)!;
-  const category = (id: string, summary?: string) => ({ ...byId(id), ...(summary ? { summary } : {}) });
+  const category = (id: string, summary?: string) => ({
+    ...byId(id),
+    ...(summary ? { summary } : {}),
+  });
   const modes: PermissionCapabilityContract["modes"] = {
     plan: {
       allow: [category("workspace_read"), category("tests_checks")],
-      ask: [category("network", "Web/network reads require approval in plan mode."), category("mcp", "MCP tools require approval in plan mode."), category("external_read", "Workspace-external reads require approval in plan mode.")].filter(Boolean),
-      deny: [category("workspace_write"), category("dependency_install"), category("destructive"), category("other_command")],
+      ask: [
+        category("network", "Web/network reads require approval in plan mode."),
+        category("mcp", "MCP tools require approval in plan mode."),
+        category("external_read", "Workspace-external reads require approval in plan mode."),
+      ].filter(Boolean),
+      deny: [
+        category("workspace_write"),
+        category("dependency_install"),
+        category("destructive"),
+        category("other_command"),
+      ],
     },
     guided: {
       allow: [category("workspace_read"), category("tests_checks")],
-      ask: [category("workspace_write"), category("dependency_install"), category("network"), category("mcp"), category("external_read"), category("other_command")].filter(Boolean),
+      ask: [
+        category("workspace_write"),
+        category("dependency_install"),
+        category("network"),
+        category("mcp"),
+        category("external_read"),
+        category("other_command"),
+      ].filter(Boolean),
       deny: [category("destructive")],
     },
     yolo: {
       allow: [category("workspace_read"), category("tests_checks"), category("workspace_write")],
-      ask: [category("dependency_install"), category("network"), category("mcp"), category("external_read"), category("other_command")].filter(Boolean),
+      ask: [
+        category("dependency_install"),
+        category("network"),
+        category("mcp"),
+        category("external_read"),
+        category("other_command"),
+      ].filter(Boolean),
       deny: [category("destructive")],
     },
     full: {
-      allow: [category("workspace_read"), category("tests_checks"), category("workspace_write"), category("dependency_install"), category("network"), category("mcp"), category("external_read"), category("other_command")].filter(Boolean),
+      allow: [
+        category("workspace_read"),
+        category("tests_checks"),
+        category("workspace_write"),
+        category("dependency_install"),
+        category("network"),
+        category("mcp"),
+        category("external_read"),
+        category("other_command"),
+      ].filter(Boolean),
       ask: [],
       deny: [category("destructive")],
     },
@@ -248,7 +312,10 @@ export function buildPermissionCapabilityContract(
     shellRun: {
       allowPipelines: true,
       allowMultipleSteps: false,
-      guidance: mode === "plan" ? "Commands are not executed in plan mode." : "Use one bounded command or a single pipeline; permission is checked for every call.",
+      guidance:
+        mode === "plan"
+          ? "Commands are not executed in plan mode."
+          : "Use one bounded command or a single pipeline; permission is checked for every call.",
     },
   };
 }
@@ -265,7 +332,7 @@ export class PermissionEngine {
     const toolName = toolCall.name;
     const toolInput = readObject(toolCall.input);
 
-    if (toolName === "runtime.info" || toolName === "todo.write" || toolName === "question.ask") {
+    if (toolName === "todo.write" || toolName === "question.ask") {
       return allow("Planning and user-question tools are always safe.", []);
     }
 
@@ -302,7 +369,10 @@ export class PermissionEngine {
       ]);
     }
 
-    if (toolName === "search.grep" || toolName === "search.glob") {
+    if (
+      toolName === "search.grep" ||
+      toolName === "search.glob"
+    ) {
       return allow("Search within the workspace is allowed.", ["read_workspace"]);
     }
 
@@ -314,30 +384,23 @@ export class PermissionEngine {
       return this.decideFileTool({ mode, workspaceRoot, toolName, toolInput });
     }
 
-    if (toolName === "process.status" || toolName === "process.logs") {
+    if (toolName === "job_output" || toolName === "job_list") {
       return allow("Reading a session-owned managed process is allowed.", []);
     }
 
-    if (toolName === "process.stop") {
+    if (toolName === "job_kill") {
       return allow("Stopping a session-owned managed process is allowed.", ["long_running"]);
     }
 
-    if (toolName === "shell.run" || toolName === "process.run" || toolName === "process.start") {
-      const command =
-        toolName === "shell.run"
-          ? stringField(toolInput, "command")
-          : processCommand(toolInput);
+    if (toolName === "bash" || toolName === "pwsh") {
+      const command = stringField(toolInput, "command");
       if (!command) {
         return deny(`${toolName} requires a command.`, ["shell_mutating"]);
       }
       const classified = PermissionRuleCatalog.classify(command);
-      const classifiedRisk =
-        toolName === "process.start"
-          ? [...new Set([...classified.risk, "long_running" as const])]
-          : classified.risk;
-      if (toolName === "process.start" && mode === "plan") {
-        return deny("Plan mode does not allow starting long-running processes.", classifiedRisk);
-      }
+      const isBackground = toolInput.run_in_background === true;
+      const classifiedRisk = isBackground ? [...new Set([...classified.risk, "long_running" as const])] : classified.risk;
+      if (isBackground && mode === "plan") return deny("Plan mode does not allow starting long-running processes.", classifiedRisk);
       if (mode === "plan" && classified.risk.includes("shell_mutating")) {
         return deny("Plan mode does not allow mutating shell commands.", classifiedRisk);
       }
@@ -354,10 +417,16 @@ export class PermissionEngine {
         if (mode === "yolo" && classified.decision === "allow") {
           return allow("Safe YOLO policy allows this command with an external cwd.", externalRisk);
         }
-        return ask("Using a cwd outside the workspace requires approval in this mode.", externalRisk);
+        return ask(
+          "Using a cwd outside the workspace requires approval in this mode.",
+          externalRisk,
+        );
       }
-      if (toolName === "process.start" && mode === "guided" && classified.decision !== "deny") {
-        return ask("Guided mode requires approval before starting a long-running process.", classifiedRisk);
+      if (isBackground && mode === "guided" && classified.decision !== "deny") {
+        return ask(
+          "Guided mode requires approval before starting a long-running process.",
+          classifiedRisk,
+        );
       }
       if (mode === "guided" && classified.decision === "allow") {
         return allow(classified.reason, classifiedRisk);
@@ -384,7 +453,9 @@ export class PermissionEngine {
     const target =
       stringField(input.toolInput, "path") ?? stringField(input.toolInput, "dir") ?? ".";
     const resolved = resolveWorkspacePath(input.workspaceRoot, target);
-    const isWrite = input.toolName === "file.write" || input.toolName === "file.patch";
+    const isWrite =
+      input.toolName === "file.write" ||
+      input.toolName === "file.patch";
 
     if (isWrite && !resolved.isInside) {
       return deny("Writing outside the workspace is denied.", ["write_external_path"]);

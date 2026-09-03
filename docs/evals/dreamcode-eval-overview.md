@@ -48,7 +48,7 @@
 
 | ID | Fixture | 场景 |
 | --- | --- | --- |
-| U01 | workspace-ops | 先查询 runtime，再用 `process.run` 执行跨平台命令 |
+| U01 | workspace-ops | 使用当前平台 Shell 工具执行跨平台命令 |
 | U02 | workspace-ops | 相同只读调用返回紧凑回合缓存引用 |
 | U03 | workspace-ops | 本地编码任务不暴露 Web、Skill、MCP schema |
 | U04 | workspace-ops | Provider 缓存输入与未缓存输入 Token 无损记录 |
@@ -178,4 +178,3 @@ D01、G01、N04、O01、T01、T02、T03 已完成校准后真实 Mimo 重跑，�
 - I01 长上下文抗噪约 117.6 秒；
 - S02 是原始 48 任务中唯一明确的 Agent 未完成任务；
 - 当前 48 任务各执行 1 次，尚不足以给出正式稳定性结论。
-

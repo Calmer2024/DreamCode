@@ -169,7 +169,7 @@ describe("DesktopRunManager", () => {
 
     expect(pending).toMatchObject({
       runId,
-      tool: "shell.run",
+      tool: process.platform === "win32" ? "pwsh" : "bash",
       input: { command: "echo approval" },
     });
     expect(pending.requestId).not.toBe("tool-call-approval");
@@ -643,8 +643,8 @@ function approvalProvider(): ModelProvider {
           type: "tool_call",
           toolCall: {
             id: "tool-call-approval",
-            name: "shell.run",
-            input: { command: "echo approval" },
+            name: process.platform === "win32" ? "pwsh" : "bash",
+            input: { command: "echo approval", description: "approval test command" },
           },
         };
       } else {

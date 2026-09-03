@@ -1,6 +1,6 @@
 id: U01-runtime-process
 fixture: workspace-ops
-prompt: "先获取当前运行时信息，再用结构化进程执行器确认 Node 版本；不要试错其他平台命令，也不要使用 Shell。"
+prompt: "使用当前平台提供的命令工具确认 Node 版本；不要试错其他平台命令。"
 mode: yolo
 fakeScenario: runtime-process
 budgets: { referenceLatencyMs: 30000, referenceTokens: 6000, referenceToolCalls: 3 }

@@ -4,39 +4,29 @@ import path from "node:path";
 import type { AgentEvent, ModelEvent, ModelProvider, ModelStreamInput } from "@dreamcode/shared";
 import { createDefaultToolRegistry } from "@dreamcode/tools";
 import { describe, expect, it } from "vitest";
-import { runTurn, selectToolSpecs } from "./index";
+import { runTurn } from "./index";
 
 describe("tool exposure and turn cache", () => {
-  it("keeps Skill loading available while gating web and MCP schemas", () => {
+  it("exposes only mode-available tool schemas to the model", () => {
     const registry = createDefaultToolRegistry();
-    const coding = selectToolSpecs(registry, "Fix the TypeScript build").map((tool) => tool.name);
-    expect(coding).toContain("runtime.info");
-    expect(coding).toContain("process.run");
+    const coding = registry.toModelSpecs("yolo").map((tool) => tool.name);
+    expect(coding.every((name) => !/^(runtime|process|shell)[._]/.test(name))).toBe(true);
     expect(coding).toEqual(
       expect.arrayContaining([
-        "process.start",
-        "process.status",
-        "process.logs",
-        "process.stop",
+        process.platform === "win32" ? "pwsh" : "bash",
+        "job_output",
+        "job_list",
+        "job_kill",
       ]),
     );
-    expect(coding.some((name) => name.startsWith("web."))).toBe(false);
+    expect(coding).toEqual(expect.arrayContaining(["web.search", "web.fetch"]));
     expect(coding).toContain("skill.load");
-    expect(coding.some((name) => name.startsWith("mcp."))).toBe(false);
+    expect(coding).toEqual(expect.arrayContaining(["mcp.list", "mcp.call"]));
 
-    const web = selectToolSpecs(registry, "Search the web for this API").map((tool) => tool.name);
-    expect(web).toContain("web.search");
-    const unconfiguredMcp = selectToolSpecs(registry, "Call the MCP server").map(
-      (tool) => tool.name,
-    );
-    expect(unconfiguredMcp.some((name) => name.startsWith("mcp."))).toBe(false);
-    const explicitlyLocal = selectToolSpecs(
-      registry,
-      "不需要联网、Skill 或 MCP，只处理本地代码。",
-    ).map((tool) => tool.name);
-    expect(explicitlyLocal.some((name) => name.startsWith("web."))).toBe(false);
-    expect(explicitlyLocal.some((name) => name.startsWith("mcp."))).toBe(false);
-    expect(explicitlyLocal).toContain("skill.load");
+    const plan = registry.toModelSpecs("plan").map((tool) => tool.name);
+    expect(plan).not.toEqual(expect.arrayContaining(["file.write", "file.patch", "web.search", "web.fetch", "mcp.list", "mcp.call", "job_kill"]));
+    expect(plan).toContain("file.read");
+    expect(plan).toContain(process.platform === "win32" ? "pwsh" : "bash");
   });
 
   it("returns a compact reference for a repeated read-only call", async () => {

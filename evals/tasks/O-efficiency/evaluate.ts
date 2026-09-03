@@ -5,22 +5,14 @@ export const evaluate: CustomEvaluator = async ({ task, events }) => {
     const calls = events
       .filter((event) => event.type === "model.tool_call")
       .map((event) => (event.payload as { toolCall?: { name?: string } }).toolCall?.name);
-    const processCompleted = events.some(
-      (event) =>
-        event.type === "tool.completed" &&
-        (event.payload as { tool?: string; status?: string }).tool === "process.run" &&
-        (event.payload as { status?: string }).status === "success",
+    const passed = !calls.some((call) =>
+      /^(runtime|process|shell)[._]/.test(call ?? ""),
     );
-    const passed =
-      calls.includes("runtime.info") &&
-      calls.includes("process.run") &&
-      !calls.includes("shell.run") &&
-      processCompleted;
     return [
       {
         passed,
         detail: passed
-          ? "runtime.info preceded a successful process.run without shell trial"
+          ? "platform shell preceded a successful Node version check"
           : `unexpected runtime path: ${calls.join(", ")}`,
         hardFailure: false,
       },
@@ -51,18 +43,20 @@ export const evaluate: CustomEvaluator = async ({ task, events }) => {
   if (task.id === "U03-core-tool-exposure") {
     const started = events.find((event) => event.type === "model.started");
     const tools = (started?.payload as { tools?: string[] } | undefined)?.tools ?? [];
-    const optional = tools.filter((tool) => tool.startsWith("web.") || tool.startsWith("mcp."));
     const passed =
-      tools.includes("runtime.info") &&
-      tools.includes("process.run") &&
-      tools.includes("skill.load") &&
-      optional.length === 0;
+      tools.includes(process.platform === "win32" ? "pwsh" : "bash") &&
+      tools.includes("job_output") &&
+      tools.includes("job_list") &&
+      tools.includes("job_kill") &&
+      !tools.some((tool) =>
+        /^(runtime|process|shell)[._]/.test(tool),
+      );
     return [
       {
         passed,
         detail: passed
           ? "the core coding tools and progressive Skill loader were exposed"
-          : `optional tools: ${optional.join(", ")}`,
+          : `exposed tools: ${tools.join(", ")}`,
         hardFailure: false,
       },
     ];

@@ -35,8 +35,8 @@ let deepSeekV4TokenizerPromise: Promise<{ _encode_text(text: string): unknown[] 
 const deepSeekV4TokenCounter: TokenCounter = {
   exact: true,
   count: async (text) => {
-    deepSeekV4TokenizerPromise ??= import("@lenml/tokenizer-deepseek_v4").then(({ fromPreTrained }) =>
-      fromPreTrained() as { _encode_text(text: string): unknown[] },
+    deepSeekV4TokenizerPromise ??= import("@lenml/tokenizer-deepseek_v4").then(
+      ({ fromPreTrained }) => fromPreTrained() as { _encode_text(text: string): unknown[] },
     );
     const tokenizer = await deepSeekV4TokenizerPromise;
     return tokenizer._encode_text(text).length;
@@ -70,8 +70,16 @@ const CONTEXT_MODEL_PROFILES: readonly ContextModelProfile[] = [
     tokenCounter: deepSeekV4TokenCounter,
   },
   { provider: "deepseek", model: /^deepseek-v3(?:\.2)?$/, maxContextTokens: 128_000 },
-  { provider: "qwen", model: /^qwen3\.7-(?:max|plus|flash)(?:-.+)?$/, maxContextTokens: ONE_MILLION_TOKENS },
-  { provider: "qwen", model: /^qwen3\.6-(?:plus|flash)(?:-.+)?$/, maxContextTokens: ONE_MILLION_TOKENS },
+  {
+    provider: "qwen",
+    model: /^qwen3\.7-(?:max|plus|flash)(?:-.+)?$/,
+    maxContextTokens: ONE_MILLION_TOKENS,
+  },
+  {
+    provider: "qwen",
+    model: /^qwen3\.6-(?:plus|flash)(?:-.+)?$/,
+    maxContextTokens: ONE_MILLION_TOKENS,
+  },
   { provider: "qwen", model: /^qwen3-coder-next(?:-.+)?$/, maxContextTokens: 256_000 },
   { provider: "kimi", model: /^kimi-k2\.(?:7|6)(?:-.+)?$/, maxContextTokens: 256_000 },
   { provider: "zhipu", model: /^glm-5\.2\[1m\]$/, maxContextTokens: ONE_MILLION_TOKENS },
@@ -117,11 +125,14 @@ export class ContextBuilder {
     const maxContextTokens = options.maxContextTokens ?? DEFAULT_CONTEXT_TOKENS;
     this.maxContextTokens = maxContextTokens;
     this.reservedOutputTokens =
-      options.reservedOutputTokens ?? Math.min(64_000, Math.max(8_000, Math.floor(maxContextTokens * 0.08)));
+      options.reservedOutputTokens ??
+      Math.min(64_000, Math.max(8_000, Math.floor(maxContextTokens * 0.08)));
     this.compactionBufferTokens =
-      options.compactionBufferTokens ?? Math.min(24_000, Math.max(4_000, Math.floor(maxContextTokens * 0.024)));
+      options.compactionBufferTokens ??
+      Math.min(24_000, Math.max(4_000, Math.floor(maxContextTokens * 0.024)));
     this.keepRecentTokens =
-      options.keepRecentTokens ?? Math.min(64_000, Math.max(12_000, Math.floor(maxContextTokens * 0.064)));
+      options.keepRecentTokens ??
+      Math.min(64_000, Math.max(12_000, Math.floor(maxContextTokens * 0.064)));
     this.tokenCounter = options.tokenCounter ?? approximateTokenCounter;
   }
 
@@ -137,18 +148,12 @@ export class ContextBuilder {
     const system: ChatMessage = {
       role: "system",
       content: [
-        "You are DreamCode, a local coding/task agent.",
-        "Respond in the same language as the user's latest message. When the user writes in Simplified Chinese, respond in Simplified Chinese.",
-        "Keep code, commands, file paths, identifiers, and tool output unchanged; only explanatory text should follow the user's language.",
-        "You can inspect, edit, run commands, and verify work by calling tools.",
-        "Prefer process.run with explicit args/cwd/env. Use shell.run only for a single shell expression or pipeline.",
-        "A runtime and permission snapshot is injected before the first model request; use runtime.info only when a fresh full snapshot is needed.",
-        "Every tool call is checked by a permission engine before execution.",
-        "Respect workspace boundaries. Do not request secret files. Prefer small, evidenced steps.",
-        "Use prior assistant decisions and tool results instead of repeating completed inspection.",
-        "After requested edits are done and verified enough, stop calling tools and give the final answer.",
-        `Current mode: ${input.mode}.`,
-        input.runtimeSnapshot ? `Runtime and permission matrix (planning context only):\n${input.runtimeSnapshot}` : "",
+        "You are DreamCode, an AI agent.",
+        `You are a coding agent powered by ${input.model?.trim() || "the configured"} model. Your working directory is ${path.resolve(input.workspaceRoot)}.`,
+        "Respond in the same language as the user's latest message.",
+        "Use the available platform shell tool for commands. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop unneeded background work.",
+        "Prefer parallel tool calls for independent operations.",
+        `Current Policy Context: ${buildPolicyContext(input.mode)}`,
         `Workspace summary:\n${workspaceSummary}`,
         `Project rules:\n${projectRules || "No DREAMCODE.md found."}`,
         input.skillCatalog
@@ -366,9 +371,28 @@ async function buildWorkspaceSummary(workspaceRoot: string, maxFiles: number): P
 }
 
 async function readProjectRules(workspaceRoot: string): Promise<string> {
-  const rulesPath = path.join(workspaceRoot, "DREAMCODE.md");
-  if (!existsSync(rulesPath)) return "";
-  return compressText(await readFile(rulesPath, "utf8"), 12_000).text;
+  const ruleFiles = ["DREAMCODE.md", "AGENT.md"];
+  const sections: string[] = [];
+  for (const file of ruleFiles) {
+    const rulesPath = path.join(workspaceRoot, file);
+    if (existsSync(rulesPath)) {
+      sections.push(`--- ${file} ---\n${await readFile(rulesPath, "utf8")}`);
+    }
+  }
+  return sections.length ? compressText(sections.join("\n\n"), 12_000).text : "";
+}
+
+function buildPolicyContext(mode: ContextBuildInput["mode"]): string {
+  switch (mode) {
+    case "plan":
+      return "Planning only: use read-only inspection and planning tools; file writes, shell mutations, network, and MCP are unavailable or denied.";
+    case "guided":
+      return "Read/check operations are automatic; writes, network, MCP, external paths, and non-allowlisted commands require approval; destructive operations are denied.";
+    case "yolo":
+      return "Workspace reads, checks, and writes are automatic; network, MCP, external paths, and non-allowlisted commands require approval; destructive operations are denied.";
+    case "full":
+      return "Non-destructive workspace, process, network, and MCP operations are allowed; destructive operations remain denied.";
+  }
 }
 
 export function compressText(text: string, maxChars: number): { text: string; truncated: boolean } {

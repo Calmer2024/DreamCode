@@ -705,7 +705,7 @@ function terminalEntriesFromSession(
   return session.commands.map((command, index) => ({
     id: `session-${sessionId}-command-${index}`,
     toolCallId: `session-${sessionId}-command-${index}`,
-    tool: "shell.run",
+    tool: typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent) ? "pwsh" : "bash",
     status: command.exitCode === undefined || command.exitCode === 0 ? "success" : "error",
     stream: "summary",
     text: command.command,
