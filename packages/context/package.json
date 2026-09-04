@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@lenml/tokenizer-deepseek_v4": "^3.7.2",
-    "@dreamcode/shared": "workspace:*",
-    "fast-glob": "^3.3.3"
+    "@dreamcode/shared": "workspace:*"
   }
 }

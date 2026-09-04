@@ -85,7 +85,7 @@ class RepeatedReadProvider implements ModelProvider {
         toolCall: {
           id: `read_${this.call}`,
           name: "file.read",
-          input: { path: "README.md" },
+          input: { file_path: "README.md" },
         },
       };
     } else {

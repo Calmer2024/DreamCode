@@ -28,7 +28,7 @@ DreamCode v0.1 采用:
 | 工具系统 | 自研工具注册表 | 每个工具有 schema、风险标签、权限元数据 |
 | MCP | `@modelcontextprotocol/sdk` | 作为 P1 扩展入口, 架构预留 |
 | 文件搜索 | `ripgrep` 子进程 + JS fallback | 真实项目搜索性能优先 |
-| 文件 glob | `fast-glob` | 跨平台文件发现 |
+| 文件搜索 | 打包的 `ripgrep` | 跨平台文件发现与内容定位 |
 | Shell 执行 | `child_process.spawn` / `execa`; 后续 `node-pty` | MVP 先做非交互命令, 后续支持交互终端 |
 | Patch/diff | 自研 patch wrapper + `diff` 包 | 保留变更记录和回滚能力 |
 | 配置 | TOML + Markdown | `config.toml` 管配置, `DREAMCODE.md` 管项目规则 |
@@ -505,7 +505,6 @@ MVP 必备:
 | `file.read` | 读取 workspace 内文件 | allow |
 | `file.write` | 创建/覆盖文件 | yolo allow, guided ask |
 | `file.patch` | 应用 patch | yolo allow, guided ask |
-| `file.list` | 列目录 | allow |
 | `search.grep` | 内容搜索 | allow |
 | `search.glob` | 路径搜索 | allow |
 | `pwsh` / `bash` | 执行平台 Shell 命令 | 按风险分类 |

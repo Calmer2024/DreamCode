@@ -19,22 +19,89 @@ describe("builtin tools", () => {
       expect(spec.inputSchema).not.toHaveProperty("definitions");
       expect(JSON.stringify(spec.inputSchema)).not.toContain('"$ref"');
     }
+    const registry = createDefaultToolRegistry();
+    expect(registry.list().map((tool) => tool.name)).not.toContain(["file", "list"].join("."));
+    const readSpec = registry.toModelSpecs().find((spec) => spec.name === "file.read");
+    expect(Object.keys(readSpec?.inputSchema.properties as object)).toEqual([
+      "file_path",
+      "offset",
+      "limit",
+    ]);
+  });
+
+  it("reads exact line-numbered windows and reports the total line count", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-read-"));
+    await writeFile(path.join(workspaceRoot, "example.txt"), "one\ntwo\nthree\n", "utf8");
+    const result = await createDefaultToolRegistry().get("file.read")!.execute(
+      { file_path: "example.txt", offset: 2, limit: 1 },
+      {
+        workspaceRoot,
+        sessionDir: workspaceRoot,
+        sessionId: "read_window",
+        mode: "yolo",
+        toolCallId: "read_window",
+      },
+    );
+    expect(result.data).toEqual({
+      path: "example.txt",
+      offset: 2,
+      lines: [{ number: 2, text: "two" }],
+      totalLines: 3,
+    });
+    expect(result.summary).toContain("offset=3");
+  });
+
+  it("discovers ignored hidden files at any depth and excludes VCS metadata", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-glob-"));
+    await mkdir(path.join(workspaceRoot, "src", "nested"), { recursive: true });
+    await mkdir(path.join(workspaceRoot, ".git"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, ".gitignore"), "ignored.ts\n", "utf8");
+    await writeFile(path.join(workspaceRoot, "src", "nested", "deep.ts"), "deep", "utf8");
+    await writeFile(path.join(workspaceRoot, "ignored.ts"), "ignored", "utf8");
+    await writeFile(path.join(workspaceRoot, ".hidden.ts"), "hidden", "utf8");
+    await writeFile(path.join(workspaceRoot, ".git", "private.ts"), "private", "utf8");
+    const result = await createDefaultToolRegistry().get("search.glob")!.execute(
+      { pattern: "*.ts" },
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "glob" },
+    );
+    const paths = (result.data as { paths: string[] }).paths.map((item) => item.replaceAll("\\", "/"));
+    expect(paths).toEqual(expect.arrayContaining(["src/nested/deep.ts", "ignored.ts", ".hidden.ts"]));
+    expect(paths).not.toContain(".git/private.ts");
+  });
+
+  it("returns grep locations without colon-based parsing", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-grep-"));
+    await writeFile(path.join(workspaceRoot, "colon.txt"), "prefix:value:needle:suffix\n", "utf8");
+    const result = await createDefaultToolRegistry().get("search.grep")!.execute(
+      { pattern: "needle", include: "*.txt" },
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "grep" },
+    );
+    expect(result.data).toEqual({
+      matches: [{ path: "colon.txt", lineNumber: 1, line: "prefix:value:needle:suffix" }],
+    });
   });
 
   it("patches a workspace file and records a changed file", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-tools-"));
     await writeFile(path.join(workspaceRoot, "example.txt"), "hello old world\n", "utf8");
-    const tool = createDefaultToolRegistry().get("file.patch");
+    const registry = createDefaultToolRegistry();
+    const tool = registry.get("file.patch");
     expect(tool).toBeDefined();
+
+    const context = {
+      workspaceRoot,
+      sessionDir: workspaceRoot,
+      sessionId: "patch_observation",
+      mode: "yolo" as const,
+    };
+    await registry.get("file.read")!.execute(
+      { file_path: "example.txt" },
+      { ...context, toolCallId: "call_read" },
+    );
 
     const result = await tool!.execute(
       { path: "example.txt", search: "old", replace: "new" },
-      {
-        workspaceRoot,
-        sessionDir: workspaceRoot,
-        mode: "yolo",
-        toolCallId: "call_patch",
-      },
+      { ...context, toolCallId: "call_patch" },
     );
 
     expect(result.status).toBe("success");
@@ -47,6 +114,30 @@ describe("builtin tools", () => {
     await expect(readFile(result.changedFiles![0]!.beforeSnapshotRef!, "utf8")).resolves.toContain(
       "old world",
     );
+  });
+
+  it("rejects a patch when the file changed after it was read", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-stale-"));
+    const target = path.join(workspaceRoot, "example.txt");
+    await writeFile(target, "old", "utf8");
+    const registry = createDefaultToolRegistry();
+    const context = {
+      workspaceRoot,
+      sessionDir: workspaceRoot,
+      sessionId: "stale_patch",
+      mode: "yolo" as const,
+    };
+    await registry.get("file.read")!.execute(
+      { file_path: "example.txt" },
+      { ...context, toolCallId: "stale_read" },
+    );
+    await writeFile(target, "external change", "utf8");
+    const result = await registry.get("file.patch")!.execute(
+      { path: "example.txt", search: "external", replace: "internal" },
+      { ...context, toolCallId: "stale_patch" },
+    );
+    expect(result).toMatchObject({ status: "error", error: { code: "stale_file_version" } });
+    await expect(readFile(target, "utf8")).resolves.toBe("external change");
   });
 
   it("runs multiple verification commands through separate shell calls", async () => {

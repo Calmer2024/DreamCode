@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync } from "node:fs";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   isSecretPath,
@@ -21,7 +21,6 @@ import type {
 } from "@dreamcode/shared";
 import { todoItemSchema, toErrorMessage } from "@dreamcode/shared";
 import { createTwoFilesPatch } from "diff";
-import fg from "fast-glob";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
@@ -139,7 +138,6 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     artifactReadTool,
     fileWriteTool,
     filePatchTool,
-    fileListTool,
     searchGrepTool,
     searchGlobTool,
     createPlatformShellTool(processSupervisor),
@@ -163,29 +161,30 @@ const STREAM_PREVIEW_BYTES = 4 * 1024;
 // Runtime details stay internal to execution and permission decisions. The model
 // selects the platform-specific tool directly.
 
-const fileReadSchema = z
-  .object({
-    path: z.string().min(1),
-    startLine: z.number().int().positive().optional(),
-    endLine: z.number().int().positive().optional(),
-    maxBytes: z.number().int().positive().max(200000).default(40000),
-  })
-  .refine((input) => !input.startLine || !input.endLine || input.endLine >= input.startLine, {
-    message: "endLine must be greater than or equal to startLine.",
-  });
+const READ_LIMIT = 2_000;
+const READ_MAX_LINE_LENGTH = 2_000;
+const READ_MAX_BYTES = 50 * 1024;
+const READ_STREAM_MIN_SIZE = 10 * 1024 * 1024;
+
+const fileReadSchema = z.object({
+  file_path: z.string().min(1),
+  offset: z.number().int().positive().default(1),
+  limit: z.number().int().positive().max(READ_LIMIT).default(READ_LIMIT),
+});
 
 type FileReadInput = z.infer<typeof fileReadSchema>;
 
 const fileReadTool: Tool<FileReadInput> = {
   name: "file.read",
-  description: "Read a UTF-8 text file inside the workspace. Secret-like files are refused.",
+  description:
+    "Read a UTF-8 text file as a line-numbered window. Use offset and limit to continue reading large files.",
   inputSchema: fileReadSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
   schedule: (rawInput) => ({
     mode: "parallel",
     resources: [
       {
-        key: `workspace:${String((rawInput as { path?: unknown })?.path ?? ".")}`,
+        key: `workspace:${String((rawInput as { file_path?: unknown })?.file_path ?? ".")}`,
         access: "read",
       },
     ],
@@ -200,48 +199,51 @@ async function readWorkspaceFile(
   input: FileReadInput,
   context: ToolExecutionContext,
 ): Promise<ToolResult> {
-  if (isSecretPath(input.path)) {
+  if (isSecretPath(input.file_path)) {
     return denied(context.toolCallId, "Refused to read a secret-like file.");
   }
 
-  const resolved = await safeExistingInside(context.workspaceRoot, input.path);
+  const resolved = await safeExistingInside(context.workspaceRoot, input.file_path);
   if (!resolved.ok) {
+    const unresolved = resolveWorkspacePath(context.workspaceRoot, input.file_path);
+    if (unresolved.isInside && !existsSync(unresolved.absolutePath)) {
+      setFileObservation(context, unresolved.absolutePath, { kind: "absent" });
+    }
     return errorResult(context.toolCallId, resolved.summary, resolved.code);
   }
 
-  const content = await readFile(resolved.absolutePath);
-  if (content.includes(0)) {
-    return errorResult(context.toolCallId, "Refused to read a binary file.", "binary_file");
+  const info = await stat(resolved.absolutePath);
+  if (!info.isFile()) {
+    return errorResult(context.toolCallId, `Cannot read '${input.file_path}': not a regular file.`, "not_regular_file");
   }
 
-  const text = content.toString("utf8");
-  const lines = text.split(/\r?\n/);
-  const startLine = input.startLine ?? 1;
-  const endLine = Math.min(input.endLine ?? lines.length, lines.length);
-  const selected = lines.slice(startLine - 1, endLine).join("\n");
-  const selectedBytes = Buffer.from(selected, "utf8");
-  const truncated = selectedBytes.length > input.maxBytes;
-  const visible = truncated
-    ? selectedBytes
-        .subarray(0, input.maxBytes)
-        .toString("utf8")
-        .replace(/\uFFFD$/, "")
-    : selected;
+  let window: ReadWindowResult;
+  try {
+    const chunks =
+      info.size >= READ_STREAM_MIN_SIZE
+        ? createReadStream(resolved.absolutePath, { encoding: "utf8" })
+        : [await readFile(resolved.absolutePath, "utf8")];
+    window = await buildReadWindow(chunks, input.offset, input.limit, resolved.relativePath);
+  } catch (error) {
+    if (error instanceof BinaryFileError) {
+      return errorResult(context.toolCallId, "Refused to read a binary file.", "binary_file");
+    }
+    return errorResult(context.toolCallId, toErrorMessage(error), "file_read_failed");
+  }
+
+  setFileObservation(context, resolved.absolutePath, { kind: "present", version: window.version });
+  const endLine = window.lines.at(-1)?.number ?? Math.max(0, input.offset - 1);
+  const continuation = endLine < window.totalLines ? ` Use offset=${endLine + 1} to continue.` : "";
 
   return {
     toolCallId: context.toolCallId,
     status: "success",
-    summary: truncated
-      ? `Read ${resolved.relativePath} (${content.length} bytes, truncated).`
-      : `Read ${resolved.relativePath} (${content.length} bytes).`,
+    summary: `Read ${window.lines.length} line(s) from ${resolved.relativePath}; ${window.totalLines} total.${continuation}`,
     data: {
       path: resolved.relativePath,
-      content: visible,
-      bytes: content.length,
-      truncated,
-      startLine,
-      endLine,
-      totalLines: lines.length,
+      offset: input.offset,
+      lines: window.lines,
+      totalLines: window.totalLines,
     },
   };
 }
@@ -308,11 +310,41 @@ const fileWriteTool: Tool<z.infer<typeof fileWriteSchema>> = {
       return denied(context.toolCallId, "Refused to write outside the workspace.");
     }
 
-    const before = existsSync(resolved.absolutePath)
-      ? await readFile(resolved.absolutePath, "utf8")
-      : undefined;
+    const exists = existsSync(resolved.absolutePath);
+    const observation = getFileObservation(context, resolved.absolutePath);
+    let before: string | undefined;
+    if (exists) {
+      before = await readFile(resolved.absolutePath, "utf8");
+      if (observation?.kind !== "present") {
+        return errorResult(
+          context.toolCallId,
+          `Refused to overwrite ${resolved.relativePath} before reading its current version.`,
+          "file_not_observed",
+        );
+      }
+      if (sha256(before) !== observation.version) {
+        return staleFileResult(context.toolCallId, resolved.relativePath);
+      }
+    } else if (observation?.kind === "present") {
+      return staleFileResult(context.toolCallId, resolved.relativePath);
+    }
     await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-    await writeFile(resolved.absolutePath, input.content, "utf8");
+    try {
+      await writeFile(
+        resolved.absolutePath,
+        input.content,
+        exists ? { encoding: "utf8" } : { encoding: "utf8", flag: "wx" },
+      );
+    } catch (error) {
+      if (!exists && (error as NodeJS.ErrnoException).code === "EEXIST") {
+        return staleFileResult(context.toolCallId, resolved.relativePath);
+      }
+      throw error;
+    }
+    setFileObservation(context, resolved.absolutePath, {
+      kind: "present",
+      version: sha256(input.content),
+    });
 
     const changedFile = await makeChangedFile({
       relativePath: resolved.relativePath,
@@ -363,6 +395,17 @@ const filePatchTool: Tool<FilePatchInput> = {
     }
 
     const before = await readFile(resolved.absolutePath, "utf8");
+    const observation = getFileObservation(context, resolved.absolutePath);
+    if (observation?.kind !== "present") {
+      return errorResult(
+        context.toolCallId,
+        `Patch requires reading ${resolved.relativePath} first.`,
+        "file_not_observed",
+      );
+    }
+    if (sha256(before) !== observation.version) {
+      return staleFileResult(context.toolCallId, resolved.relativePath);
+    }
     let after = before;
     const edits = input.edits ?? [{ search: input.search ?? "", replace: input.replace ?? "" }];
 
@@ -378,6 +421,10 @@ const filePatchTool: Tool<FilePatchInput> = {
     }
 
     await writeFile(resolved.absolutePath, after, "utf8");
+    setFileObservation(context, resolved.absolutePath, {
+      kind: "present",
+      version: sha256(after),
+    });
     const changedFile = await makeChangedFile({
       relativePath: resolved.relativePath,
       before,
@@ -395,105 +442,467 @@ const filePatchTool: Tool<FilePatchInput> = {
   },
 };
 
-const fileListSchema = z.object({
-  path: z.string().default("."),
-  recursive: z.boolean().default(false),
-  maxEntries: z.number().int().positive().max(2000).default(200),
-});
-
-const fileListTool: Tool<z.infer<typeof fileListSchema>> = {
-  name: "file.list",
-  description: "List files and directories inside the workspace.",
-  inputSchema: fileListSchema,
-  risk: { tags: ["read_workspace"], readsFiles: true },
-  schedule: { mode: "parallel" },
-  async execute(rawInput, context) {
-    const input = fileListSchema.parse(rawInput);
-    const resolved = resolveWorkspacePath(context.workspaceRoot, input.path);
-    if (!resolved.isInside) {
-      return denied(context.toolCallId, "Refused to list outside the workspace.");
-    }
-
-    const entries = input.recursive
-      ? await listRecursive(resolved.absolutePath, context.workspaceRoot, input.maxEntries)
-      : await listShallow(resolved.absolutePath, context.workspaceRoot, input.maxEntries);
-
-    return {
-      toolCallId: context.toolCallId,
-      status: "success",
-      summary: `Listed ${entries.length} entr${entries.length === 1 ? "y" : "ies"} under ${resolved.relativePath}.`,
-      data: {
-        path: resolved.relativePath,
-        entries,
-        truncated: entries.length >= input.maxEntries,
-      },
-    };
-  },
-};
-
 const searchGrepSchema = z.object({
-  pattern: z.string().min(1),
-  glob: z.string().optional(),
-  maxResults: z.number().int().positive().max(1000).default(100),
+  pattern: z.string().refine((value) => value.length > 0, "pattern must be non-empty"),
+  path: z.string().trim().min(1).optional(),
+  include: z.string().optional().superRefine((value, issue) => {
+    if (value === undefined) return;
+    const error = validateSinglePositiveGlob(value);
+    if (error) issue.addIssue({ code: z.ZodIssueCode.custom, message: error });
+  }),
 });
 
 const searchGrepTool: Tool<z.infer<typeof searchGrepSchema>> = {
   name: "search.grep",
-  description: "Search workspace text with ripgrep when available, falling back to JavaScript.",
+  description:
+    "Find matching lines with packaged ripgrep. Returns path, lineNumber, and line; use file.read for context.",
   inputSchema: searchGrepSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
   schedule: { mode: "parallel", maxConcurrency: 4 },
   async execute(rawInput, context) {
     const input = searchGrepSchema.parse(rawInput);
-    const rgResult = await runRipgrep(input, context.workspaceRoot, context.signal);
-    const matches =
-      rgResult ?? (await runJavaScriptGrep(input, context.workspaceRoot, context.signal));
+    const searchRoot = await resolveSearchPath(context, input.path, false);
+    if (!searchRoot.ok) return searchRoot.result;
+    const run = await runPackagedRipgrep(
+      ["--json", `--regexp=${input.pattern}`, ...(input.include ? [`--glob=${input.include}`] : []), "--", searchRoot.relativePath],
+      context.workspaceRoot,
+      context.signal,
+      "grep",
+    );
+    if (!run.ok) return searchErrorResult(context.toolCallId, run);
+    const matches = run.noMatches
+      ? []
+      : parseRipgrepJson(run.stdout).map((match) => ({ ...match, path: cleanRipgrepPath(match.path) }));
+    const retained = matches.slice(0, GREP_MAX_MATCHES).map((match) => ({
+      ...match,
+      line: truncateUtf8(match.line, GREP_MAX_LINE_BYTES, " (line truncated)"),
+    }));
+    const artifactRef =
+      matches.length > retained.length
+        ? await saveSearchArtifact(
+            context,
+            "grep-results.txt",
+            formatGrepMatches(matches),
+          )
+        : undefined;
 
     return {
       toolCallId: context.toolCallId,
       status: "success",
-      summary: `Found ${matches.length} grep match${matches.length === 1 ? "" : "es"} for '${input.pattern}'.`,
-      data: {
-        matches,
-        truncated: matches.length >= input.maxResults,
-      },
+      summary:
+        matches.length > retained.length
+          ? `Found ${matches.length} matches; showing ${retained.length}. Full result: ${artifactRef ?? "not saved; narrow pattern, path, or include"}. Use file.read for context.`
+          : `Found ${matches.length} match${matches.length === 1 ? "" : "es"}. Use file.read for context.`,
+      data: { matches: retained },
+      ...(artifactRef ? { artifactRefs: [artifactRef] } : {}),
     };
   },
 };
 
 const searchGlobSchema = z.object({
   pattern: z.string().min(1),
-  maxResults: z.number().int().positive().max(5000).default(500),
+  path: z.string().trim().min(1).optional(),
 });
 
 const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
   name: "search.glob",
-  description: "Find workspace files by glob pattern, respecting common ignore files.",
+  description:
+    "Find files by glob with packaged ripgrep. Includes hidden and ignored files, excludes VCS metadata, and never returns directories.",
   inputSchema: searchGlobSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
   schedule: { mode: "parallel", maxConcurrency: 4 },
   async execute(rawInput, context) {
     const input = searchGlobSchema.parse(rawInput);
-    const entries = await fg(input.pattern, {
-      cwd: context.workspaceRoot,
-      dot: false,
-      onlyFiles: false,
-      unique: true,
-      ignore: await readIgnorePatterns(context.workspaceRoot),
-    });
-
-    const limited = entries.slice(0, input.maxResults);
+    const searchRoot = await resolveSearchPath(context, input.path, true);
+    if (!searchRoot.ok) return searchRoot.result;
+    const run = await runPackagedRipgrep(
+      [
+        "--files",
+        `--glob=${input.pattern}`,
+        "--sort=modified",
+        "--no-ignore",
+        "--hidden",
+        ...GLOB_VCS_EXCLUDES.flatMap((name) => [`--glob=!**/${name}`, `--glob=!**/${name}/**`]),
+        "--",
+        searchRoot.relativePath,
+      ],
+      context.workspaceRoot,
+      context.signal,
+      "glob",
+    );
+    if (!run.ok) return searchErrorResult(context.toolCallId, run);
+    const paths = run.noMatches
+      ? []
+      : run.stdout
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map(cleanRipgrepPath);
+    const sample =
+      paths.length > GLOB_MAX_RESULTS
+        ? sampleAcrossTopLevel(paths, GLOB_MAX_RESULTS, searchRoot.relativePath)
+        : { items: paths, shown: countTopLevels(paths, searchRoot.relativePath), total: countTopLevels(paths, searchRoot.relativePath) };
+    const artifactRef =
+      paths.length > sample.items.length
+        ? await saveSearchArtifact(context, "glob-results.txt", paths.join("\n"))
+        : undefined;
     return {
       toolCallId: context.toolCallId,
       status: "success",
-      summary: `Found ${limited.length} path${limited.length === 1 ? "" : "s"} for '${input.pattern}'.`,
-      data: {
-        paths: limited,
-        truncated: entries.length > limited.length,
-      },
+      summary:
+        paths.length > sample.items.length
+          ? `Found ${paths.length} files; showing ${sample.items.length} sampled across ${sample.shown} of ${sample.total} top-level entries. Full result: ${artifactRef ?? "not saved; narrow pattern or path"}.`
+          : `Found ${paths.length} file${paths.length === 1 ? "" : "s"} in modification-time order.`,
+      data: { root: searchRoot.relativePath, paths: sample.items },
+      ...(artifactRef ? { artifactRefs: [artifactRef] } : {}),
     };
   },
 };
+
+const GREP_MAX_MATCHES = 250;
+const GREP_MAX_LINE_BYTES = 2_000;
+const GLOB_MAX_RESULTS = 100;
+const SEARCH_RAW_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
+const GLOB_VCS_EXCLUDES = [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"] as const;
+
+type FileObservation = { kind: "absent" } | { kind: "present"; version: string };
+const fileObservations = new Map<string, Map<string, FileObservation>>();
+
+function observationOwner(context: ToolExecutionContext): string {
+  return context.sessionId ?? path.resolve(context.sessionDir);
+}
+
+function observationKey(absolutePath: string): string {
+  const resolved = path.resolve(absolutePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function getFileObservation(
+  context: ToolExecutionContext,
+  absolutePath: string,
+): FileObservation | undefined {
+  return fileObservations.get(observationOwner(context))?.get(observationKey(absolutePath));
+}
+
+function setFileObservation(
+  context: ToolExecutionContext,
+  absolutePath: string,
+  observation: FileObservation,
+): void {
+  const owner = observationOwner(context);
+  let observed = fileObservations.get(owner);
+  if (!observed) {
+    observed = new Map();
+    fileObservations.set(owner, observed);
+  }
+  observed.set(observationKey(absolutePath), observation);
+}
+
+function staleFileResult(toolCallId: string, relativePath: string): ToolResult {
+  return errorResult(
+    toolCallId,
+    `${relativePath} changed since it was read. Read it again before retrying the write.`,
+    "stale_file_version",
+  );
+}
+
+class BinaryFileError extends Error {}
+
+interface ReadWindowResult {
+  lines: Array<{ number: number; text: string }>;
+  totalLines: number;
+  version: string;
+}
+
+async function buildReadWindow(
+  chunks: AsyncIterable<string | Buffer> | Iterable<string | Buffer>,
+  offset: number,
+  limit: number,
+  displayPath: string,
+): Promise<ReadWindowResult> {
+  const lines: Array<{ number: number; text: string }> = [];
+  const hash = createHash("sha256");
+  let totalLines = 0;
+  let outputBytes = 0;
+  let outputCapped = false;
+  let lineBuffer = "";
+
+  const consume = () => {
+    totalLines += 1;
+    if (outputCapped || totalLines < offset || lines.length >= limit) return;
+    const raw = lineBuffer.endsWith("\r") ? lineBuffer.slice(0, -1) : lineBuffer;
+    const text =
+      raw.length > READ_MAX_LINE_LENGTH
+        ? `${raw.slice(0, READ_MAX_LINE_LENGTH)}... (line truncated to ${READ_MAX_LINE_LENGTH} chars)`
+        : raw;
+    const bytes = Buffer.byteLength(text, "utf8") + (lines.length ? 1 : 0);
+    if (outputBytes + bytes > READ_MAX_BYTES) {
+      outputCapped = true;
+      return;
+    }
+    outputBytes += bytes;
+    lines.push({ number: totalLines, text });
+  };
+
+  for await (const rawChunk of chunks) {
+    const chunk = typeof rawChunk === "string" ? rawChunk : rawChunk.toString("utf8");
+    if (chunk.includes("\0")) throw new BinaryFileError();
+    hash.update(chunk, "utf8");
+    let start = 0;
+    let newline = chunk.indexOf("\n", start);
+    while (newline !== -1) {
+      if (lineBuffer.length <= READ_MAX_LINE_LENGTH) {
+        lineBuffer += chunk.slice(start, newline);
+        if (lineBuffer.length > READ_MAX_LINE_LENGTH + 1) {
+          lineBuffer = lineBuffer.slice(0, READ_MAX_LINE_LENGTH + 1);
+        }
+      }
+      consume();
+      lineBuffer = "";
+      start = newline + 1;
+      newline = chunk.indexOf("\n", start);
+    }
+    if (lineBuffer.length <= READ_MAX_LINE_LENGTH) {
+      lineBuffer += chunk.slice(start);
+      if (lineBuffer.length > READ_MAX_LINE_LENGTH + 1) {
+        lineBuffer = lineBuffer.slice(0, READ_MAX_LINE_LENGTH + 1);
+      }
+    }
+  }
+  if (lineBuffer.length > 0) consume();
+  if (offset > totalLines && !(totalLines === 0 && offset === 1)) {
+    throw new Error(`offset ${offset} is out of range for '${displayPath}' (${totalLines} lines)`);
+  }
+  return { lines, totalLines, version: hash.digest("hex") };
+}
+
+function validateSinglePositiveGlob(value: string): string | undefined {
+  if (!value.trim()) return "include must be a non-empty glob when given";
+  if (value.startsWith("!")) return "include must be a positive glob filter";
+  let braceDepth = 0;
+  for (const character of value) {
+    if (character === "{") braceDepth += 1;
+    else if (character === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (character === "," && braceDepth === 0) return "include must be one glob";
+  }
+  return undefined;
+}
+
+async function resolveSearchPath(
+  context: ToolExecutionContext,
+  inputPath: string | undefined,
+  requireDirectory: boolean,
+): Promise<
+  | { ok: true; absolutePath: string; relativePath: string }
+  | { ok: false; result: ToolResult }
+> {
+  const requested = inputPath ?? ".";
+  const resolved = await safeExistingInside(context.workspaceRoot, requested);
+  if (!resolved.ok) {
+    return { ok: false, result: errorResult(context.toolCallId, resolved.summary, resolved.code) };
+  }
+  const info = await stat(resolved.absolutePath);
+  if (requireDirectory && !info.isDirectory()) {
+    return {
+      ok: false,
+      result: errorResult(context.toolCallId, `Search path is not a directory: ${requested}`, "not_directory"),
+    };
+  }
+  return { ok: true, absolutePath: resolved.absolutePath, relativePath: resolved.relativePath };
+}
+
+type SearchRun =
+  | { ok: true; stdout: string; noMatches: boolean }
+  | { ok: false; code: string; message: string; cancelled?: boolean };
+
+let ripgrepPathPromise: Promise<string> | undefined;
+
+async function packagedRipgrepPath(): Promise<string> {
+  ripgrepPathPromise ??= import("@vscode/ripgrep").then((module) => module.rgPath);
+  return ripgrepPathPromise;
+}
+
+async function runPackagedRipgrep(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal | undefined,
+  toolName: "grep" | "glob",
+): Promise<SearchRun> {
+  if (signal?.aborted) {
+    return { ok: false, code: "search_aborted", message: `${toolName} was aborted.`, cancelled: true };
+  }
+  let executable: string;
+  try {
+    executable = await packagedRipgrepPath();
+  } catch (error) {
+    return { ok: false, code: "search_failed", message: `Packaged ripgrep could not be loaded: ${toErrorMessage(error)}` };
+  }
+  const result = await runProcess(executable, ["--no-config", ...args], {
+    cwd,
+    timeoutMs: 15_000,
+    signal,
+    maxStdoutBytes: SEARCH_RAW_OUTPUT_MAX_BYTES,
+  });
+  if (result.aborted || result.timedOut) {
+    return {
+      ok: false,
+      code: "search_aborted",
+      message: `${toolName} was aborted before completion.`,
+      cancelled: true,
+    };
+  }
+  if (!result.started) {
+    return { ok: false, code: "search_failed", message: `${toolName} could not start packaged ripgrep.` };
+  }
+  if (result.outputOverflow) {
+    return {
+      ok: false,
+      code: "search_output_overflow",
+      message: `${toolName} output exceeded the raw byte limit; narrow pattern, path, or include.`,
+    };
+  }
+  if (result.exitCode === 1) return { ok: true, stdout: "", noMatches: true };
+  if (result.exitCode !== 0) {
+    const invalid = result.exitCode === 2 && /regex parse error|error parsing regex/i.test(result.stderr);
+    return {
+      ok: false,
+      code: invalid ? "search_invalid_pattern" : "search_failed",
+      message: invalid
+        ? `${toolName} pattern was rejected by ripgrep: ${truncate(result.stderr.trim(), 2_000)}`
+        : `${toolName} failed with exit ${result.exitCode}: ${truncate(result.stderr.trim(), 2_000)}`,
+    };
+  }
+  return { ok: true, stdout: result.stdout, noMatches: false };
+}
+
+function searchErrorResult(toolCallId: string, run: Extract<SearchRun, { ok: false }>): ToolResult {
+  const result = errorResult(toolCallId, run.message, run.code);
+  if (run.cancelled) result.status = "cancelled";
+  return result;
+}
+
+interface GrepMatch {
+  path: string;
+  lineNumber: number;
+  line: string;
+}
+
+function parseRipgrepJson(stdout: string): GrepMatch[] {
+  const matches: GrepMatch[] = [];
+  for (const recordLine of stdout.split("\n")) {
+    if (!recordLine) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(recordLine);
+    } catch (error) {
+      throw new Error(`grep received malformed ripgrep JSON: ${toErrorMessage(error)}`);
+    }
+    if (!record || typeof record !== "object" || (record as { type?: unknown }).type !== "match") continue;
+    const data = (record as { data?: unknown }).data;
+    if (!data || typeof data !== "object") throw new Error("grep match record has no data");
+    const item = data as {
+      path?: { text?: unknown };
+      line_number?: unknown;
+      lines?: { text?: unknown; bytes?: unknown };
+    };
+    if (typeof item.path?.text !== "string" || typeof item.line_number !== "number" || !item.lines) {
+      throw new Error("grep match record is missing path, line number, or line content");
+    }
+    const line =
+      typeof item.lines.text === "string"
+        ? item.lines.text.replace(/\r?\n$/, "")
+        : typeof item.lines.bytes === "string"
+          ? "(line is not valid UTF-8)"
+          : undefined;
+    if (line === undefined) throw new Error("grep match record has no line content");
+    matches.push({ path: item.path.text, lineNumber: item.line_number, line });
+  }
+  return matches;
+}
+
+function cleanRipgrepPath(entry: string): string {
+  return entry.replace(/^[.][\\/]/, "");
+}
+
+function truncateUtf8(value: string, maxBytes: number, suffix: string): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  let kept = Buffer.from(value, "utf8").subarray(0, maxBytes).toString("utf8");
+  kept = kept.replace(/\uFFFD+$/, "");
+  return `${kept}${suffix}`;
+}
+
+function formatGrepMatches(matches: GrepMatch[]): string {
+  const groups = new Map<string, GrepMatch[]>();
+  for (const match of matches) {
+    const group = groups.get(match.path);
+    if (group) group.push(match);
+    else groups.set(match.path, [match]);
+  }
+  return [...groups.entries()]
+    .map(([filePath, group]) => `${filePath}\n${group.map((item) => `Line ${item.lineNumber}: ${item.line}`).join("\n")}`)
+    .join("\n\n");
+}
+
+function relativeToSampleRoot(filePath: string, root: string): string {
+  if (root === ".") return filePath;
+  const relative = path.relative(root, filePath);
+  return relative.startsWith("..") ? filePath : relative;
+}
+
+function topLevel(filePath: string, root: string): string {
+  return relativeToSampleRoot(filePath, root).split(/[\\/]/)[0] ?? "";
+}
+
+function countTopLevels(paths: readonly string[], root: string): number {
+  return new Set(paths.map((filePath) => topLevel(filePath, root))).size;
+}
+
+function sampleAcrossTopLevel(
+  paths: readonly string[],
+  limit: number,
+  root: string,
+): { items: string[]; shown: number; total: number } {
+  const groups = new Map<string, string[]>();
+  for (const filePath of paths) {
+    const key = topLevel(filePath, root);
+    const group = groups.get(key);
+    if (group) group.push(filePath);
+    else groups.set(key, [filePath]);
+  }
+  const selected = new Map<string, string[]>();
+  let active = [...groups.entries()].map(([key, items]) => ({ key, items, index: 0 }));
+  let count = 0;
+  while (active.length && count < limit) {
+    const next: typeof active = [];
+    for (const group of active) {
+      if (count >= limit) break;
+      const item = group.items[group.index];
+      if (item === undefined) continue;
+      const bucket = selected.get(group.key);
+      if (bucket) bucket.push(item);
+      else selected.set(group.key, [item]);
+      count += 1;
+      if (group.index + 1 < group.items.length) next.push({ ...group, index: group.index + 1 });
+    }
+    active = next;
+  }
+  return { items: [...selected.values()].flat(), shown: selected.size, total: groups.size };
+}
+
+async function saveSearchArtifact(
+  context: ToolExecutionContext,
+  suggestedName: string,
+  content: string,
+): Promise<string | undefined> {
+  try {
+    const directory = path.join(context.sessionDir, "artifacts");
+    await mkdir(directory, { recursive: true });
+    const name = `${safeArtifactName(context.toolCallId)}-${suggestedName}`;
+    await writeFile(path.join(directory, name), content, "utf8");
+    return `artifact://${encodeURIComponent(name)}`;
+  } catch {
+    return undefined;
+  }
+}
 
 const commandEnvironmentSchema = z.record(z.string());
 
@@ -1089,71 +1498,6 @@ async function safeExistingInside(
   }
 }
 
-async function listShallow(
-  absolutePath: string,
-  workspaceRoot: string,
-  maxEntries: number,
-): Promise<Array<{ path: string; type: "file" | "dir" | "other" }>> {
-  const dirents = await readdir(absolutePath, { withFileTypes: true });
-  const entries: Array<{ path: string; type: "file" | "dir" | "other" }> = [];
-  for (const dirent of dirents.slice(0, maxEntries)) {
-    const absoluteEntry = path.join(absolutePath, dirent.name);
-    entries.push({
-      path: path.relative(workspaceRoot, absoluteEntry) || ".",
-      type: dirent.isDirectory() ? "dir" : dirent.isFile() ? "file" : "other",
-    });
-  }
-  return entries;
-}
-
-async function listRecursive(
-  absolutePath: string,
-  workspaceRoot: string,
-  maxEntries: number,
-): Promise<Array<{ path: string; type: "file" | "dir" | "other" }>> {
-  const rootRelative = path.relative(workspaceRoot, absolutePath) || ".";
-  const pattern = rootRelative === "." ? "**/*" : `${toPosixPath(rootRelative)}/**/*`;
-  const entries = await fg(pattern, {
-    cwd: workspaceRoot,
-    dot: false,
-    onlyFiles: false,
-    unique: true,
-    ignore: await readIgnorePatterns(workspaceRoot),
-  });
-  const limited = entries.slice(0, maxEntries);
-  return Promise.all(
-    limited.map(async (entry) => {
-      const fileStat = await stat(path.join(workspaceRoot, entry));
-      return {
-        path: entry,
-        type: fileStat.isDirectory()
-          ? ("dir" as const)
-          : fileStat.isFile()
-            ? ("file" as const)
-            : "other",
-      };
-    }),
-  );
-}
-
-async function readIgnorePatterns(workspaceRoot: string): Promise<string[]> {
-  const patterns = ["**/.git/**", "**/node_modules/**", "**/dist/**", "**/coverage/**"];
-  for (const file of [".gitignore", ".dreamcodeignore"]) {
-    const filePath = path.join(workspaceRoot, file);
-    if (!existsSync(filePath)) {
-      continue;
-    }
-    const content = await readFile(filePath, "utf8");
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("!")) {
-        patterns.push(toPosixPath(trimmed));
-      }
-    }
-  }
-  return patterns;
-}
-
 async function searchWeb(
   input: z.infer<typeof webSearchSchema>,
   apiKey: string,
@@ -1411,95 +1755,6 @@ async function withMcpClient<T>(
   });
 }
 
-async function runRipgrep(
-  input: z.infer<typeof searchGrepSchema>,
-  workspaceRoot: string,
-  signal?: AbortSignal,
-): Promise<Array<{ path: string; line: number; column: number; text: string }> | undefined> {
-  const args = ["--line-number", "--column", "--color", "never"];
-  if (existsSync(path.join(workspaceRoot, ".dreamcodeignore"))) {
-    args.push("--ignore-file", ".dreamcodeignore");
-  }
-  if (input.glob) {
-    args.push("--glob", input.glob);
-  }
-  args.push(input.pattern, ".");
-
-  try {
-    const result = await runProcess("rg", args, {
-      cwd: workspaceRoot,
-      timeoutMs: 15000,
-      signal,
-    });
-    if (result.exitCode > 1) {
-      return undefined;
-    }
-    return parseRipgrepOutput(result.stdout).slice(0, input.maxResults);
-  } catch {
-    return undefined;
-  }
-}
-
-async function runJavaScriptGrep(
-  input: z.infer<typeof searchGrepSchema>,
-  workspaceRoot: string,
-  signal?: AbortSignal,
-): Promise<Array<{ path: string; line: number; column: number; text: string }>> {
-  const matches: Array<{ path: string; line: number; column: number; text: string }> = [];
-  const files = await fg(input.glob ?? "**/*", {
-    cwd: workspaceRoot,
-    dot: false,
-    onlyFiles: true,
-    unique: true,
-    ignore: await readIgnorePatterns(workspaceRoot),
-  });
-  const regex = new RegExp(input.pattern);
-
-  for (const file of files) {
-    if (signal?.aborted || matches.length >= input.maxResults) {
-      break;
-    }
-    const absolutePath = path.join(workspaceRoot, file);
-    const buffer = await readFile(absolutePath);
-    if (buffer.includes(0)) {
-      continue;
-    }
-    const lines = buffer.toString("utf8").split(/\r?\n/);
-    lines.forEach((line, index) => {
-      if (matches.length >= input.maxResults) {
-        return;
-      }
-      const match = regex.exec(line);
-      if (match?.index !== undefined) {
-        matches.push({ path: file, line: index + 1, column: match.index + 1, text: line });
-      }
-    });
-  }
-
-  return matches;
-}
-
-function parseRipgrepOutput(
-  output: string,
-): Array<{ path: string; line: number; column: number; text: string }> {
-  const matches: Array<{ path: string; line: number; column: number; text: string }> = [];
-  for (const line of output.split(/\r?\n/)) {
-    if (!line) {
-      continue;
-    }
-    const match = /^(.*?):(\d+):(\d+):(.*)$/.exec(line);
-    if (match) {
-      matches.push({
-        path: match[1] ?? "",
-        line: Number(match[2]),
-        column: Number(match[3]),
-        text: match[4] ?? "",
-      });
-    }
-  }
-  return matches;
-}
-
 export interface ShellCommandViolation {
   code: "multiple_shell_steps" | "stateful_shell_construct" | "unterminated_quote";
   message: string;
@@ -1683,6 +1938,7 @@ interface ProcessResult {
   aborted: boolean;
   signal?: string;
   spawnErrorCode?: string;
+  outputOverflow?: boolean;
 }
 
 async function runProcess(
@@ -1693,6 +1949,7 @@ async function runProcess(
     env?: NodeJS.ProcessEnv;
     timeoutMs: number;
     signal?: AbortSignal;
+    maxStdoutBytes?: number;
   },
 ): Promise<ProcessResult> {
   return new Promise((resolve) => {
@@ -1705,7 +1962,7 @@ async function runProcess(
       stdio: ["ignore", "pipe", "pipe"],
       signal: options.signal,
     });
-    collectProcess(child, options.timeoutMs, options.signal, resolve);
+    collectProcess(child, options.timeoutMs, options.signal, resolve, options.maxStdoutBytes);
   });
 }
 
@@ -1739,6 +1996,7 @@ function collectProcess(
   timeoutMs: number,
   signal: AbortSignal | undefined,
   resolve: (result: ProcessResult) => void,
+  maxStdoutBytes?: number,
 ): void {
   let stdout = "";
   let stderr = "";
@@ -1746,6 +2004,8 @@ function collectProcess(
   let timedOut = false;
   let started = false;
   let aborted = Boolean(signal?.aborted);
+  let stdoutBytes = 0;
+  let outputOverflow = false;
   child.once("spawn", () => {
     started = true;
   });
@@ -1759,7 +2019,14 @@ function collectProcess(
   }, timeoutMs);
 
   child.stdout?.on("data", (chunk) => {
-    stdout += chunk.toString();
+    const buffer = Buffer.from(chunk);
+    stdoutBytes += buffer.length;
+    if (maxStdoutBytes !== undefined && stdoutBytes > maxStdoutBytes) {
+      outputOverflow = true;
+      terminateProcessTree(child);
+      return;
+    }
+    stdout += buffer.toString();
   });
   child.stderr?.on("data", (chunk) => {
     stderr += chunk.toString();
@@ -1778,6 +2045,7 @@ function collectProcess(
         started,
         aborted: aborted || processError.code === "ABORT_ERR",
         spawnErrorCode: processError.code,
+        outputOverflow,
       });
     }
   });
@@ -1794,6 +2062,7 @@ function collectProcess(
         started,
         aborted,
         signal: closeSignal ?? undefined,
+        outputOverflow,
       });
     }
   });
@@ -2103,29 +2372,6 @@ function truncate(text: string, maxChars: number): string {
   return text.length > maxChars
     ? `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`
     : text;
-}
-
-async function mapWithLimit<TInput, TOutput>(
-  values: readonly TInput[],
-  limit: number,
-  worker: (value: TInput, index: number) => Promise<TOutput>,
-): Promise<TOutput[]> {
-  const output = new Array<TOutput>(values.length);
-  let cursor = 0;
-  const runners = Array.from({ length: Math.min(limit, values.length) }, async () => {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= values.length) return;
-      output[index] = await worker(values[index]!, index);
-    }
-  });
-  await Promise.all(runners);
-  return output;
-}
-
-function toPosixPath(inputPath: string): string {
-  return inputPath.split(path.sep).join("/");
 }
 
 function safeArtifactName(name: string): string {

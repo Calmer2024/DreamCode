@@ -680,7 +680,6 @@ const readOnlyTools = new Set([
   "job_output",
   "job_list",
   "file.read",
-  "file.list",
   "search.grep",
   "search.glob",
   "git.status",
@@ -706,7 +705,6 @@ function requiredSkillCapability(
 ): import("@dreamcode/skills").SkillCapability | undefined {
   if (
     toolName === "file.read" ||
-    toolName === "file.list" ||
     toolName.startsWith("search.") ||
     toolName === "git.status" ||
     toolName === "git.diff" ||

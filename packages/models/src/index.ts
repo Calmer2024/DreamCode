@@ -493,7 +493,7 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
       {
         text: "I will verify the safety boundaries before doing anything risky.\n",
         toolCalls: [
-          fakeCall("file.read", { path: ".env" }),
+          fakeCall("file.read", { file_path: ".env" }),
           fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
         ],
       },
@@ -508,8 +508,9 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
       {
         text: "I will inspect the package metadata and source entry before updating the README.\n",
         toolCalls: [
-          fakeCall("file.read", { path: "package.json" }),
-          fakeCall("file.read", { path: "src/index.js" }),
+          fakeCall("file.read", { file_path: "package.json" }),
+          fakeCall("file.read", { file_path: "src/index.js" }),
+          fakeCall("file.read", { file_path: "README.md" }),
         ],
       },
       {
@@ -544,9 +545,9 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
               { content: "Run tests", status: "pending" },
             ],
           }),
-          fakeCall("file.read", { path: "package.json" }),
-          fakeCall("file.read", { path: "src/math.js" }),
-          fakeCall("file.read", { path: "test/math.test.js" }),
+          fakeCall("file.read", { file_path: "package.json" }),
+          fakeCall("file.read", { file_path: "src/math.js" }),
+          fakeCall("file.read", { file_path: "test/math.test.js" }),
         ],
       },
       {
@@ -580,7 +581,7 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
     {
       text: "I will inspect the workspace and git status first.\n",
       toolCalls: [
-        fakeCall("file.list", { path: ".", recursive: false }),
+        fakeCall("search.glob", { pattern: "**/*" }),
         fakeCall("git.status", {}),
       ],
     },

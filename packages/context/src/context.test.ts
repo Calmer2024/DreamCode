@@ -9,7 +9,7 @@ describe("ContextBuilder structured history", () => {
       {
         role: "assistant",
         content: "I found a Vue application and will verify its entry point.",
-        toolCalls: [{ id: "call_1", name: "file.read", input: { path: "frontend/src/main.ts" } }],
+        toolCalls: [{ id: "call_1", name: "file.read", input: { file_path: "frontend/src/main.ts" } }],
       },
       {
         role: "tool",
@@ -42,6 +42,7 @@ describe("ContextBuilder structured history", () => {
     expect(systemMessage?.content).toContain("powered by the configured model");
     expect(systemMessage?.content).toContain("Respond in the same language as the user's latest message.");
     expect(systemMessage?.content).toContain("Current Policy Context:");
+    expect(systemMessage?.content).not.toContain("Workspace summary:");
     expect(systemMessage?.content).not.toContain("Keep code, commands, file paths, identifiers");
   });
 

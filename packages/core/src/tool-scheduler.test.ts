@@ -13,10 +13,10 @@ describe("ToolScheduler", () => {
   it("groups consecutive parallel calls and keeps exclusive barriers", () => {
     const registry = createDefaultToolRegistry();
     const calls = [
-      { id: "1", name: "file.read", input: { path: "a" } },
+      { id: "1", name: "file.read", input: { file_path: "a" } },
       { id: "2", name: "search.grep", input: { pattern: "b" } },
       { id: "3", name: "file.write", input: { path: "c", content: "c" } },
-      { id: "4", name: "file.read", input: { path: "c" } },
+      { id: "4", name: "file.read", input: { file_path: "c" } },
     ];
 
     expect(

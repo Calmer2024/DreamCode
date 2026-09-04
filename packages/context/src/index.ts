@@ -9,12 +9,10 @@ import type {
   RequestTokenEstimate,
 } from "@dreamcode/shared";
 import { nowIso } from "@dreamcode/shared";
-import fg from "fast-glob";
 
 export interface ContextBuilderOptions {
   providerId?: string;
   model?: string;
-  maxWorkspaceFiles?: number;
   maxContextTokens?: number;
   reservedOutputTokens?: number;
   compactionBufferTokens?: number;
@@ -113,7 +111,6 @@ export function contextOptionsForModel(providerId = "", model = ""): ContextBuil
 }
 
 export class ContextBuilder {
-  private readonly maxWorkspaceFiles: number;
   private readonly maxContextTokens: number;
   private readonly reservedOutputTokens: number;
   private readonly compactionBufferTokens: number;
@@ -121,7 +118,6 @@ export class ContextBuilder {
   private readonly tokenCounter: TokenCounter;
 
   constructor(options: ContextBuilderOptions = {}) {
-    this.maxWorkspaceFiles = options.maxWorkspaceFiles ?? 80;
     const maxContextTokens = options.maxContextTokens ?? DEFAULT_CONTEXT_TOKENS;
     this.maxContextTokens = maxContextTokens;
     this.reservedOutputTokens =
@@ -137,10 +133,6 @@ export class ContextBuilder {
   }
 
   async build(input: ContextBuildInput): Promise<ContextBuildResult> {
-    const workspaceSummary = await buildWorkspaceSummary(
-      input.workspaceRoot,
-      this.maxWorkspaceFiles,
-    );
     const projectRules = await readProjectRules(input.workspaceRoot);
     const todoSummary = input.todoItems.length
       ? input.todoItems.map((item) => `- [${statusMark(item.status)}] ${item.content}`).join("\n")
@@ -154,7 +146,6 @@ export class ContextBuilder {
         "Use the available platform shell tool for commands. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop unneeded background work.",
         "Prefer parallel tool calls for independent operations.",
         `Current Policy Context: ${buildPolicyContext(input.mode)}`,
-        `Workspace summary:\n${workspaceSummary}`,
         `Project rules:\n${projectRules || "No DREAMCODE.md found."}`,
         input.skillCatalog
           ? [
@@ -354,20 +345,6 @@ function extractFilePaths(value: string): string[] {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-async function buildWorkspaceSummary(workspaceRoot: string, maxFiles: number): Promise<string> {
-  const entries = await fg(["**/*"], {
-    cwd: workspaceRoot,
-    dot: false,
-    onlyFiles: false,
-    unique: true,
-    ignore: ["**/.git/**", "**/node_modules/**", "**/dist/**", "**/coverage/**"],
-  });
-  const limited = entries.slice(0, maxFiles);
-  const suffix =
-    entries.length > limited.length ? `\n...and ${entries.length - limited.length} more` : "";
-  return limited.join("\n") + suffix;
 }
 
 async function readProjectRules(workspaceRoot: string): Promise<string> {

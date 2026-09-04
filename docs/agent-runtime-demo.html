@@ -1593,7 +1593,7 @@
                 <div class="lane-title"><span>Runtime loop</span><span>AsyncGenerator</span></div>
                 <div class="step-list" id="stepList">
                   <button class="flow-step" type="button" data-step="0" aria-current="step"><span class="step-dot">01</span><span><strong>创建 / 恢复 Session</strong><small>校验 workspace 与运行参数</small></span><span class="event-tag">session.*</span></button>
-                  <button class="flow-step" type="button" data-step="1"><span class="step-dot">02</span><span><strong>构建 Context</strong><small>规则、目录摘要、Todo、observations</small></span><span class="event-tag">context.built</span></button>
+                  <button class="flow-step" type="button" data-step="1"><span class="step-dot">02</span><span><strong>构建 Context</strong><small>规则、Todo、observations</small></span><span class="event-tag">context.built</span></button>
                   <button class="flow-step" type="button" data-step="2"><span class="step-dot">03</span><span><strong>流式调用 Model</strong><small>文本 delta、usage、tool calls</small></span><span class="event-tag">model.*</span></button>
                   <button class="flow-step" type="button" data-step="3"><span class="step-dot">04</span><span><strong>权限决策</strong><small>allow / ask / deny + risk tags</small></span><span class="event-tag">permission.*</span></button>
                   <button class="flow-step" type="button" data-step="4"><span class="step-dot">05</span><span><strong>执行 Tool</strong><small>参数校验、timeout、AbortSignal</small></span><span class="event-tag">tool.*</span></button>
@@ -1649,7 +1649,7 @@
               <div class="card-top"><span class="cap-icon">FS</span><span class="status-label">implemented</span></div>
               <h3>文件理解与修改</h3>
               <p>读取、列举、创建、覆盖与精确 patch；拒绝二进制或 secret-like 文件读取，并限制在 workspace 边界内。</p>
-              <div class="tool-list"><code>file.read</code><code>file.list</code><code>file.write</code><code>file.patch</code></div>
+              <div class="tool-list"><code>file.read</code><code>file.write</code><code>file.patch</code></div>
             </article>
             <article class="capability-card" data-category="workspace" style="--card-glow: rgba(103,232,249,.1)">
               <div class="card-top"><span class="cap-icon">RG</span><span class="status-label">implemented</span></div>
@@ -1672,7 +1672,7 @@
             <article class="capability-card" data-category="knowledge" style="--card-glow: rgba(168,85,247,.11)">
               <div class="card-top"><span class="cap-icon">CTX</span><span class="status-label">implemented</span></div>
               <h3>项目上下文理解</h3>
-              <p>构建目录摘要，加载 DREAMCODE.md 项目规则、Todo 与历史工具观察；过长内容使用首尾保留压缩。</p>
+              <p>加载 DREAMCODE.md 项目规则、Todo 与历史工具观察；过长内容使用首尾保留压缩。</p>
               <div class="tool-list"><code>ContextBuilder</code><code>DREAMCODE.md</code><code>compression</code></div>
             </article>
             <article class="capability-card" data-category="knowledge" style="--card-glow: rgba(96,165,250,.1)">
@@ -1777,7 +1777,7 @@
         {
           event: "context.built",
           title: "构建 Context",
-          description: "收集 workspace 摘要、DREAMCODE.md、Todo 和历史 tool observations，并按字符预算压缩长内容。",
+          description: "收集 DREAMCODE.md、Todo 和历史 tool observations，并按字符预算压缩长内容。",
           code: "ContextBuilder.build({\n  workspaceRoot,\n  messages,\n  observations,\n  todoItems\n})",
           note: "上下文包含安全约束与当前运行模式",
         },

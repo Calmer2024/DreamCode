@@ -451,7 +451,10 @@ export class PermissionEngine {
     toolInput: Record<string, unknown>;
   }): PermissionDecision {
     const target =
-      stringField(input.toolInput, "path") ?? stringField(input.toolInput, "dir") ?? ".";
+      stringField(input.toolInput, "file_path") ??
+      stringField(input.toolInput, "path") ??
+      stringField(input.toolInput, "dir") ??
+      ".";
     const resolved = resolveWorkspacePath(input.workspaceRoot, target);
     const isWrite =
       input.toolName === "file.write" ||

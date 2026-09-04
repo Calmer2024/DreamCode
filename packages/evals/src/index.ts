@@ -523,8 +523,8 @@ function fakeScenario(name: string) {
     ];
   if (name === "repeat-cache")
     return [
-      { toolCalls: [fakeCall("file.read", { path: "notes.md" })] },
-      { toolCalls: [fakeCall("file.read", { path: "notes.md" })] },
+      { toolCalls: [fakeCall("file.read", { file_path: "notes.md" })] },
+      { toolCalls: [fakeCall("file.read", { file_path: "notes.md" })] },
       { text: "I reused the cached read result." },
     ];
   if (name === "core-tool-exposure")
@@ -546,8 +546,8 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.list", { path: ".", recursive: true }),
-          fakeCall("file.read", { path: "DREAMCODE.md" }),
+          fakeCall("search.glob", { pattern: "**/*" }),
+          fakeCall("file.read", { file_path: "DREAMCODE.md" }),
         ],
       },
       { text: "I inspected the workspace and found no requested file changes." },
@@ -567,9 +567,9 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.read", { path: "src/legacy-util.ts" }),
-          fakeCall("file.read", { path: "src/consumer.ts" }),
-          fakeCall("file.read", { path: "test/legacy-util.test.ts" }),
+          fakeCall("file.read", { file_path: "src/legacy-util.ts" }),
+          fakeCall("file.read", { file_path: "src/consumer.ts" }),
+          fakeCall("file.read", { file_path: "test/legacy-util.test.ts" }),
         ],
       },
       {
@@ -588,8 +588,8 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.read", { path: "notes.md" }),
-          fakeCall("file.read", { path: "src/app.ts" }),
+          fakeCall("file.read", { file_path: "notes.md" }),
+          fakeCall("file.read", { file_path: "src/app.ts" }),
         ],
       },
       {
@@ -607,9 +607,9 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.read", { path: "DREAMCODE.md" }),
-          fakeCall("file.read", { path: "src/target.ts" }),
-          fakeCall("file.read", { path: "test/target.test.ts" }),
+          fakeCall("file.read", { file_path: "DREAMCODE.md" }),
+          fakeCall("file.read", { file_path: "src/target.ts" }),
+          fakeCall("file.read", { file_path: "test/target.test.ts" }),
         ],
       },
       {
@@ -628,8 +628,9 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.read", { path: "references/api-notes.md" }),
-          fakeCall("file.read", { path: "references/migration-notes.md" }),
+          fakeCall("file.read", { file_path: "references/api-notes.md" }),
+          fakeCall("file.read", { file_path: "references/migration-notes.md" }),
+          fakeCall("file.read", { file_path: "research.md" }),
         ],
       },
       {
@@ -647,8 +648,8 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.read", { path: ".env" }),
-          fakeCall("file.read", { path: "../outside.txt" }),
+          fakeCall("file.read", { file_path: ".env" }),
+          fakeCall("file.read", { file_path: "../outside.txt" }),
           fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
         ],
       },
@@ -658,9 +659,9 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.list", { path: "src", recursive: true }),
-          fakeCall("file.read", { path: "src/services/task-service.ts" }),
-          fakeCall("file.read", { path: "test/task-service.test.ts" }),
+          fakeCall("search.glob", { pattern: "**/*", path: "src" }),
+          fakeCall("file.read", { file_path: "src/services/task-service.ts" }),
+          fakeCall("file.read", { file_path: "test/task-service.test.ts" }),
         ],
       },
       {
@@ -687,9 +688,10 @@ function fakeScenario(name: string) {
     return [
       {
         toolCalls: [
-          fakeCall("file.read", { path: "package.json" }),
-          fakeCall("file.list", { path: "src", recursive: true }),
-          fakeCall("file.read", { path: "src/cli.ts" }),
+          fakeCall("file.read", { file_path: "package.json" }),
+          fakeCall("search.glob", { pattern: "**/*", path: "src" }),
+          fakeCall("file.read", { file_path: "src/cli.ts" }),
+          fakeCall("file.read", { file_path: "README.md" }),
         ],
       },
       {
@@ -715,8 +717,8 @@ function fakeScenario(name: string) {
   return [
     {
       toolCalls: [
-        fakeCall("file.read", { path: ".env" }),
-        fakeCall("file.read", { path: "../outside.txt" }),
+        fakeCall("file.read", { file_path: ".env" }),
+        fakeCall("file.read", { file_path: "../outside.txt" }),
         fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
       ],
     },

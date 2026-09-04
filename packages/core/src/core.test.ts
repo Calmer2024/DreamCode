@@ -90,10 +90,10 @@ describe("runTurn fake model integration", () => {
               }),
             ],
           },
-          { toolCalls: [fakeCall("file.read", { path: "DREAMCODE_NOTES.md" })] },
-          { toolCalls: [fakeCall("file.read", { path: "DREAMCODE_NOTES.md" })] },
-          { toolCalls: [fakeCall("file.read", { path: "DREAMCODE_NOTES.md" })] },
-          { toolCalls: [fakeCall("file.read", { path: "DREAMCODE_NOTES.md" })] },
+          { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
+          { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
+          { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
+          { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
         ]),
         mode: "yolo",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
@@ -157,7 +157,7 @@ describe("runTurn fake model integration", () => {
 
   it("caches repeated read-only calls and stops an inspection loop", async () => {
     const workspaceRoot = await createTestWorkspace();
-    const repeated = fakeCall("file.read", { path: "README.md" });
+    const repeated = fakeCall("file.read", { file_path: "README.md" });
     const events = await collectEvents(
       runTurn({
         prompt: "Inspect the README without repeating work.",
@@ -185,8 +185,8 @@ describe("runTurn fake model integration", () => {
         prompt: "Inspect the project within the available budget.",
         workspaceRoot,
         provider: new FakeModelProvider([
-          { toolCalls: [fakeCall("file.read", { path: "README.md" })] },
-          { toolCalls: [fakeCall("file.list", { path: "." })] },
+          { toolCalls: [fakeCall("file.read", { file_path: "README.md" })] },
+          { toolCalls: [fakeCall("search.glob", { pattern: "**/*" })] },
           { text: "Budget reached; here is the useful synthesis from the collected evidence." },
         ]),
         mode: "yolo",
@@ -222,7 +222,7 @@ describe("runTurn fake model integration", () => {
         prompt: "List the fixture files.",
         workspaceRoot,
         provider: new FakeModelProvider([
-          { toolCalls: [fakeCall("file.list", { path: ".", recursive: true, maxEntries: 1000 })] },
+          { toolCalls: [fakeCall("search.glob", { pattern: "**/*" })] },
           { text: "The file inventory is complete." },
         ]),
         mode: "yolo",
@@ -233,12 +233,10 @@ describe("runTurn fake model integration", () => {
     const completed = events.find(
       (event) =>
         event.type === "tool.completed" &&
-        (event.payload as { tool?: string }).tool === "file.list",
+        (event.payload as { tool?: string }).tool === "search.glob",
     );
-    const data = (completed?.payload as { data?: { truncated?: boolean; artifactRef?: string } })
-      .data;
-    expect(data?.truncated).toBe(true);
-    expect(data?.artifactRef).toMatch(/^artifact:\/\//);
+    const artifactRefs = (completed?.payload as { artifactRefs?: string[] }).artifactRefs;
+    expect(artifactRefs?.[0]).toMatch(/^artifact:\/\//);
     expect(events.some((event) => event.type === "artifact.created")).toBe(true);
   });
 
@@ -275,7 +273,7 @@ describe("runTurn fake model integration", () => {
         prompt: "继续检查刚才的文件。",
         workspaceRoot,
         provider: new FakeModelProvider([
-          { toolCalls: [fakeCall("file.read", { path: "DREAMCODE_NOTES.md" })] },
+          { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
           { text: "Final answer: resumed and checked the note." },
         ]),
         mode: "yolo",
@@ -304,6 +302,7 @@ describe("runTurn fake model integration", () => {
         prompt: "更新 README。",
         workspaceRoot,
         provider: new FakeModelProvider([
+          { toolCalls: [fakeCall("file.read", { file_path: "README.md" })] },
           {
             toolCalls: [
               fakeCall("file.patch", {

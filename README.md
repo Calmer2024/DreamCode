@@ -149,7 +149,7 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - 支持 `openai-compatible` 自定义 provider。
   - CLI 支持 `--provider`、`--model`、`--api-key`、`--api-key-env`、`--base-url`、`--list-providers`。
 - Tool Registry: 注册经过 Zod 校验的内置工具:
-  - `file.read`, `file.write`, `file.patch`, `file.list`
+  - `file.read`, `file.write`, `file.patch`
   - `search.grep`, `search.glob`
   - Windows: `pwsh`; Unix: `bash`
   - `job_output`, `job_list`, `job_kill`
@@ -163,7 +163,7 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
 - 长期程序由 session 隔离的 Process Supervisor 管理，日志直接落盘并受容量限制，宿主正常退出或 session 删除时清理活动进程。
 - 命令结果提供机器可读的错误分类、execution outcome、4 KiB stdout/stderr 首尾预览和完整 artifact 引用。
 - Tool Result Aggregator 保证每个 ToolCall 都有独立结果，同时对一次模型步骤的全部工具结果施加共享字符预算，避免 N 个结果线性放大下一轮上下文。
-- `file.read` 支持行范围读取；文件快照和回滚由 `file.write` / `file.patch` 在写入前保存 snapshot，同时保存 patch artifact。
+- `file.read` 返回带真实行号的窗口并支持 `offset` / `limit` 精确续读；文件快照和回滚由 `file.write` / `file.patch` 在写入前保存 snapshot，同时保存 patch artifact。
 - Permission Engine: 实现 Safe YOLO v0 规则:
   - 自动允许低风险 workspace 读写、搜索、只读 git、常见 test/lint/build 命令。
   - 对安装依赖、未知 shell 命令、疑似网络命令、workspace 外读取进行询问。
@@ -172,7 +172,7 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - Web 只读访问在 yolo/full 下允许, guided 下询问, plan 下拒绝。
   - MCP 工具默认询问, full mode 才自动允许配置内 MCP tool。
   - dependency install 标记为 `install_dependency` 风险。
-- Context Builder: 构建 workspace 摘要、加载 `DREAMCODE.md`、包含 todo 状态，并按实际 messages、工具 schema 与 Provider 协议开销估算和压缩上下文。
+- Context Builder: 加载 `DREAMCODE.md`、包含 todo 状态，并按实际 messages、工具 schema 与 Provider 协议开销估算和压缩上下文。
 - Model usage 区分完整输入、缓存命中输入、未缓存输入和输出 Token；缓存输入仍计入上下文容量。
 - Eval fixtures: 覆盖失败测试修复、README 更新和安全拦截。
 

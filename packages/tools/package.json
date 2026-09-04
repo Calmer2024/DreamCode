@@ -16,8 +16,8 @@
   "dependencies": {
     "@dreamcode/safety": "workspace:*",
     "@dreamcode/shared": "workspace:*",
+    "@vscode/ripgrep": "^1.18.0",
     "diff": "^8.0.2",
-    "fast-glob": "^3.3.3",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.24.6"
   }
