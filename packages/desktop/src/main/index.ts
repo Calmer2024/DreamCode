@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { ProcessSupervisor } from "@dreamcode/tools";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { DesktopAppService } from "./app-service";
+import { DesktopAttachmentService } from "./attachment-service";
 import { registerDesktopIpc } from "./ipc";
 import { DesktopRunManager } from "./run-manager";
 import { DesktopTerminalManager } from "./terminal-manager";
@@ -110,6 +111,8 @@ export async function startDesktopApplication(): Promise<void> {
   let mainWindow: DesktopWindow | undefined;
   const processSupervisor = new ProcessSupervisor();
   const service = new DesktopAppService(undefined, undefined, processSupervisor);
+  const attachmentService = new DesktopAttachmentService();
+  await attachmentService.initialize();
   const send = (channel: string, payload: unknown) => {
     const window = mainWindow;
     if (window && !window.isDestroyed()) {
@@ -118,6 +121,7 @@ export async function startDesktopApplication(): Promise<void> {
   };
   const runManager = new DesktopRunManager({
     processSupervisor,
+    attachmentService,
     getSkillRegistry: (workspaceRoot) => service.skills.registryFor(workspaceRoot),
     emitEvent: (message) => send("desktop:run-event", message),
     emitApproval: (request) => send("desktop:approval-request", request),
@@ -129,6 +133,7 @@ export async function startDesktopApplication(): Promise<void> {
     ipcMain,
     dialog,
     service,
+    attachmentService,
     runManager,
     terminalManager,
     getWindow: () => mainWindow,

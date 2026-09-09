@@ -3,13 +3,45 @@ import { describe, expect, it } from "vitest";
 import { ContextBuilder, contextOptionsForModel } from "./index";
 
 describe("ContextBuilder structured history", () => {
+  it("fails before provider execution when the complete Skill Catalog cannot fit", async () => {
+    const builder = new ContextBuilder({
+      maxContextTokens: 100,
+      reservedOutputTokens: 10,
+      compactionBufferTokens: 10,
+      tokenCounter: { count: (text) => text.length },
+    });
+    const skillCatalog = `<available_skills>\n${Array.from(
+      { length: 10 },
+      (_, index) => `<skill name="skill-${index}">${"description ".repeat(10)}</skill>`,
+    ).join("\n")}\n</available_skills>`;
+
+    await expect(
+      builder.build({
+        mode: "yolo",
+        workspaceRoot: process.cwd(),
+        messages: [],
+        todoItems: [],
+        skillCatalog,
+        tools: [],
+        model: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "skill_catalog_exceeds_context",
+      details: {
+        catalogSkillCount: 10,
+        catalogCharacters: skillCatalog.length,
+      },
+    });
+  });
   it("keeps assistant tool calls paired with their tool results", async () => {
     const history = [
       { role: "user", content: "Does this project have a frontend?" },
       {
         role: "assistant",
         content: "I found a Vue application and will verify its entry point.",
-        toolCalls: [{ id: "call_1", name: "file.read", input: { file_path: "frontend/src/main.ts" } }],
+        toolCalls: [
+          { id: "call_1", name: "file.read", input: { file_path: "frontend/src/main.ts" } },
+        ],
       },
       {
         role: "tool",
@@ -40,7 +72,9 @@ describe("ContextBuilder structured history", () => {
     const systemMessage = result.messages.find((message) => message.role === "system");
     expect(systemMessage?.content).toContain("You are DreamCode, an AI agent.");
     expect(systemMessage?.content).toContain("powered by the configured model");
-    expect(systemMessage?.content).toContain("Respond in the same language as the user's latest message.");
+    expect(systemMessage?.content).toContain(
+      "Respond in the same language as the user's latest message.",
+    );
     expect(systemMessage?.content).toContain("Current Policy Context:");
     expect(systemMessage?.content).not.toContain("Workspace summary:");
     expect(systemMessage?.content).not.toContain("Keep code, commands, file paths, identifiers");

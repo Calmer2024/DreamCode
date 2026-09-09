@@ -156,7 +156,7 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - `git.status`, `git.diff`
   - `todo.write`, `question.ask`
   - `web.search`, `web.fetch`
-  - `skill.load`, `skill.read_resource`
+  - `skill`
   - `mcp.list`, `mcp.call`
   - Core 默认将 Tool Registry 中的全部工具 schema 发送给模型，包括 Web、Skill 和 MCP；实际执行仍由 Permission Engine 控制。
 - 命令执行采用平台专属 Shell：Windows 使用 `pwsh`，Unix 使用 `bash`；长任务通过 `run_in_background` 启动，并使用 `job_output`、`job_list`、`job_kill` 管理。
@@ -165,9 +165,9 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
 - Tool Result Aggregator 保证每个 ToolCall 都有独立结果，同时对一次模型步骤的全部工具结果施加共享字符预算，避免 N 个结果线性放大下一轮上下文。
 - `file.read` 返回带真实行号的窗口并支持 `offset` / `limit` 精确续读；文件快照和回滚由 `file.write` / `file.patch` 在写入前保存 snapshot，同时保存 patch artifact。
 - Permission Engine: 实现 Safe YOLO v0 规则:
-  - 自动允许低风险 workspace 读写、搜索、只读 git、常见 test/lint/build 命令。
-  - 对安装依赖、未知 shell 命令、疑似网络命令、workspace 外读取进行询问。
-  - 拒绝 secret 读取、workspace 外写入、递归危险删除、强推、硬重置等高风险动作。
+  - 自动允许任意本地路径的普通读取与搜索，以及低风险 workspace 写入、只读 git、常见 test/lint/build 命令。
+  - 对敏感文件读取、安装依赖、未知 shell 命令和疑似网络命令进行询问。
+  - 拒绝 workspace 外写入、递归危险删除、强推、硬重置等高风险动作。
 - Safe YOLO v1 扩展:
   - Web 只读访问在 yolo/full 下允许, guided 下询问, plan 下拒绝。
   - MCP 工具默认询问, full mode 才自动允许配置内 MCP tool。
@@ -195,7 +195,7 @@ pnpm build
 - 可选工具 schema 分层、回合内紧凑缓存命中和缓存失效。
 - Provider 缓存 Token 归一化与包含工具 schema 的请求前估算。
 - fake model 端到端修复失败的 JavaScript 测试。
-- secret 读取和破坏性删除的拒绝逻辑。
+- 敏感文件读取授权和破坏性删除的拒绝逻辑。
 - OpenAI-compatible tool schema 顶层 object 兼容性。
 - 写入后重复只读检查的停止保护。
 - Phase 2 覆盖:

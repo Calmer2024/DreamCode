@@ -151,12 +151,8 @@ export interface ToolModelSpec {
 }
 
 export interface SkillCatalogEntry {
-  skillId: string;
   name: string;
   description: string;
-  source: "built_in" | "system" | "user" | "project" | "plugin";
-  path: string;
-  allowImplicitInvocation: boolean;
 }
 
 export interface SkillLoadedContent {
@@ -169,22 +165,11 @@ export interface SkillLoadedContent {
   cacheHit: boolean;
 }
 
-export interface SkillResourceContent {
-  skillId: string;
-  resourcePath: string;
-  content: string;
-  truncated: boolean;
-}
-
 export interface SkillTurnContext {
   generation: number;
   catalog: readonly SkillCatalogEntry[];
-  load(skillId: string): Promise<SkillLoadedContent>;
-  readResource(
-    skillId: string,
-    resourcePath: string,
-    maxBytes?: number,
-  ): Promise<SkillResourceContent>;
+  load(name: string): Promise<SkillLoadedContent>;
+  loadExplicit(skillId: string): Promise<SkillLoadedContent>;
 }
 
 export interface ToolExecutionContext {
@@ -237,9 +222,30 @@ export interface ChatMessage {
   id?: string;
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Ordered multimodal inputs attached to a user message. Binary bytes stay on disk. */
+  attachments?: MediaAttachment[];
   name?: string;
   toolCallId?: string;
   toolCalls?: NormalizedToolCall[];
+}
+
+export type MediaAttachmentKind = "image" | "audio" | "video";
+
+export interface MediaAttachment {
+  id: string;
+  name: string;
+  kind: MediaAttachmentKind;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  /** Session-relative original file used for history preview and playback. */
+  relativePath: string;
+  /** Session-relative metadata-stripped derivative sent to the provider. */
+  sendRelativePath: string;
+  /** Runtime-only absolute path. It is stripped before events are persisted or emitted. */
+  sourcePath?: string;
+  /** Runtime-only original absolute path, before metadata removal. */
+  originalSourcePath?: string;
 }
 
 export interface CompactionCheckpoint {
@@ -343,6 +349,7 @@ export type AgentEventType =
   | "session.indexed"
   | "turn.started"
   | "turn.interrupted"
+  | "turn.reverted"
   | "user.message"
   | "context.built"
   | "context.compressed"
@@ -359,7 +366,6 @@ export type AgentEventType =
   | "artifact.created"
   | "web.source.saved"
   | "skill.loaded"
-  | "skill.resource.loaded"
   | "skill.capability.undeclared"
   | "mcp.server.started"
   | "mcp.server.stopped"
@@ -426,7 +432,7 @@ export interface TodoItem {
 }
 
 export interface FinalSummary {
-  status: "completed" | "completed_partial" | "budget_exhausted" | "failed" | "stopped";
+  status: "completed" | "completed_partial" | "failed" | "stopped";
   message: string;
   changedFiles: ChangedFile[];
   commands: Array<{

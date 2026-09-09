@@ -76,6 +76,7 @@ export class DesktopSkillService {
       scope: request.scope,
       workspaceRoot,
       dreamCodeHome: this.dreamCodeHome,
+      userHome: this.options.userHome ?? os.homedir(),
       store: entry.state,
       confirmations: request.confirmations,
     });
@@ -98,6 +99,7 @@ export class DesktopSkillService {
       skillId: request.skillId,
       workspaceRoot,
       dreamCodeHome: this.dreamCodeHome,
+      userHome: this.options.userHome ?? os.homedir(),
       store: entry.state,
       confirmations: request.confirmations,
     });
@@ -116,6 +118,7 @@ export class DesktopSkillService {
       skillId: request.skillId,
       workspaceRoot,
       dreamCodeHome: this.dreamCodeHome,
+      userHome: this.options.userHome ?? os.homedir(),
       store: entry.state,
     });
     if (scope === "user") {
@@ -133,6 +136,7 @@ export class DesktopSkillService {
       skillId: request.skillId,
       workspaceRoot,
       dreamCodeHome: this.dreamCodeHome,
+      userHome: this.options.userHome ?? os.homedir(),
       store: entry.state,
     });
     if (scope === "user") {

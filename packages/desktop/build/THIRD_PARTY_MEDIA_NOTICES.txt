@@ -1,0 +1,19 @@
+DreamCode bundled media tools
+================================
+
+FFmpeg
+------
+The Windows x64 FFmpeg executable is distributed by @ffmpeg-installer/win32-x64
+and is identified by that package as GPLv3 software.
+
+FFmpeg project and source: https://ffmpeg.org/
+GNU General Public License version 3: https://www.gnu.org/licenses/gpl-3.0.html
+
+FFprobe
+-------
+The ffprobe executable is distributed by ffprobe-static. The npm wrapper is
+Copyright (c) 2015 Josh Johnston and licensed under the MIT License. FFprobe is
+part of the FFmpeg project; see the FFmpeg links above for project source and
+the license applicable to the bundled binary.
+
+This notice must remain beside the bundled executables in packaged builds.

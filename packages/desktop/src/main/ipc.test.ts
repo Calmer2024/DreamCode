@@ -46,6 +46,12 @@ describe("registerDesktopIpc", () => {
       respondApproval: vi.fn(),
       respondQuestion: vi.fn(),
     };
+    const attachmentService = {
+      importPaths: vi.fn(),
+      importBytes: vi.fn(),
+      discard: vi.fn(),
+      read: vi.fn(),
+    };
     const terminalManager = {
       start: vi.fn(),
       write: vi.fn(),
@@ -57,6 +63,7 @@ describe("registerDesktopIpc", () => {
       ipcMain,
       dialog,
       service,
+      attachmentService,
       runManager,
       terminalManager,
       getWindow: () => undefined,
@@ -80,6 +87,10 @@ describe("registerDesktopIpc", () => {
       "desktop:install-skill",
       "desktop:update-skill",
       "desktop:rollback-skill",
+      "desktop:choose-attachments",
+      "desktop:stage-attachment-bytes",
+      "desktop:discard-attachments",
+      "desktop:read-attachment",
       "desktop:uninstall-skill",
       "desktop:save-project",
       "desktop:create-project",
@@ -102,7 +113,7 @@ describe("registerDesktopIpc", () => {
 
     dispose();
 
-    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(34);
+    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(38);
   });
 
   it("serializes invalid object requests before calling a service", async () => {
@@ -237,6 +248,7 @@ describe("createDesktopApi", () => {
 
     expect(Object.keys(api).sort()).toEqual([
       "bootstrap",
+      "chooseAttachments",
       "chooseWorkspace",
       "closeTerminal",
       "createProfile",
@@ -244,6 +256,7 @@ describe("createDesktopApi", () => {
       "deleteProfile",
       "deleteProject",
       "deleteSession",
+      "discardAttachments",
       "installSkill",
       "listSkills",
       "onApprovalRequest",
@@ -252,6 +265,7 @@ describe("createDesktopApi", () => {
       "onRunStatus",
       "onTerminalOutput",
       "openWorkspace",
+      "readAttachment",
       "readDiff",
       "readSession",
       "renameSession",
@@ -266,6 +280,7 @@ describe("createDesktopApi", () => {
       "setSessionPinned",
       "setSkillEnabled",
       "setSkillRoots",
+      "stageAttachmentBytes",
       "startTerminal",
       "startTurn",
       "stopTurn",

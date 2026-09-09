@@ -315,7 +315,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
 主循环必须有明确停止条件:
 
 - 模型没有继续请求工具。
-- 达到最大工具调用次数。
 - 达到最大单轮持续时间。
 - 达到最大 token/成本预算。
 - 连续 N 次工具失败。
@@ -326,8 +325,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
 
 默认建议:
 
-- 单 turn 最大工具调用: 80。
-- 单 turn 最大连续失败: 5。
 - 单 turn 最大运行时长: 30 分钟。
 - 同一工具同一参数重复上限: 3。
 
@@ -502,7 +499,7 @@ MVP 必备:
 
 | 工具 | 功能 | 默认权限 |
 | --- | --- | --- |
-| `file.read` | 读取 workspace 内文件 | allow |
+| `file.read` | 读取任意本地文本文件 | allow；敏感文件按模式授权 |
 | `file.write` | 创建/覆盖文件 | yolo allow, guided ask |
 | `file.patch` | 应用 patch | yolo allow, guided ask |
 | `search.grep` | 内容搜索 | allow |
@@ -520,7 +517,7 @@ P1:
 - `git.stage`。
 - `git.commit`。
 - `mcp.call`。
-- `skill.load`。
+- `skill`。
 - `agent.run`。
 - `lsp.diagnostics`。
 - `lsp.references`。
@@ -753,7 +750,7 @@ DreamCode 初期不做复杂向量数据库, 采用 Agentic Search:
 
 DreamCode 的 Safe YOLO 不是无限权限, 而是:
 
-> workspace 内低风险操作自动执行, workspace 外、高危命令、secret、外部副作用默认拦截。
+> 任意本地路径的普通读取自动执行；workspace 外写入、高危命令、敏感文件和外部副作用仍受权限策略约束。
 
 ### 10.2 权限决策流程
 
@@ -807,7 +804,7 @@ export interface PermissionDecision {
 
 允许:
 
-- workspace 内普通文件读。
+- 任意本地路径的普通文件读。
 - workspace 内普通文件写。
 - workspace 内 patch。
 - `git status`、`git diff`、`git log`。
@@ -824,12 +821,11 @@ export interface PermissionDecision {
 - 创建 git commit。
 - 访问网络。
 - 运行未知 shell 命令。
-- workspace 外读取。
+- 敏感文件读取。
 
 拒绝:
 
 - workspace 外写入。
-- 读取 secret 文件。
 - 删除大量文件且无明确用户要求。
 - `rm -rf /` 等危险命令。
 - force push。
@@ -1082,7 +1078,6 @@ allow_external_read = false
 allow_external_write = false
 
 [limits]
-max_tool_calls = 80
 max_turn_minutes = 30
 max_turn_cost_usd = 1.00
 

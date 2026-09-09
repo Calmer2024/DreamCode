@@ -189,7 +189,6 @@ export async function runTask(task: EvalTask, options: EvalOptions): Promise<Eva
       mode: task.mode ?? "yolo",
       model: providerConfig.model,
       provider,
-      maxToolCalls: 80,
     }),
   );
   const after = await snapshot(workspaceRoot);

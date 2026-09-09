@@ -2,6 +2,7 @@ import type { RunMode } from "@dreamcode/shared";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type {
   DesktopApi,
+  DesktopAttachment,
   DesktopApprovalRequest,
   DesktopBootstrap,
   DesktopError,
@@ -19,6 +20,7 @@ import { ProjectRemovalDialog } from "../components/ProjectRemovalDialog";
 import { Sidebar } from "../components/Sidebar";
 import { TaskHeader } from "../components/TaskHeader";
 import { Timeline } from "../components/Timeline";
+import { TodoPanel } from "../components/TodoPanel";
 import { TooltipLayer } from "../components/TooltipLayer";
 import {
   createDesktopState,
@@ -37,7 +39,9 @@ export function App({ api = window.dreamcode }: AppProps) {
   const [state, dispatch] = useReducer(desktopReducer, undefined, () => createDesktopState());
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
-  const [prompt, setPrompt] = useState("");
+  const [promptSeed, setPromptSeed] = useState({ value: "", revision: 0 });
+  const [draftAttachments, setDraftAttachments] = useState<DesktopAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string>();
   const [mode, setMode] = useState<RunMode>("guided");
   const [profileId, setProfileId] = useState("");
   const [modelId, setModelId] = useState("");
@@ -49,6 +53,12 @@ export function App({ api = window.dreamcode }: AppProps) {
   const startingRef = useRef(false);
   const pendingRunEvents = useRef<DesktopRunEvent[]>([]);
   const pendingRunStatuses = useRef<DesktopRunStatus[]>([]);
+  const pendingSubmission = useRef<{
+    runId?: string;
+    prompt: string;
+    attachments: DesktopAttachment[];
+  } | undefined>(undefined);
+  const liveDraft = useRef("");
   const sessionLoadSequence = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const mainPaneRef = useRef<HTMLElement>(null);
@@ -56,6 +66,31 @@ export function App({ api = window.dreamcode }: AppProps) {
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const shouldFollowTimeline = useRef(true);
   const pendingScrollFrame = useRef<number | undefined>(undefined);
+
+  const applyDraftStatus = useCallback((status: DesktopRunStatus) => {
+    const pending = pendingSubmission.current;
+    if (!pending || (pending.runId && pending.runId !== status.runId) || status.status === "running") return;
+    if (status.draftRestored) {
+      const restoredPrompt =
+        liveDraft.current === pending.prompt
+          ? pending.prompt
+          : [pending.prompt, liveDraft.current].filter((part) => part.length > 0).join("\n\n");
+      liveDraft.current = restoredPrompt;
+      setPromptSeed((current) => ({ value: restoredPrompt, revision: current.revision + 1 }));
+      setDraftAttachments((current) => {
+        const restoredIds = new Set(pending.attachments.map((attachment) => attachment.id));
+        const merged = [
+          ...pending.attachments,
+          ...current.filter((attachment) => !restoredIds.has(attachment.id)),
+        ];
+        if (merged.length > 10) {
+          setAttachmentError("回退后的附件草稿超过 10 个，请移除部分附件后再发送。");
+        }
+        return merged;
+      });
+    }
+    pendingSubmission.current = undefined;
+  }, []);
 
   const loadBootstrap = useCallback(async () => {
     setLoading(true);
@@ -112,6 +147,7 @@ export function App({ api = window.dreamcode }: AppProps) {
         return;
       }
       dispatch({ type: "run.status", status });
+      applyDraftStatus(status);
       if (status.status !== "running") {
         void api
           .bootstrap()
@@ -127,7 +163,7 @@ export function App({ api = window.dreamcode }: AppProps) {
       unsubscribeApproval();
       unsubscribeQuestion();
     };
-  }, [api]);
+  }, [api, applyDraftStatus]);
 
   const groups = useMemo(() => selectWorkspaceGroups(state), [state]);
   const pinnedSessions = useMemo(() => selectPinnedSessions(state), [state]);
@@ -140,12 +176,17 @@ export function App({ api = window.dreamcode }: AppProps) {
   const displayedContextUsage = contextUsageForModel(selectedPreset, modelId, state.contextUsage);
   const profileUsable = Boolean(selectedProfile && isProfileUsable(selectedProfile));
   const canSubmit = Boolean(
-    prompt.trim() && state.workspaceRoot?.trim() && profileUsable && modelId.trim() && !busy && !approvalPending,
+    state.workspaceRoot?.trim() &&
+      profileUsable &&
+      modelId.trim() &&
+      draftAttachments.length <= 10 &&
+      !busy &&
+      !approvalPending,
   );
 
   const taskTitle =
     state.sessions.find((session) => session.id === state.activeSessionId)?.title ??
-    state.request?.prompt ??
+    (state.request ? requestTitle(state.request, pendingSubmission.current?.attachments) : undefined) ??
     "新对话";
   const activeProject = state.bootstrap?.projects?.find(
     (project) => project.workspaceRoot === state.workspaceRoot,
@@ -178,8 +219,18 @@ export function App({ api = window.dreamcode }: AppProps) {
     dispatch({ type: "bootstrap.refreshed", bootstrap });
   }, []);
 
+  const discardAttachmentDraft = async (): Promise<boolean> => {
+    if (!draftAttachments.length) return true;
+    if (!window.confirm("切换后将丢弃尚未发送的附件草稿，是否继续？")) return false;
+    await api.discardAttachments(draftAttachments.map((attachment) => attachment.id)).catch(() => undefined);
+    setDraftAttachments([]);
+    setAttachmentError(undefined);
+    return true;
+  };
+
   const chooseWorkspace = async () => {
     if (busy) return;
+    if (!(await discardAttachmentDraft())) return;
     try {
       const workspaceRoot = await api.chooseWorkspace();
       if (workspaceRoot) {
@@ -197,25 +248,33 @@ export function App({ api = window.dreamcode }: AppProps) {
     }
   };
 
-  const submit = async () => {
-    const submittedInput = prompt;
-    const cleanPrompt = prompt.trim();
-    if (!cleanPrompt || !state.workspaceRoot || !profileUsable || busy || startingRef.current)
-      return;
+  const submit = async (submittedInput: string): Promise<boolean> => {
+    const cleanPrompt = submittedInput.trim();
+    if ((!cleanPrompt && !draftAttachments.length) || !state.workspaceRoot || !profileUsable || busy || startingRef.current)
+      return false;
     const request: StartTurnRequest = {
       prompt: cleanPrompt,
       workspaceRoot: state.workspaceRoot,
       mode,
       profileId,
       model: modelId,
+      ...(draftAttachments.length ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
       ...(state.activeSessionId ? { sessionId: state.activeSessionId } : {}),
     };
     startingRef.current = true;
     pendingRunEvents.current = [];
     pendingRunStatuses.current = [];
     setStarting(true);
+    pendingSubmission.current = {
+      prompt: submittedInput,
+      attachments: draftAttachments,
+    };
     try {
       const { runId } = await api.startTurn(request);
+      let restoredWhileStarting = false;
+      pendingSubmission.current = { ...pendingSubmission.current!, runId };
+      setDraftAttachments([]);
+      setAttachmentError(undefined);
       dispatch({ type: "run.started", runId, request });
       for (const message of pendingRunEvents.current) {
         if (message.runId === runId) dispatch({ type: "run.event", message });
@@ -223,6 +282,8 @@ export function App({ api = window.dreamcode }: AppProps) {
       for (const status of pendingRunStatuses.current) {
         if (status.runId === runId) {
           dispatch({ type: "run.status", status });
+          applyDraftStatus(status);
+          restoredWhileStarting ||= Boolean(status.draftRestored);
           if (status.status !== "running") {
             void api
               .bootstrap()
@@ -231,9 +292,11 @@ export function App({ api = window.dreamcode }: AppProps) {
           }
         }
       }
-      setPrompt((current) => (current === submittedInput ? "" : current));
+      return !restoredWhileStarting;
     } catch (error) {
+      pendingSubmission.current = undefined;
       dispatch({ type: "error", error: desktopError(error) });
+      return false;
     } finally {
       pendingRunEvents.current = [];
       pendingRunStatuses.current = [];
@@ -265,7 +328,8 @@ export function App({ api = window.dreamcode }: AppProps) {
     }
   };
 
-  const newConversation = (workspaceRoot?: string) => {
+  const newConversation = async (workspaceRoot?: string) => {
+    if (!(await discardAttachmentDraft())) return;
     sessionLoadSequence.current += 1;
     dispatch(
       workspaceRoot ? { type: "workspace.selected", workspaceRoot } : { type: "conversation.new" },
@@ -285,6 +349,7 @@ export function App({ api = window.dreamcode }: AppProps) {
   };
 
   const removeWorkspace = async (workspaceRoot: string) => {
+    if (state.workspaceRoot === workspaceRoot && !(await discardAttachmentDraft())) return;
     try {
       applyBootstrap(await api.deleteProject(workspaceRoot));
       if (state.workspaceRoot === workspaceRoot) {
@@ -354,7 +419,7 @@ export function App({ api = window.dreamcode }: AppProps) {
           pinnedSessions={pinnedSessions}
           activeSessionId={state.activeSessionId}
           navigationDisabled={busy}
-          onNewConversation={newConversation}
+          onNewConversation={(workspaceRoot) => void newConversation(workspaceRoot)}
           onCreateProject={() => setProjectCreationOpen(true)}
           onOpenSettings={() => dispatch({ type: "dialog.set", dialog: { type: "settings" } })}
           onSaveProject={(project) => void saveProject(project)}
@@ -365,13 +430,16 @@ export function App({ api = window.dreamcode }: AppProps) {
           }}
           onRemoveWorkspace={setWorkspacePendingRemoval}
           onDeleteSession={(sessionId) => {
-            void api
-              .deleteSession(sessionId)
-              .then((bootstrap) => {
-                applyBootstrap(bootstrap);
-                if (state.activeSessionId === sessionId) dispatch({ type: "conversation.new" });
-              })
-              .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+            void (async () => {
+              if (state.activeSessionId === sessionId && !(await discardAttachmentDraft())) return;
+              await api
+                .deleteSession(sessionId)
+                .then((bootstrap) => {
+                  applyBootstrap(bootstrap);
+                  if (state.activeSessionId === sessionId) dispatch({ type: "conversation.new" });
+                })
+                .catch((error) => dispatch({ type: "error", error: desktopError(error) }));
+            })();
           }}
           onRenameSession={(sessionId, title) => {
             void api
@@ -441,14 +509,17 @@ export function App({ api = window.dreamcode }: AppProps) {
                 </div>
               ) : (
                 <Timeline
-                  state={{ ...state, timeline }}
+                  state={state}
                   workspaceName={projectName(state.bootstrap, state.workspaceRoot)}
                   profileUsable={profileUsable}
-                  onPromptSuggestion={setPrompt}
+                  onPromptSuggestion={(value) =>
+                    setPromptSeed((current) => ({ value, revision: current.revision + 1 }))
+                  }
                   onConfigure={() => dispatch({ type: "dialog.set", dialog: { type: "profile" } })}
                   onChooseWorkspace={() => void chooseWorkspace()}
                   questionRequest={questionRequest}
                   questionApi={api}
+                  mediaApi={api}
                   onQuestionResolved={() => setQuestionRequest(undefined)}
                 />
               )}
@@ -461,35 +532,48 @@ export function App({ api = window.dreamcode }: AppProps) {
             </div>
           ) : null}
           <div ref={composerStackRef} className="composer-stack-anchor">
-          {approvalRequest ? (
-            <ApprovalCard
-              api={api}
-              request={approvalRequest}
-              onResolved={() => setApprovalRequest(undefined)}
-            />
-          ) : <Composer
-            api={api}
-            workspaceRoot={state.workspaceRoot}
-            prompt={prompt}
-            mode={mode}
-            model={modelId}
-            profile={selectedProfile}
-            preset={selectedPreset}
-            runStatus={state.runStatus}
-            active={running}
-            starting={starting}
-            canSubmit={canSubmit}
-            workspaceName={projectName(state.bootstrap, state.workspaceRoot)}
-            showWorkspaceContext={Boolean(
-              state.workspaceRoot && !state.activeSessionId && !state.request && !timeline.length,
+            {state.todoItems.length ? <TodoPanel items={state.todoItems} /> : null}
+            {approvalRequest ? (
+              <ApprovalCard
+                api={api}
+                request={approvalRequest}
+                onResolved={() => setApprovalRequest(undefined)}
+              />
+            ) : (
+              <Composer
+                key={promptSeed.revision}
+                api={api}
+                workspaceRoot={state.workspaceRoot}
+                prompt={promptSeed.value}
+                attachments={draftAttachments}
+                attachmentError={attachmentError}
+                mode={mode}
+                model={modelId}
+                profile={selectedProfile}
+                preset={selectedPreset}
+                runStatus={state.runStatus}
+                active={running}
+                starting={starting}
+                canSubmit={canSubmit}
+                workspaceName={projectName(state.bootstrap, state.workspaceRoot)}
+                showWorkspaceContext={Boolean(
+                  state.workspaceRoot &&
+                    !state.activeSessionId &&
+                    !state.request &&
+                    !timeline.length,
+                )}
+                contextUsage={displayedContextUsage}
+                onPromptChange={(prompt) => {
+                  liveDraft.current = prompt;
+                }}
+                onAttachmentsChange={setDraftAttachments}
+                onAttachmentError={setAttachmentError}
+                onModeChange={setMode}
+                onModelChange={setModelId}
+                onSubmit={submit}
+                onStop={() => void stop()}
+              />
             )}
-            contextUsage={displayedContextUsage}
-            onPromptChange={setPrompt}
-            onModeChange={setMode}
-            onModelChange={setModelId}
-            onSubmit={() => void submit()}
-            onStop={() => void stop()}
-          />}
           </div>
         </main>
         {state.drawer ? (
@@ -552,6 +636,18 @@ function modelForProfile(
     bootstrap.presets.find((preset) => preset.id === profile.provider)?.defaultModel ??
     ""
   );
+}
+
+function requestTitle(
+  request: StartTurnRequest,
+  attachments: DesktopAttachment[] | undefined,
+): string {
+  if (request.prompt.trim()) return request.prompt.trim();
+  const first = attachments?.[0];
+  if (!first) return "分析多模态附件";
+  return first.name.toLowerCase().startsWith("pasted-image")
+    ? "分析粘贴的图片"
+    : `分析 ${first.name}`;
 }
 
 function contextUsageForModel(

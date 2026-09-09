@@ -258,6 +258,7 @@ describe("DesktopRunManager", () => {
       recoverable: true,
     });
     expect(statuses.at(-1)?.error).not.toBeInstanceOf(Error);
+    expect(statuses.at(-1)?.draftRestored).toBe(true);
     expect(manager.activeRunId).toBeUndefined();
   });
 

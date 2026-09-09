@@ -1,19 +1,61 @@
-import type { AgentEvent, RunMode } from "@dreamcode/shared";
+import type { AgentEvent, MediaAttachmentKind, RunMode } from "@dreamcode/shared";
 import type { ReplayedSessionState, SessionListItem } from "@dreamcode/store";
 import { z } from "zod";
 
 export const workspaceRootSchema = z.string().trim().min(1);
 
+const attachmentIdSchema = z.string().trim().regex(/^[A-Za-z0-9_-]+$/);
+
 export const startTurnRequestSchema = z.object({
-  prompt: z.string().trim().min(1),
+  prompt: z.string(),
   workspaceRoot: workspaceRootSchema,
   mode: z.enum(["plan", "guided", "yolo", "full"]),
   profileId: z.string().trim().min(1).optional(),
   model: z.string().trim().min(1).optional(),
   sessionId: z.string().trim().min(1).optional(),
+  attachmentIds: z.array(attachmentIdSchema).max(10).optional(),
+}).refine((value) => value.prompt.trim().length > 0 || Boolean(value.attachmentIds?.length), {
+  message: "A prompt or at least one attachment is required.",
 });
 
 export type StartTurnRequest = z.infer<typeof startTurnRequestSchema> & { mode: RunMode };
+
+export interface DesktopAttachment {
+  id: string;
+  name: string;
+  kind: MediaAttachmentKind;
+  mimeType: string;
+  size: number;
+  sha256: string;
+}
+
+export interface DesktopAttachmentImportError {
+  name: string;
+  code: "unsupported_type" | "file_too_large" | "total_too_large" | "invalid_media" | "disk_full" | "read_failed";
+  message: string;
+}
+
+export interface DesktopAttachmentImportResult {
+  attachments: DesktopAttachment[];
+  errors: DesktopAttachmentImportError[];
+}
+
+export const stageAttachmentBytesSchema = z.object({
+  files: z.array(z.object({
+    name: z.string().trim().min(1).max(255),
+    bytes: z.custom<Uint8Array>((value) => value instanceof Uint8Array),
+  })).max(10),
+  existing: z.array(z.object({
+    id: attachmentIdSchema,
+    name: z.string(),
+    kind: z.enum(["image", "audio", "video"]),
+    mimeType: z.string(),
+    size: z.number().nonnegative(),
+    sha256: z.string(),
+  })).max(10).optional(),
+});
+
+export const attachmentIdsRequestSchema = z.object({ ids: z.array(attachmentIdSchema).max(10) });
 
 const httpUrlSchema = z
   .string()
@@ -55,6 +97,10 @@ export type WebSearchCredentialRequest = z.infer<typeof webSearchCredentialReque
 
 export const sessionIdSchema = z.string().trim().min(1);
 export const runIdSchema = z.string().trim().min(1);
+export const readAttachmentRequestSchema = z.object({
+  attachmentId: attachmentIdSchema,
+  sessionId: attachmentIdSchema.optional(),
+});
 
 export const rollbackRequestSchema = z.object({
   sessionId: sessionIdSchema,
@@ -195,6 +241,8 @@ export interface DesktopRunStatus {
   runId: string;
   status: "running" | "completed" | "failed" | "interrupted";
   error?: DesktopError;
+  sessionId?: string;
+  draftRestored?: boolean;
 }
 export type CredentialAction = z.infer<typeof credentialActionSchema>;
 export interface ProfileDraftRequest {
@@ -303,6 +351,13 @@ export interface DesktopSessionDetail extends ReplayedSessionState {
 export interface DesktopApi {
   bootstrap(): Promise<DesktopBootstrap>;
   chooseWorkspace(): Promise<string | undefined>;
+  chooseAttachments(existing?: DesktopAttachment[]): Promise<DesktopAttachmentImportResult>;
+  stageAttachmentBytes(request: {
+    files: Array<{ name: string; bytes: Uint8Array }>;
+    existing?: DesktopAttachment[];
+  }): Promise<DesktopAttachmentImportResult>;
+  discardAttachments(ids: string[]): Promise<void>;
+  readAttachment(request: { attachmentId: string; sessionId?: string }): Promise<Uint8Array>;
   openWorkspace(workspaceRoot: string): Promise<void>;
   createProfile(request: CreateProfileRequest): Promise<DesktopBootstrap>;
   updateProfile(request: UpdateProfileRequest): Promise<DesktopBootstrap>;

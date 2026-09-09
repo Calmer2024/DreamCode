@@ -22,6 +22,20 @@ describe("desktop IPC contracts", () => {
     }
   });
 
+  it("accepts an attachment-only turn and rejects a completely empty turn", () => {
+    expect(startTurnRequestSchema.safeParse({
+      prompt: "",
+      attachmentIds: ["attachment_1"],
+      workspaceRoot: "D:/repo",
+      mode: "guided",
+    }).success).toBe(true);
+    expect(startTurnRequestSchema.safeParse({
+      prompt: "  ",
+      workspaceRoot: "D:/repo",
+      mode: "guided",
+    }).success).toBe(false);
+  });
+
   it("accepts a temporary model override and rejects an empty one", () => {
     expect(
       startTurnRequestSchema.parse({

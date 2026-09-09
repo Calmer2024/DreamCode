@@ -34,6 +34,42 @@ describe("Composer context usage", () => {
   });
 });
 
+describe("Composer attachments", () => {
+  it("allows an attachment-only message and removes a draft attachment", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(true);
+    const onAttachmentsChange = vi.fn();
+    render(
+      <Composer
+        prompt=""
+        attachments={[{
+          id: "attachment_1",
+          name: "photo.png",
+          kind: "image",
+          mimeType: "image/png",
+          size: 1024,
+          sha256: "abc",
+        }]}
+        mode="guided"
+        model="vision-model"
+        runStatus=""
+        active={false}
+        starting={false}
+        canSubmit
+        onPromptChange={vi.fn()}
+        onAttachmentsChange={onAttachmentsChange}
+        onModeChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onSubmit={onSubmit}
+        onStop={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(""));
+    fireEvent.click(screen.getByRole("button", { name: "移除附件 photo.png" }));
+    expect(onAttachmentsChange).toHaveBeenCalledWith([]);
+  });
+});
+
 describe("Composer Skill invocation", () => {
   it("suggests enabled Skills for slash invocation", async () => {
     const onPromptChange = vi.fn();
@@ -152,6 +188,37 @@ describe("Composer Skill invocation", () => {
     fireEvent.keyDown(textbox, { key: "Escape" });
     expect(screen.queryByRole("listbox", { name: "技能建议" })).not.toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("renders every matching Skill inside the scrollable suggestion list", async () => {
+    render(
+      <Composer
+        api={{
+          listSkills: vi.fn().mockResolvedValue({
+            generation: 1,
+            customRoots: [],
+            diagnostics: [],
+            skills: Array.from({ length: 12 }, (_, index) => skill(`skill-${index + 1}`, "user")),
+          }),
+        }}
+        prompt="/"
+        mode="guided"
+        model="deepseek-chat"
+        runStatus=""
+        active={false}
+        starting={false}
+        canSubmit
+        onPromptChange={vi.fn()}
+        onModeChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    const list = await screen.findByRole("listbox", { name: "技能建议" });
+    expect(within(list).getAllByRole("option")).toHaveLength(12);
+    expect(list).toHaveClass("skill-suggestions");
   });
 });
 

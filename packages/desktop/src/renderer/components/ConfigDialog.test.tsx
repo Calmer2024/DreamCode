@@ -89,12 +89,11 @@ describe("ConfigDialog", () => {
     expect(screen.getByText("读取文件")).toBeInTheDocument();
     expect(screen.getByText("未声明版本")).toBeInTheDocument();
     expect(screen.getByText(/自动发现/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText("详情"));
-    expect(screen.getByText("C:\\skills\\review")).toBeVisible();
-    expect(screen.getByText("允许隐式调用，也可用 / 或 $ 显式调用")).toBeVisible();
+    expect(screen.queryByText("详情")).not.toBeInTheDocument();
+    expect(screen.queryByText("C:\\skills\\review")).not.toBeInTheDocument();
   });
 
-  it("filters by source and forwards Git ref and subpath during installation", async () => {
+  it("filters Skills by source and hides the add action", async () => {
     const snapshot = {
       generation: 1,
       customRoots: [],
@@ -104,10 +103,9 @@ describe("ConfigDialog", () => {
         { ...desktopSkill("User helper", "user"), skillId: "user" },
       ],
     };
-    const installSkill = vi.fn().mockResolvedValue(snapshot);
     render(
       <ConfigDialog
-        api={api({ listSkills: vi.fn().mockResolvedValue(snapshot), installSkill })}
+        api={api({ listSkills: vi.fn().mockResolvedValue(snapshot) })}
         bootstrap={bootstrap}
         open
         initialSection="skills"
@@ -121,24 +119,7 @@ describe("ConfigDialog", () => {
     expect(screen.getByText("Project helper")).toBeVisible();
     expect(screen.queryByText("User helper")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.change(screen.getByLabelText("来源类型"), { target: { value: "git" } });
-    fireEvent.change(screen.getByLabelText("技能来源"), { target: { value: "https://example.test/skills.git" } });
-    fireEvent.change(screen.getByLabelText("Git ref"), { target: { value: "v2.1.0" } });
-    fireEvent.change(screen.getByLabelText("仓库子目录"), { target: { value: "skills/review" } });
-    fireEvent.click(screen.getByRole("button", { name: "安装" }));
-
-    await waitFor(() => expect(installSkill).toHaveBeenCalledWith({
-      workspaceRoot: "D:/project",
-      scope: "project",
-      source: {
-        type: "git",
-        location: "https://example.test/skills.git",
-        ref: "v2.1.0",
-        subpath: "skills/review",
-      },
-      confirmations: undefined,
-    }));
+    expect(screen.queryByRole("button", { name: "添加" })).not.toBeInTheDocument();
   });
 
   it("saves the Exa API key from General settings", async () => {

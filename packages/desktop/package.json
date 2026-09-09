@@ -10,7 +10,7 @@
   "scripts": {
     "build": "pnpm --filter @dreamcode/desktop^... build && pnpm run build:main && pnpm run build:renderer",
     "build:contracts": "tsup",
-    "build:main": "tsup",
+    "build:main": "tsup && node scripts/copy-media-binaries.mjs",
     "build:renderer": "vite build",
     "chain-test": "node scripts/packaged-chain-test.mjs",
     "checksums": "node scripts/write-checksums.mjs",
@@ -43,6 +43,7 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@playwright/test": "1.62.1",
     "@testing-library/jest-dom": "7.0.0",
     "@testing-library/react": "16.3.2",
@@ -51,6 +52,7 @@
     "@vitejs/plugin-react": "6.0.5",
     "electron": "43.3.0",
     "electron-builder": "26.15.3",
+    "ffprobe-static": "^3.1.0",
     "jsdom": "30.0.1",
     "vite": "8.2.1"
   }

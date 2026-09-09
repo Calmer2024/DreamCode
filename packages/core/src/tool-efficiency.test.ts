@@ -20,11 +20,21 @@ describe("tool exposure and turn cache", () => {
       ]),
     );
     expect(coding).toEqual(expect.arrayContaining(["web.search", "web.fetch"]));
-    expect(coding).toContain("skill.load");
+    expect(coding).toContain("skill");
     expect(coding).toEqual(expect.arrayContaining(["mcp.list", "mcp.call"]));
 
     const plan = registry.toModelSpecs("plan").map((tool) => tool.name);
-    expect(plan).not.toEqual(expect.arrayContaining(["file.write", "file.patch", "web.search", "web.fetch", "mcp.list", "mcp.call", "job_kill"]));
+    expect(plan).not.toEqual(
+      expect.arrayContaining([
+        "file.write",
+        "file.patch",
+        "web.search",
+        "web.fetch",
+        "mcp.list",
+        "mcp.call",
+        "job_kill",
+      ]),
+    );
     expect(plan).toContain("file.read");
     expect(plan).toContain(process.platform === "win32" ? "pwsh" : "bash");
   });

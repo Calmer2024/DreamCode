@@ -1435,7 +1435,7 @@
               <div class="metric"><strong>18</strong><span>内置工具</span></div>
               <div class="metric"><strong>4</strong><span>权限模式</span></div>
               <div class="metric"><strong>9</strong><span>Workspace 包</span></div>
-              <div class="metric"><strong>80</strong><span>单轮工具上限</span></div>
+              <div class="metric"><strong>JSONL</strong><span>事件审计</span></div>
             </div>
           </div>
 
@@ -1648,7 +1648,7 @@
             <article class="capability-card" data-category="workspace" style="--card-glow: rgba(96,165,250,.1)">
               <div class="card-top"><span class="cap-icon">FS</span><span class="status-label">implemented</span></div>
               <h3>文件理解与修改</h3>
-              <p>读取、列举、创建、覆盖与精确 patch；拒绝二进制或 secret-like 文件读取，并限制在 workspace 边界内。</p>
+              <p>读取与搜索可访问任意本地路径；写入和精确 patch 保持 workspace 边界，敏感文件按运行模式授权。</p>
               <div class="tool-list"><code>file.read</code><code>file.write</code><code>file.patch</code></div>
             </article>
             <article class="capability-card" data-category="workspace" style="--card-glow: rgba(103,232,249,.1)">
@@ -1696,8 +1696,8 @@
             <article class="capability-card" data-category="extension" style="--card-glow: rgba(168,85,247,.12)">
               <div class="card-top"><span class="cap-icon">EXT</span><span class="status-label">implemented</span></div>
               <h3>Skill 与 MCP 扩展</h3>
-              <p>渐进读取 workspace / global Skills；列出并通过 stdio JSON-RPC 调用已配置 MCP server 工具。</p>
-              <div class="tool-list"><code>skill.load</code><code>skill.read_resource</code><code>mcp.list</code><code>mcp.call</code></div>
+              <p>从完整 Catalog 按名称加载 Skill；列出并通过 stdio JSON-RPC 调用已配置 MCP server 工具。</p>
+              <div class="tool-list"><code>skill</code><code>mcp.list</code><code>mcp.call</code></div>
             </article>
           </div>
         </section>
@@ -1708,7 +1708,7 @@
               <span class="section-kicker">04 · Permission engine</span>
               <h2>能力不是裸奔的：<br />每次调用先过策略层</h2>
             </div>
-            <p>切换模式查看典型工具类别的默认决策。硬拒绝规则不会因为模式变高而消失，例如递归危险删除、workspace 外写入和 secret 读取。</p>
+            <p>切换模式查看典型工具类别的默认决策。递归危险删除和 workspace 外写入仍是硬拒绝；敏感读取按模式授权。</p>
           </div>
 
           <div class="safety-layout">
@@ -1814,7 +1814,7 @@
           title: "Observation 回灌",
           description: "工具结果被转换为 observation 加回消息历史。只要模型继续请求工具，主循环就再次构建上下文并推理。",
           code: "observations.push(result)\nmessages.push(toolResult)\n\ncontinue // next model round",
-          note: "默认最多执行 80 次工具调用，防止无限循环",
+          note: "重复的只读工具请求会触发循环保护，并使用已有证据收束任务",
         },
         {
           event: "turn.completed | failed | interrupted",

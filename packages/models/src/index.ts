@@ -12,7 +12,7 @@ import { createId } from "@dreamcode/shared";
 import OpenAI from "openai";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 
 export interface ProviderRequest {
   model: string;
@@ -38,6 +38,20 @@ export function buildProviderRequest(input: RequestTokenEstimateInput & { defaul
       };
     }
     if (message.role === "tool") return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
+    if (message.role === "user" && message.attachments?.length) {
+      return {
+        role: "user",
+        content: [
+          { type: "text", text: renderUserText(message.content, message.attachments) },
+          ...message.attachments.map((attachment) => ({
+            type: `${attachment.kind}_attachment`,
+            name: attachment.name,
+            mime_type: attachment.mimeType,
+            estimated_base64_bytes: Math.ceil(attachment.size / 3) * 4,
+          })),
+        ],
+      };
+    }
     return { role: message.role, content: message.content };
   });
   return { model: input.model || input.defaultModel || "gpt-5.5", messages, ...(tools.length ? { tools } : {}), stream: true, stream_options: { include_usage: true } };
@@ -609,6 +623,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
   readonly name: string;
   private readonly client: OpenAI;
   private readonly defaultModel: string;
+  private readonly providerId: string;
 
   constructor(options: OpenAICompatibleModelProviderOptions) {
     if (!options.apiKey?.trim()) {
@@ -616,6 +631,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
     }
 
     this.name = options.providerId;
+    this.providerId = options.providerId;
     this.client = new OpenAI({
       apiKey: options.apiKey,
       baseURL: options.baseURL,
@@ -626,15 +642,23 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
   async estimateInputTokens(input: RequestTokenEstimateInput): Promise<RequestTokenEstimate> {
     const request = buildProviderRequest({ ...input, defaultModel: this.defaultModel });
     const messageTokens = Math.ceil(JSON.stringify(request.messages).length / 4);
+    const mediaTransportTokens = input.messages.reduce(
+      (sum, message) =>
+        sum + (message.attachments ?? []).reduce(
+          (attachmentSum, attachment) => attachmentSum + Math.ceil(attachment.size / 3),
+          0,
+        ),
+      0,
+    );
     const toolDefinitionTokens = Math.ceil(JSON.stringify(request.tools ?? []).length / 4);
     const providerOverheadTokens = request.messages.length * 3 + (request.tools?.length ? 8 : 0);
     return {
       messageTokens,
       toolDefinitionTokens,
       providerOverheadTokens,
-      inputTokens: messageTokens + toolDefinitionTokens + providerOverheadTokens,
-      baseInputTokens: messageTokens + toolDefinitionTokens + providerOverheadTokens,
-      calibratedInputTokens: messageTokens + toolDefinitionTokens + providerOverheadTokens,
+      inputTokens: messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
+      baseInputTokens: messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
+      calibratedInputTokens: messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
       correctionRatio: 1,
       sampleCount: 0,
       coldStart: true,
@@ -645,7 +669,10 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
   async *stream(input: ModelStreamInput): AsyncIterable<ModelEvent> {
     const toolNameMap = new Map<string, string>();
-    const request = buildProviderRequest({ messages: input.messages, tools: input.tools, model: input.model, defaultModel: this.defaultModel });
+    const request = await buildProviderRequestWithMedia(
+      { messages: input.messages, tools: input.tools, model: input.model, defaultModel: this.defaultModel },
+      this.providerId,
+    );
     const tools = toOpenAITools(input.tools, toolNameMap);
     const stream = await this.client.chat.completions.create(
       { ...request, tools: tools as any } as any,
@@ -759,6 +786,52 @@ export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
     costUsd: finiteNumber(usage.cost_usd),
     warnings: warnings.length ? warnings : undefined,
   };
+}
+
+export async function buildProviderRequestWithMedia(
+  input: RequestTokenEstimateInput & { defaultModel?: string },
+  providerId: string,
+): Promise<ProviderRequest> {
+  const request = buildProviderRequest(input);
+  request.messages = await Promise.all(input.messages.map(async (message, index) => {
+    if (message.role !== "user" || !message.attachments?.length) return request.messages[index]!;
+    const parts: Array<Record<string, unknown>> = [
+      { type: "text", text: renderUserText(message.content, message.attachments) },
+    ];
+    for (const attachment of message.attachments) {
+      if (!attachment.sourcePath) throw new Error(`附件 ${attachment.name} 的内容已不可用。`);
+      const data = (await readFile(attachment.sourcePath)).toString("base64");
+      if (attachment.kind === "image") {
+        parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${data}` } });
+      } else if (attachment.kind === "audio") {
+        parts.push({ type: "input_audio", input_audio: { data, format: "mp3" } });
+      } else {
+        parts.push(videoContentPart(providerId, attachment.mimeType, data));
+      }
+    }
+    return { role: "user", content: parts };
+  }));
+  return request;
+}
+
+function renderUserText(
+  content: string,
+  attachments: NonNullable<ModelStreamInput["messages"][number]["attachments"]>,
+): string {
+  const manifest = attachments.map((attachment, index) =>
+    `附件 ${index + 1}：${attachment.name}（${attachment.mimeType}）`,
+  );
+  return [content.trim(), manifest.join("\n")].filter(Boolean).join("\n\n");
+}
+
+function videoContentPart(
+  _providerId: string,
+  mimeType: string,
+  data: string,
+): Record<string, unknown> {
+  // OpenAI-compatible vendors that accept video currently converge on the
+  // video_url shape. Providers without video support reject it explicitly.
+  return { type: "video_url", video_url: { url: `data:${mimeType};base64,${data}` } };
 }
 
 export const fixtureShellName = process.platform === "win32" ? "pwsh" : "bash";

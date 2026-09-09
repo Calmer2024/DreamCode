@@ -774,6 +774,45 @@ select:focus-visible {
   background: #f4f4f4;
 }
 
+.user-bubble-content {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.user-bubble-content.is-collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+}
+
+.user-message-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.user-message-toggle:hover {
+  color: var(--text-primary);
+}
+
+.user-message-toggle svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms ease;
+}
+
+.user-message-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
 .user-bubble-actions {
   display: flex;
   min-height: 28px;
@@ -1036,6 +1075,186 @@ select:focus-visible {
   background: transparent;
   color: var(--text-primary);
   font-size: 13px;
+}
+
+.composer-attachments {
+  display: flex;
+  max-width: 100%;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 12px 2px;
+}
+
+.composer-attachment {
+  position: relative;
+  flex: 0 0 78px;
+  width: 78px;
+  height: 78px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 11px;
+  background: #f2f2f2;
+  box-shadow: none;
+}
+
+.composer-attachment > img,
+.composer-attachment > video {
+  display: block;
+  width: 74px;
+  height: 74px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.composer-attachment > audio {
+  width: 74px;
+  height: 74px;
+  opacity: 0;
+}
+
+.attachment-placeholder {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: #667085;
+  background: #eceef1;
+}
+
+.attachment-placeholder svg { width: 24px; height: 24px; }
+
+.composer-attachment > button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: rgba(17, 24, 39, 0.9);
+  color: #fff;
+  line-height: 0;
+  z-index: 1;
+}
+
+.composer-attachment > button:hover { background: #111827; }
+.composer-attachment > button svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.attachment-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-primary);
+}
+.attachment-button:hover,
+.attachment-button:focus-visible {
+  background: var(--surface-hover);
+}
+.attachment-button svg { width: 17px; height: 17px; }
+
+.attachment-error {
+  margin: 7px 16px 0;
+  color: var(--danger);
+  font-size: 12px;
+  white-space: pre-line;
+}
+
+.message-attachments {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.message-attachment {
+  display: grid;
+  min-width: min(520px, 70vw);
+  gap: 6px;
+  margin: 0;
+}
+
+.message-attachment img,
+.message-attachment video {
+  display: block;
+  width: min(480px, 100%);
+  max-height: 360px;
+  border-radius: 12px;
+  background: #111;
+  object-fit: contain;
+}
+
+.message-image-button {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 12px;
+  background: transparent;
+}
+
+.attachment-lightbox {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 56px;
+  background: rgb(0 0 0 / 78%);
+}
+
+.attachment-lightbox img {
+  width: auto;
+  max-width: 92vw;
+  height: auto;
+  max-height: 86vh;
+  border-radius: 10px;
+}
+
+.attachment-lightbox > button {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: rgb(255 255 255 / 16%);
+  color: #fff;
+}
+
+.message-attachment audio { width: min(480px, 100%); }
+
+.message-attachment figcaption {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.message-attachment figcaption strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-attachment-loading {
+  display: grid;
+  min-height: 72px;
+  place-items: center;
+  border-radius: 10px;
+  background: #ededed;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .composer-skill-chip svg { width: 16px; height: 16px; }
@@ -3047,11 +3266,19 @@ details[open] > .tool-process-summary > svg:last-child,
 }
 
 .todo-panel {
-  margin: 4px 0 14px;
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--composer-height, 170px) + 30px);
+  z-index: 7;
+  width: min(820px, calc(100% - 48px));
+  max-height: min(320px, calc(100vh - var(--composer-height, 170px) - 104px));
   overflow: hidden;
   border: 1px solid var(--border-soft);
-  border-radius: 14px;
-  background: var(--surface-subtle, #fafafa);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 16px 42px rgb(0 0 0 / 10%);
+  pointer-events: auto;
+  transform: translateX(-50%);
 }
 
 .todo-panel-toggle {
@@ -3071,7 +3298,17 @@ details[open] > .tool-process-summary > svg:last-child,
 .todo-panel-title svg, .todo-panel-toggle > svg { width: 16px; height: 16px; }
 .todo-panel-count { margin-left: auto; color: var(--text-secondary); font-size: 12px; }
 .todo-chevron-open { transform: rotate(180deg); }
-.todo-list { display: grid; gap: 7px; border-top: 1px solid var(--border-soft); padding: 10px 12px 12px; }
+.todo-list {
+  display: grid;
+  max-height: 250px;
+  gap: 7px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-soft);
+  padding: 10px 12px 12px;
+  scrollbar-color: #c8c8c8 transparent;
+  scrollbar-width: thin;
+}
+.todo-list-collapsed { overflow: hidden; padding-block: 9px 11px; }
 .todo-item { display: flex; align-items: flex-start; gap: 8px; color: var(--text-secondary); font-size: 13px; }
 .todo-item svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; }
 .todo-completed { color: var(--text-secondary); text-decoration: line-through; }
@@ -3101,6 +3338,10 @@ details[open] > .tool-process-summary > svg:last-child,
     bottom: 12px;
   }
 
+  .todo-panel {
+    bottom: calc(var(--composer-height, 170px) + 22px);
+  }
+
   .composer textarea {
     min-height: 58px;
     padding-top: 13px;
@@ -3118,6 +3359,10 @@ details[open] > .tool-process-summary > svg:last-child,
   }
 
   .composer-stack {
+    width: min(760px, calc(100% - 32px));
+  }
+
+  .todo-panel {
     width: min(760px, calc(100% - 32px));
   }
 }
@@ -3178,6 +3423,10 @@ details[open] > .tool-process-summary > svg:last-child,
   bottom: calc(var(--drawer-height, min(410px, 46vh)) + 20px);
 }
 
+.main-pane.drawer-open .todo-panel {
+  bottom: calc(var(--drawer-height, min(410px, 46vh)) + var(--composer-height, 170px) + 30px);
+}
+
 .main-pane.drawer-open .approval-card {
   bottom: calc(var(--drawer-height, min(410px, 46vh)) + 20px);
 }
@@ -3202,12 +3451,38 @@ details[open] > .tool-process-summary > svg:last-child,
   bottom: calc(100% + 10px);
   left: 0;
   z-index: 12;
-  overflow: hidden;
+  max-height: min(360px, calc(100vh - 220px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--border-soft);
   border-radius: 12px;
   padding: 4px;
   background: #fff;
   box-shadow: 0 16px 42px rgb(0 0 0 / 12%);
+  scrollbar-color: #c8c8c8 transparent;
+  scrollbar-width: thin;
+}
+
+.skill-suggestions::-webkit-scrollbar {
+  width: 10px;
+}
+
+.skill-suggestions::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.skill-suggestions::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: #c8c8c8;
+  background-clip: padding-box;
+}
+
+.skill-suggestions::-webkit-scrollbar-thumb:hover {
+  background: #aaa;
+  background-clip: padding-box;
 }
 
 .skill-suggestions button {

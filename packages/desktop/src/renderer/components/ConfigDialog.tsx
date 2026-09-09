@@ -2,7 +2,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   Bot,
-  ChevronDown,
   PlugZap,
   Plus,
   Puzzle,
@@ -21,7 +20,6 @@ import type {
   DesktopBootstrap,
   DesktopSkillSnapshot,
   ProfileConnectionResult,
-  SkillInstallRequest,
 } from "../../shared/contracts";
 import { ProviderIcon } from "./ProviderIcon";
 import { SelectMenu } from "./SelectMenu";
@@ -574,13 +572,6 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
   const [sourceFilter, setSourceFilter] = useState<"all" | DesktopSkillSnapshot["skills"][number]["source"]>("all");
   const [busy, setBusy] = useState<string>();
   const [message, setMessage] = useState<string>();
-  const [roots, setRoots] = useState("");
-  const [showAdd, setShowAdd] = useState(false);
-  const [installType, setInstallType] = useState<SkillInstallRequest["source"]["type"]>("directory");
-  const [installScope, setInstallScope] = useState<SkillInstallRequest["scope"]>(workspaceRoot ? "project" : "user");
-  const [installLocation, setInstallLocation] = useState("");
-  const [installRef, setInstallRef] = useState("");
-  const [installSubpath, setInstallSubpath] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -590,7 +581,6 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
       .then((next) => {
         if (!active) return;
         setSnapshot(next);
-        setRoots(next.customRoots.join("\n"));
       })
       .catch(() => active && setMessage("技能列表加载失败。"));
     return () => {
@@ -604,7 +594,6 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
     try {
       const next = await action();
       setSnapshot(next);
-      setRoots(next.customRoots.join("\n"));
     } catch (error) {
       setMessage(readSkillActionError(error));
     } finally {
@@ -617,21 +606,6 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
     return (sourceFilter === "all" || skill.source === sourceFilter)
       && (!normalized || `${skill.name} ${skill.description} ${skill.provider}`.toLocaleLowerCase().includes(normalized));
   });
-
-  const install = () => {
-    const location = installLocation.trim();
-    if (!location) {
-      setMessage("请填写技能来源。");
-      return;
-    }
-    const source = installType === "git"
-      ? { type: installType, location, ref: installRef.trim() || undefined, subpath: installSubpath.trim() || undefined }
-      : { type: installType, location, subpath: installSubpath.trim() || undefined };
-    void run("install", () => retryLifecycleConflict(
-      "安装会覆盖现有技能、变更来源或降级版本。确认继续？",
-      (confirmations) => api.installSkill({ workspaceRoot, scope: installScope, source, confirmations }),
-    )).then(() => setShowAdd(false));
-  };
 
   return (
     <section className="settings-group skills-settings-group">
@@ -663,37 +637,7 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
         >
           <RefreshCw aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          className="skill-action-button"
-          disabled={Boolean(busy)}
-          onClick={() => setShowAdd((current) => !current)}
-        >
-          <Plus aria-hidden="true" />
-          添加
-        </button>
       </div>
-
-      {showAdd ? (
-        <div className="skill-add-panel">
-          <p>从本地目录、ZIP 文件或 Git 仓库安装托管技能。</p>
-          <div className="skill-add-fields">
-            <select aria-label="安装范围" value={installScope} onChange={(event) => setInstallScope(event.target.value as SkillInstallRequest["scope"])}>
-              <option value="user">个人</option>
-              <option value="project" disabled={!workspaceRoot}>当前项目</option>
-            </select>
-            <select aria-label="来源类型" value={installType} onChange={(event) => setInstallType(event.target.value as SkillInstallRequest["source"]["type"])}>
-              <option value="directory">目录</option>
-              <option value="zip">ZIP</option>
-              <option value="git">Git</option>
-            </select>
-            <input aria-label="技能来源" placeholder="目录、ZIP 或 Git 地址" value={installLocation} onChange={(event) => setInstallLocation(event.target.value)} />
-            {installType === "git" ? <input aria-label="Git ref" placeholder="分支、标签或提交（可选）" value={installRef} onChange={(event) => setInstallRef(event.target.value)} /> : null}
-            <input aria-label="仓库子目录" placeholder="子目录（可选）" value={installSubpath} onChange={(event) => setInstallSubpath(event.target.value)} />
-            <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={install}>安装</button>
-          </div>
-        </div>
-      ) : null}
 
       {message ? <p className="skill-message" role="alert">{message}</p> : null}
       <div className="skill-list" aria-busy={busy === "rescan"}>
@@ -722,16 +666,6 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
                 </small>
               ) : null}
               {skill.diagnostics[0] ? <small>{skill.diagnostics[0]}</small> : null}
-              <details className="skill-details">
-                <summary><span>详情</span><ChevronDown aria-hidden="true" /></summary>
-                <dl>
-                  <div><dt>路径</dt><dd>{skill.path}</dd></div>
-                  <div><dt>约定来源</dt><dd>{skill.provider}</dd></div>
-                  <div><dt>调用策略</dt><dd>{skill.allowImplicitInvocation ? "允许隐式调用，也可用 / 或 $ 显式调用" : "仅允许用 / 或 $ 显式调用"}</dd></div>
-                  {skill.pluginManagementAction ? <div><dt>插件管理</dt><dd>{skill.pluginManagementAction}</dd></div> : null}
-                  <div><dt>诊断</dt><dd>{skill.diagnostics.length ? skill.diagnostics.join("；") : "无"}</dd></div>
-                </dl>
-              </details>
               {skill.managed ? (
                 <div className="skill-inline-actions">
                   {skill.canUpdate ? <button type="button" disabled={Boolean(busy)} onClick={() => void run(skill.skillId, () => retryLifecycleConflict("更新会覆盖本地修改、变更来源或降级版本。确认继续？", (confirmations) => api.updateSkill({ workspaceRoot, skillId: skill.skillId, confirmations })))}>更新</button> : null}
@@ -758,12 +692,6 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
         {!snapshot && !message ? <p className="skill-empty">正在扫描技能…</p> : null}
       </div>
 
-      <details className="skill-roots">
-        <summary><span>其他扫描目录</span><ChevronDown aria-hidden="true" /></summary>
-        <p>兼容目录会自动扫描；这里只需要填写额外目录，每行一个。</p>
-        <textarea aria-label="其他技能目录" rows={3} value={roots} onChange={(event) => setRoots(event.target.value)} />
-        <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => void run("roots", () => api.setSkillRoots({ workspaceRoot, roots: roots.split(/\r?\n/).map((root) => root.trim()).filter(Boolean) }))}>保存目录</button>
-      </details>
     </section>
   );
 }

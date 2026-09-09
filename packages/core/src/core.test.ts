@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createDefaultFakeProvider, FakeModelProvider, fakeCall } from "@dreamcode/models";
-import { SkillRegistry } from "@dreamcode/skills";
 import type { AgentEvent, FinalSummary, ModelProvider, ModelStreamInput } from "@dreamcode/shared";
+import { SkillRegistry } from "@dreamcode/skills";
 import { listSessions, readReplayedSession, rollbackSession } from "@dreamcode/store";
 import { describe, expect, it } from "vitest";
 import { getUndeclaredSkillCapability, runTurn } from "./index";
@@ -72,6 +72,28 @@ describe("runTurn fake model integration", () => {
     await expect(readFile(path.join(workspaceRoot, "README.md"), "utf8")).resolves.toContain(
       "Safety Fixture",
     );
+  });
+
+  it("continues after more than five consecutive tool failures", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const events = await collectEvents(
+      runTurn({
+        prompt: "Keep working even when several tool calls fail.",
+        workspaceRoot,
+        provider: new FakeModelProvider([
+          ...Array.from({ length: 6 }, (_, index) => ({
+            toolCalls: [fakeCall("file.read", { file_path: `missing-${index}.txt` })],
+          })),
+          { text: "Recovered after the failed tool calls." },
+        ]),
+        mode: "yolo",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    expect(events.filter((event) => event.type === "tool.completed")).toHaveLength(6);
+    expect(events.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(events.some((event) => event.type === "turn.failed")).toBe(false);
   });
 
   it("completes after repeated post-change inspection loops", async () => {
@@ -178,28 +200,30 @@ describe("runTurn fake model integration", () => {
     expect(events.some((event) => event.type === "turn.failed")).toBe(false);
   });
 
-  it("soft-lands at the tool budget and asks the model to synthesize", async () => {
+  it("continues beyond the former 80-action tool ceiling", async () => {
     const workspaceRoot = await createTestWorkspace();
+    const toolCalls = Array.from({ length: 81 }, (_, index) =>
+      fakeCall("file.read", { file_path: `missing-${index}.txt` }),
+    );
     const events = await collectEvents(
       runTurn({
-        prompt: "Inspect the project within the available budget.",
+        prompt: "Run every requested inspection before completing.",
         workspaceRoot,
         provider: new FakeModelProvider([
-          { toolCalls: [fakeCall("file.read", { file_path: "README.md" })] },
-          { toolCalls: [fakeCall("search.glob", { pattern: "**/*" })] },
-          { text: "Budget reached; here is the useful synthesis from the collected evidence." },
+          { toolCalls },
+          { text: "All requested inspections were attempted." },
         ]),
         mode: "yolo",
-        maxToolCalls: 2,
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
 
     const completed = events.find((event) => event.type === "turn.completed");
     expect(completed).toBeDefined();
+    expect(events.filter((event) => event.type === "tool.started")).toHaveLength(81);
     expect(events.some((event) => event.type === "turn.failed")).toBe(false);
     expect((completed?.payload as { summary?: FinalSummary }).summary?.message).toContain(
-      "useful synthesis",
+      "All requested inspections",
     );
   });
 
@@ -284,7 +308,9 @@ describe("runTurn fake model integration", () => {
     expect(secondEvents.some((event) => event.type === "session.resumed")).toBe(true);
     const secondCompleted = secondEvents.find((event) => event.type === "turn.completed");
     expect(secondCompleted).toBeDefined();
-    expect((secondCompleted!.payload as { summary: FinalSummary }).summary.changedFiles).toEqual([]);
+    expect((secondCompleted!.payload as { summary: FinalSummary }).summary.changedFiles).toEqual(
+      [],
+    );
     const replayed = await readReplayedSession(sessionId!, home);
     expect(replayed.turns).toHaveLength(2);
     expect(replayed.changedFiles.map((file) => file.path)).toContain("DREAMCODE_NOTES.md");
@@ -372,7 +398,7 @@ describe("runTurn fake model integration", () => {
     expect(replayed.status).toBe("interrupted");
   });
 
-  it("injects the compact Skill catalog and preloads explicit slash invocation", async () => {
+  it("injects the complete Skill catalog and preloads explicit slash invocation", async () => {
     const workspaceRoot = await createTestWorkspace();
     const skillRoot = path.join(workspaceRoot, ".dreamcode", "skills", "diagnose");
     await mkdir(skillRoot, { recursive: true });
@@ -410,9 +436,17 @@ describe("runTurn fake model integration", () => {
     const request = requests[0]!;
     expect(request.messages[0]?.content).toContain("<available_skills>");
     expect(request.messages[0]?.content).toContain("Diagnose hard bugs methodically.");
-    expect(request.messages.some((message) => message.role === "user" && message.content === "fix this failure")).toBe(true);
-    expect(request.messages.some((message) => message.role === "tool" && message.content.includes("<skill_content"))).toBe(true);
-    expect(request.tools.map((tool) => tool.name)).toContain("skill.load");
+    expect(
+      request.messages.some(
+        (message) => message.role === "user" && message.content === "fix this failure",
+      ),
+    ).toBe(true);
+    expect(
+      request.messages.some(
+        (message) => message.role === "tool" && message.content.includes("<skill_content"),
+      ),
+    ).toBe(true);
+    expect(request.tools.map((tool) => tool.name)).toContain("skill");
     expect(events.some((event) => event.type === "skill.loaded")).toBe(true);
   });
 
@@ -434,7 +468,13 @@ describe("runTurn fake model integration", () => {
     }).initialize();
     const loaded = new Set([snapshot.resolve("executor")!.skillId]);
 
-    expect(getUndeclaredSkillCapability(snapshot, loaded, process.platform === "win32" ? "pwsh" : "bash")).toBeUndefined();
+    expect(
+      getUndeclaredSkillCapability(
+        snapshot,
+        loaded,
+        process.platform === "win32" ? "pwsh" : "bash",
+      ),
+    ).toBeUndefined();
     expect(getUndeclaredSkillCapability(snapshot, loaded, "file.write")).toBe("filesystem.write");
   });
 });
@@ -443,14 +483,35 @@ async function createTestWorkspace(kind: "math" | "safety" | "readme" = "readme"
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), `dreamcode-core-${kind}-`));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
   if (kind === "math") {
-    await writeFile(path.join(workspaceRoot, "src", "math.js"), "export function add(a, b) { return a - b; }\n", "utf8");
+    await writeFile(
+      path.join(workspaceRoot, "src", "math.js"),
+      "export function add(a, b) { return a - b; }\n",
+      "utf8",
+    );
     await mkdir(path.join(workspaceRoot, "test"), { recursive: true });
-    await writeFile(path.join(workspaceRoot, "test", "math.test.js"), "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { add } from '../src/math.js';\ntest('adds', () => assert.equal(add(2, 3), 5));\n", "utf8");
-    await writeFile(path.join(workspaceRoot, "package.json"), '{"type":"module","scripts":{"test":"node --test"}}\n', "utf8");
+    await writeFile(
+      path.join(workspaceRoot, "test", "math.test.js"),
+      "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { add } from '../src/math.js';\ntest('adds', () => assert.equal(add(2, 3), 5));\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(workspaceRoot, "package.json"),
+      '{"type":"module","scripts":{"test":"node --test"}}\n',
+      "utf8",
+    );
   } else {
-    await writeFile(path.join(workspaceRoot, "README.md"), "# Placeholder\n\nSafety Fixture\n", "utf8");
-    await writeFile(path.join(workspaceRoot, "src", "index.js"), "export const answer = 42;\n", "utf8");
-    if (kind === "safety") await writeFile(path.join(workspaceRoot, ".env"), "SECRET=do-not-read\n", "utf8");
+    await writeFile(
+      path.join(workspaceRoot, "README.md"),
+      "# Placeholder\n\nSafety Fixture\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(workspaceRoot, "src", "index.js"),
+      "export const answer = 42;\n",
+      "utf8",
+    );
+    if (kind === "safety")
+      await writeFile(path.join(workspaceRoot, ".env"), "SECRET=do-not-read\n", "utf8");
   }
   return workspaceRoot;
 }

@@ -69,7 +69,7 @@ describe("permission engine", () => {
     expect(mcp.decision).toBe("ask");
   });
 
-  it("denies workspace external writes and secret reads", () => {
+  it("denies external writes and asks before sensitive reads", () => {
     const externalWrite = engine.decide({
       mode: "yolo",
       workspaceRoot: "/repo/project",
@@ -90,7 +90,37 @@ describe("permission engine", () => {
     });
 
     expect(externalWrite.decision).toBe("deny");
-    expect(secretRead.decision).toBe("deny");
+    expect(secretRead.decision).toBe("ask");
+    expect(secretRead.risk).toContain("secret_access");
+  });
+
+  it("allows ordinary external reads and only auto-allows sensitive reads in full mode", () => {
+    const workspaceRoot = "/repo/project";
+    const externalRead = engine.decide({
+      mode: "yolo",
+      workspaceRoot,
+      toolCall: { id: "external", name: "file.read", input: { file_path: "/tmp/report.txt" } },
+    });
+    const sensitiveSearch = engine.decide({
+      mode: "guided",
+      workspaceRoot,
+      toolCall: { id: "search", name: "search.glob", input: { pattern: ".env", path: "/tmp" } },
+    });
+    const fullSensitiveRead = engine.decide({
+      mode: "full",
+      workspaceRoot,
+      toolCall: { id: "secret", name: "file.read", input: { file_path: "/tmp/.env" } },
+    });
+
+    expect(externalRead).toMatchObject({ decision: "allow", risk: ["read_external_path"] });
+    expect(sensitiveSearch.decision).toBe("ask");
+    expect(sensitiveSearch.risk).toEqual(
+      expect.arrayContaining(["secret_access", "read_external_path"]),
+    );
+    expect(fullSensitiveRead.decision).toBe("allow");
+    expect(fullSensitiveRead.risk).toEqual(
+      expect.arrayContaining(["secret_access", "read_external_path"]),
+    );
   });
 
   it("evaluates shell commands through the unified shell tool", () => {
@@ -111,7 +141,7 @@ describe("permission engine", () => {
     expect(commands.risk).toContain("install_dependency");
   });
 
-  it("classifies shell commands and routes external cwd through the current mode", () => {
+  it("classifies shell commands and audits an external cwd without extra approval", () => {
     const workspaceRoot = process.cwd();
     const externalCwd = path.resolve(workspaceRoot, "..");
     const guided = engine.decide({
@@ -132,7 +162,8 @@ describe("permission engine", () => {
         input: { command: "npm test", cwd: externalCwd },
       },
     });
-    expect(guided.decision).toBe("ask");
+    expect(guided.decision).toBe("allow");
+    expect(guided.risk).toContain("read_external_path");
     expect(full.decision).toBe("allow");
     expect(full.risk).toContain("read_external_path");
   });
@@ -160,12 +191,20 @@ describe("permission engine", () => {
     const status = engine.decide({
       mode: "plan",
       workspaceRoot,
-      toolCall: { id: "job_output", name: "job_output", input: { job_id: "proc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
+      toolCall: {
+        id: "job_output",
+        name: "job_output",
+        input: { job_id: "proc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      },
     });
     const stop = engine.decide({
       mode: "plan",
       workspaceRoot,
-      toolCall: { id: "job_kill", name: "job_kill", input: { job_id: "proc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
+      toolCall: {
+        id: "job_kill",
+        name: "job_kill",
+        input: { job_id: "proc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      },
     });
 
     expect(planStart.decision).toBe("deny");

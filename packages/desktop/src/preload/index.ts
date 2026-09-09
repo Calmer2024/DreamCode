@@ -3,6 +3,8 @@ import type {
   ApprovalResponse,
   CreateProfileRequest,
   DesktopApi,
+  DesktopAttachment,
+  DesktopAttachmentImportResult,
   DesktopBootstrap,
   DesktopIpcResponse,
   DesktopRunStatus,
@@ -27,6 +29,14 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
   return {
     bootstrap: () => invoke<DesktopBootstrap>(renderer, "desktop:bootstrap"),
     chooseWorkspace: () => invoke<string | undefined>(renderer, "desktop:choose-workspace"),
+    chooseAttachments: (existing: DesktopAttachment[] = []) =>
+      invoke<DesktopAttachmentImportResult>(renderer, "desktop:choose-attachments", existing),
+    stageAttachmentBytes: (request) =>
+      invoke<DesktopAttachmentImportResult>(renderer, "desktop:stage-attachment-bytes", request),
+    discardAttachments: (ids) =>
+      invoke<void>(renderer, "desktop:discard-attachments", { ids }),
+    readAttachment: async (request) =>
+      toUint8Array(await invoke<unknown>(renderer, "desktop:read-attachment", request)),
     openWorkspace: (workspaceRoot: string) =>
       invoke<void>(renderer, "desktop:open-workspace", workspaceRoot),
     createProfile: (request: CreateProfileRequest) =>
@@ -93,6 +103,22 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
   } satisfies DesktopApi;
 }
 
+
+function toUint8Array(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (value && typeof value === "object" && (value as { type?: unknown }).type === "Buffer") {
+    const data = (value as { data?: unknown }).data;
+    if (Array.isArray(data) && data.every((item) => Number.isInteger(item))) return new Uint8Array(data);
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([key, item]) => /^\d+$/.test(key) && Number.isInteger(item))
+      .sort(([left], [right]) => Number(left) - Number(right));
+    if (entries.length) return new Uint8Array(entries.map(([, item]) => Number(item)));
+  }
+  throw new Error("Attachment bytes are unavailable.");
+}
 function invoke<T>(
   renderer: IpcRendererLike,
   channel: string,

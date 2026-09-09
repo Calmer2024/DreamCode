@@ -1,4 +1,4 @@
-import type { AgentEvent, ChangedFile, ModelUsage } from "@dreamcode/shared";
+import type { AgentEvent, ChangedFile, MediaAttachment, ModelUsage, TodoItem } from "@dreamcode/shared";
 import type { ReplayedSessionState, SessionListItem } from "@dreamcode/store";
 import type {
   DesktopBootstrap,
@@ -8,7 +8,6 @@ import type {
   DesktopSessionDetail,
   StartTurnRequest,
 } from "../../shared/contracts";
-import type { TodoItem } from "@dreamcode/shared";
 
 export type DesktopRunState = "idle" | DesktopRunStatus["status"];
 export type DesktopDrawer = "logs" | "terminal";
@@ -32,6 +31,8 @@ export interface DesktopTimelineEntry {
   tone: DesktopTimelineTone;
   timestamp: string;
   turnId?: string;
+  sessionId?: string;
+  attachments?: MediaAttachment[];
 }
 
 export interface DesktopToolEvent {
@@ -322,8 +323,8 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
               id: sessionId,
               workspaceRoot,
               status: "running",
-              title: next.request?.prompt ?? "新对话",
-              firstPrompt: next.request?.prompt ?? "新对话",
+              title: requestDisplayTitle(next.request),
+              firstPrompt: requestDisplayTitle(next.request),
               createdAt: stringValue(session.createdAt) ?? event.timestamp,
               updatedAt: event.timestamp,
               changedFileCount: 0,
@@ -350,8 +351,45 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         undefined,
       );
     }
-    case "user.message":
-      return appendTimeline(next, event, "user", "User message", stringValue(payload.content));
+    case "user.message": {
+      const attachments = Array.isArray(payload.attachments)
+        ? (payload.attachments as MediaAttachment[])
+        : undefined;
+      const displayTitle = stringValue(payload.content)?.trim() || attachmentMessageTitle(attachments);
+      return {
+        ...next,
+        sessions: next.request && !next.request.sessionId && next.activeSessionId && displayTitle
+          ? next.sessions.map((session) => session.id === next.activeSessionId
+            ? { ...session, title: displayTitle, firstPrompt: displayTitle }
+            : session)
+          : next.sessions,
+        timeline: [...next.timeline, {
+          id: event.id,
+          kind: "user",
+          title: "User message",
+          detail: stringValue(payload.content) ?? "",
+          tone: "info",
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+          sessionId: event.sessionId,
+          attachments,
+        }],
+      };
+    }
+    case "turn.reverted": {
+      const revertedTurnId = event.turnId;
+      const newSession = !next.request?.sessionId;
+      return {
+        ...next,
+        request: undefined,
+        timeline: next.timeline.filter((entry) => entry.turnId !== revertedTurnId),
+        rawEvents: next.rawEvents.filter((item) => item.turnId !== revertedTurnId),
+        activeSessionId: newSession ? undefined : next.activeSessionId,
+        sessions: newSession && next.activeSessionId
+          ? next.sessions.filter((session) => session.id !== next.activeSessionId)
+          : next.sessions,
+      };
+    }
     case "context.built": {
       const contextUsage = contextUsageFrom(payload, next.contextUsage);
       return appendTimeline(
@@ -437,11 +475,21 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         const value = asRecord(item);
         const content = stringValue(value.content);
         const status = stringValue(value.status);
-        return content && (status === "pending" || status === "in_progress" || status === "completed" || status === "blocked")
+        return content &&
+          (status === "pending" ||
+            status === "in_progress" ||
+            status === "completed" ||
+            status === "blocked")
           ? [{ content, status }]
           : [];
       });
-      return appendTimeline({ ...next, todoItems }, event, "event", "Todo updated", `${todoItems.length} item(s)`);
+      return appendTimeline(
+        { ...next, todoItems },
+        event,
+        "event",
+        "Todo updated",
+        `${todoItems.length} item(s)`,
+      );
     }
     case "artifact.created":
     case "web.source.saved": {
@@ -451,13 +499,12 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       return appendTimeline(next, event, "event", title, detail, "success");
     }
     case "skill.loaded":
-    case "skill.resource.loaded":
       return appendTimeline(
         next,
         event,
         "event",
-        event.type === "skill.loaded" ? "Skill loaded" : "Skill resource loaded",
-        stringValue(payload.name) ?? stringValue(payload.resourcePath) ?? stringValue(payload.path),
+        "Skill loaded",
+        stringValue(payload.name) ?? stringValue(payload.path),
         "success",
       );
     case "tool.started": {
@@ -516,7 +563,13 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
           ...next,
           changedFiles: upsertChangedFile(next.changedFiles, changedFile),
           changedFilesByTurn: event.turnId
-            ? { ...next.changedFilesByTurn, [event.turnId]: upsertChangedFile(next.changedFilesByTurn[event.turnId] ?? [], changedFile) }
+            ? {
+                ...next.changedFilesByTurn,
+                [event.turnId]: upsertChangedFile(
+                  next.changedFilesByTurn[event.turnId] ?? [],
+                  changedFile,
+                ),
+              }
             : next.changedFilesByTurn,
           activeChangedFilePath: next.activeChangedFilePath ?? changedFile.path,
         },
@@ -535,7 +588,13 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
           runStatus: "completed",
           changedFiles: mergeChangedFiles(next.changedFiles, changedFilesFromSummary(summary)),
           changedFilesByTurn: event.turnId
-            ? { ...next.changedFilesByTurn, [event.turnId]: mergeChangedFiles(next.changedFilesByTurn[event.turnId] ?? [], changedFilesFromSummary(summary)) }
+            ? {
+                ...next.changedFilesByTurn,
+                [event.turnId]: mergeChangedFiles(
+                  next.changedFilesByTurn[event.turnId] ?? [],
+                  changedFilesFromSummary(summary),
+                ),
+              }
             : next.changedFilesByTurn,
         },
         event,
@@ -575,6 +634,19 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         "muted",
       );
   }
+}
+
+function requestDisplayTitle(request: StartTurnRequest | undefined): string {
+  if (request?.prompt.trim()) return request.prompt.trim();
+  return request?.attachmentIds?.length ? "分析多模态附件" : "新对话";
+}
+
+function attachmentMessageTitle(attachments: MediaAttachment[] | undefined): string | undefined {
+  const first = attachments?.[0];
+  if (!first) return undefined;
+  return first.name.toLowerCase().startsWith("pasted-image")
+    ? "分析粘贴的图片"
+    : `分析 ${first.name}`;
 }
 
 function upsertSessionListItem(
@@ -705,7 +777,8 @@ function terminalEntriesFromSession(
   return session.commands.map((command, index) => ({
     id: `session-${sessionId}-command-${index}`,
     toolCallId: `session-${sessionId}-command-${index}`,
-    tool: typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent) ? "pwsh" : "bash",
+    tool:
+      typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent) ? "pwsh" : "bash",
     status: command.exitCode === undefined || command.exitCode === 0 ? "success" : "error",
     stream: "summary",
     text: command.command,
@@ -770,10 +843,7 @@ function mergeModelUsage(
     ...(sumTokenValues(previous?.cachedInputTokens, current.cachedInputTokens) === undefined
       ? {}
       : {
-          cachedInputTokens: sumTokenValues(
-            previous?.cachedInputTokens,
-            current.cachedInputTokens,
-          ),
+          cachedInputTokens: sumTokenValues(previous?.cachedInputTokens, current.cachedInputTokens),
         }),
     ...(sumTokenValues(previous?.uncachedInputTokens, current.uncachedInputTokens) === undefined
       ? {}

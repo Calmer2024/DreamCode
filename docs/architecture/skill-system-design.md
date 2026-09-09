@@ -6,7 +6,7 @@ Delivery strategy: one coherent architecture implemented as three independently 
 
 ## 1. Purpose
 
-DreamCode currently discovers Skills through a small helper inside `@dreamcode/tools`. It scans only the workspace `.dreamcode/skills` directory and a session-derived global `skills` directory, reads minimal descriptions, and exposes `skill.list`, `skill.read`, and `skill.read_resource`. Core exposes that tool family only when the prompt literally mentions a Skill. There is no authoritative registry, normalized metadata model, lifecycle manager, persistent enablement model, complete RPC surface, or Skill management UI.
+DreamCode discovers Skills through an authoritative Registry, injects the complete eligible Skill Catalog on every turn, and exposes one model-facing `skill` tool for validated instruction loading. Skill resources are read through the general local file and search tools.
 
 The new system must make Skills a first-class DreamCode domain. It must discover compatible Skills already installed on the computer, resolve sources predictably, maintain state and diagnostics, progressively disclose instructions to the model, support explicit user invocation, and manage DreamCode-owned installations without modifying files owned by other agents.
 
@@ -52,8 +52,8 @@ A new `@dreamcode/skills` package owns the domain rather than expanding the exis
 
 - `packages/skills` owns domain types, metadata adapters, scanning, registry snapshots, resolution, diagnostics, loading, installation, updating, and rollback.
 - `packages/store` persists user-level Skill state, project-local Skill state, custom roots, and managed installation records.
-- `packages/tools` exposes `skill.load` and `skill.read_resource` as adapters over a turn-scoped Skill context; it does not scan directories.
-- `packages/context` renders a supplied compact Skill catalog within its context budget; it does not depend on the Registry.
+- `packages/tools` exposes `skill` as an adapter over a turn-scoped Skill context; it does not scan directories.
+- `packages/context` renders a supplied complete Skill catalog and fails explicitly if fixed context cannot fit; it does not depend on the Registry.
 - `packages/core` obtains a Snapshot for a turn, constructs `ctx.skills`, parses explicit invocations, injects preloaded Skill content, and coordinates audit events.
 - Desktop Main owns long-lived workspace Skill services and exposes them through validated IPC.
 - Desktop Renderer consumes RPC data and never scans or mutates Skill directories directly.
@@ -79,7 +79,7 @@ The package starts as one cohesive domain package. Splitting registry, installer
 - `project`: discovered for one project and managed only by that project.
 - `plugin`: registered by a Plugin Skill source provider.
 
-DreamCode, Agents, Claude, and Codex are convention providers rather than source scopes. For example, `~/.claude/skills/foo` is a User Skill discovered through the Claude convention.
+DreamCode uses the Agents convention as the sole default user Skill provider. Project and plugin providers remain separate source conventions.
 
 ### 5.3 Identity
 
@@ -97,10 +97,7 @@ DreamCode automatically scans supported locations. Use never requires importing 
 
 ### 6.2 User
 
-- `~/.dreamcode/skills`
 - `~/.agents/skills`
-- `~/.claude/skills`
-- `~/.codex/skills` as a legacy compatibility location
 
 ### 6.3 Project
 
@@ -152,7 +149,7 @@ Resolution proceeds in this order:
 5. Apply source precedence: `Project > User > Plugin > System > Built-in`.
 6. Within Project, prefer the root closest to the working directory.
 7. Within the same Project directory, prefer `.dreamcode` over `.agents` over `.claude`.
-8. Within User, prefer `.dreamcode` over `.agents` over `.claude` over legacy `.codex`.
+8. User Skills are discovered only from `.agents`; no user-level convention precedence is needed.
 9. Within Plugin, apply provider-supplied deterministic ordering.
 10. If candidates remain indistinguishable, mark the group conflicted and select none rather than making a filesystem-order choice.
 
@@ -171,7 +168,7 @@ Project Skills do not enter user-level Skill configuration. Their state is store
 
 - Built-in: may be enabled or disabled; cannot be uninstalled.
 - System: may be enabled or disabled in DreamCode; files remain administrator-owned.
-- User external: may be enabled or disabled; files remain owned by the external convention manager.
+- User: may be enabled or disabled; files remain owned by the `.agents` convention manager.
 - User managed: may be enabled, disabled, updated, rolled back, or uninstalled by DreamCode.
 - Project: may be enabled, disabled, or removed from the project.
 - Plugin: may be enabled or disabled; lifecycle operations belong to the future Plugin Manager.
@@ -209,7 +206,7 @@ The service publishes immutable Snapshots with monotonically increasing generati
 
 Existing roots are watched with a debounced refresh. A validated RPC supports manual rescan. Metadata caches use canonical path, real path, mtime, size, and content hash so unchanged Skills are not reparsed.
 
-When a previously valid Skill becomes invalid, the new generation marks it invalid and stops exposing it; the loader does not execute a stale cached instruction file. Deleted Skills are removed in the next generation, and their load/resource caches are invalidated.
+When a previously valid Skill becomes invalid, the new generation marks it invalid and stops exposing it; the loader does not execute a stale cached instruction file. Deleted Skills are removed in the next generation, and their load caches are invalidated.
 
 Registry-wide failures prevent publication of a corrupt replacement Snapshot. Root- or Skill-level failures publish an otherwise valid Snapshot with isolated diagnostics.
 
@@ -223,7 +220,7 @@ ctx.skills = {
   catalog,
   resolve,
   load,
-  readResource,
+  loadExplicit,
 };
 ```
 
@@ -240,31 +237,23 @@ Skill roots
   -> immutable SkillSnapshot
        -> Desktop management RPC
        -> Core ctx.skills
-            -> compact catalog -> ContextBuilder
-            -> skill.load -> <skill_content>
-            -> skill.read_resource
+            -> complete catalog -> ContextBuilder
+            -> skill -> <skill_content>
 ```
 
-## 13. Compact catalog injection
+## 13. Complete catalog injection
 
 Every model turn receives basic information for currently resolved, enabled, implicitly invocable Skills. This replaces the existing keyword heuristic that exposes Skill tools only when the prompt contains `skill` or `技能`.
 
-The catalog contains only:
-
-- stable `skillId`;
-- name;
-- concise description;
-- source scope;
-- path;
-- necessary invocation policy.
+The model-visible catalog contains only the Skill name and complete description. Stable IDs, source scope, paths, enablement, and invocation policy remain in the runtime Snapshot.
 
 It does not contain full `SKILL.md`, scripts, references, or assets.
 
-For known model context windows, the catalog uses no more than 2% of the model context. When the context window is unknown, it uses no more than 8,000 characters. On overflow, the renderer shortens descriptions first and then omits the lowest-precedence entries, emitting an explicit truncation warning. Explicit-only Skills do not consume implicit catalog budget.
+The catalog has no Skill-specific character or token budget. DreamCode never shortens descriptions or omits eligible Skills. If the complete catalog makes the fixed request context exceed the model's available input budget, Context Builder fails with `skill_catalog_exceeds_context` before contacting the Provider and reports the model limit, fixed-context size, catalog size, Skill count, and overage. Explicit-only Skills do not enter the implicit catalog.
 
 ## 14. Loading and resource access
 
-`skill.load({ skillId })` is always available to the model. It resolves only within the turn's Snapshot, rechecks state, reads the complete instruction file, and renders a canonical block:
+`skill({ name })` is always available to the model. Matching is trimmed, case-insensitive, deterministic, and never fuzzy. It resolves only within the turn's Snapshot, rechecks state and implicit-invocation eligibility, reads the complete instruction file, and renders a canonical block:
 
 ```xml
 <skill_content id="..." name="..." source="..." version="..." path="...">
@@ -276,13 +265,13 @@ Attributes and any body text that could forge the closing boundary are escaped. 
 
 Full Skill content is tool-context guidance, not a system or developer instruction. It remains subordinate to DreamCode policy, the user's request, the current run mode, and permission decisions.
 
-`skill.read_resource` reads UTF-8 text only from within the resolved real Skill root. The default response limit is 40 KiB and the maximum requested limit is 200 KiB. Path traversal, symlink escape, binary content, missing resources, and generation mismatch return structured errors. Loader operations never execute scripts automatically.
+The canonical block retains the resolved Skill path so the model can use the general `file.read`, `search.glob`, `search.grep`, or shell tool for referenced resources. General local reads accept absolute paths outside the workspace; writes remain workspace-bound. Broad searches exclude sensitive files by default, and explicit sensitive reads follow the active permission mode. Loader operations never execute scripts automatically.
 
 Load caching uses generation, real path, and content hash. Repeated loads within a generation return the same content with a cache-hit marker.
 
 ## 15. Explicit and implicit invocation
 
-Implicit invocation occurs when the model matches the task to catalog metadata and calls `skill.load`.
+Implicit invocation occurs when the model matches the task to catalog metadata and calls `skill` by name. Guessed explicit-only Skill names are rejected.
 
 Explicit invocation supports:
 
@@ -315,10 +304,10 @@ Core records the Skill IDs loaded during a turn. Their declared capabilities for
 
 DreamCode installs only into directories it owns:
 
-- User: `~/.dreamcode/skills/<safe-name>`
+- User: `~/.agents/skills/<safe-name>`
 - Project: `<project>/.dreamcode/skills/<safe-name>`
 
-External Skills in `.agents`, `.claude`, `.codex`, system, or administrator-managed locations are automatically discovered and usable but cannot be updated or uninstalled by DreamCode. There is no required import or copy step. The first implementation does not expose an optional copy-to-DreamCode action.
+External Skills in `.agents`, system, or administrator-managed locations are automatically discovered and usable but cannot be updated or uninstalled by DreamCode. There is no required import or copy step.
 
 Supported managed installation sources are:
 
@@ -372,7 +361,7 @@ Desktop uses validated request and response contracts for:
 - install, update, overwrite, roll back, uninstall, or remove where ownership permits;
 - subscribe to generation/progress changes where needed.
 
-`skill.list` is a Desktop management RPC, not a model discovery tool. The model already has the compact catalog. Existing model-facing `skill.list` and `skill.read` behavior is replaced by catalog injection and `skill.load`; compatibility migration must update their tests and documentation.
+`skill.list` is a Desktop management RPC, not a model discovery tool. The model already has the complete catalog. Model-facing discovery and loading use catalog injection plus the single `skill` tool.
 
 IPC schemas reject arbitrary paths and invalid action/source combinations. Renderer receives safe diagnostics and user-facing error messages, not raw exception stacks or unrelated sensitive paths.
 
@@ -451,8 +440,8 @@ A single instance failure never hides unrelated valid Skills. A state write fail
 - Default root discovery.
 - Deduplication, precedence, enablement reads, and conflict resolution.
 - Snapshot generations, cache, watchers, and refresh.
-- Compact catalog injection.
-- `skill.load` and `skill.read_resource`.
+- Complete, unpruned catalog injection.
+- Single `skill` loading tool.
 - Canonical `<skill_content>` rendering.
 - Explicit invocation parser and Core integration tests.
 
@@ -503,11 +492,12 @@ Each phase must be runnable and independently testable before the next phase beg
 
 ### 24.3 Core and context integration tests
 
-- `skill.load` is always exposed.
-- Catalog contains only eligible Skills and respects the 2%/8,000-character budget.
+- `skill` is always exposed.
+- Catalog contains every eligible Skill with only its name and complete description.
+- Fixed-context overflow fails before Provider execution without pruning the Catalog.
 - A turn retains one generation while the next turn observes refresh.
 - Explicit and implicit paths produce equivalent `<skill_content>`.
-- Resource boundaries and binary rejection.
+- External local read access, absolute result paths, and sensitive-search exclusions.
 - Loaded-Skill attribution and undeclared-capability audit events.
 - Skill content remains subordinate to system policy and user intent.
 
@@ -539,7 +529,7 @@ The work is complete when:
 1. Each phase's unit and integration tests pass before proceeding.
 2. Final repository typecheck, relevant lint, unit/integration tests, and Desktop E2E tests pass.
 3. A 500-Skill fixture verifies that warm refresh does not reparse unchanged files and records a non-flaky scan benchmark.
-4. Catalog budget tests prove the 2%/8,000-character ceiling.
+4. Catalog tests prove every eligible Skill and complete description is retained, and fixed-context overflow fails explicitly.
 5. Windows path behavior is directly tested, with POSIX behavior covered through path abstraction tests.
 6. Compatible Skills are usable automatically without import or copying.
 7. External files are never modified by update or uninstall actions.

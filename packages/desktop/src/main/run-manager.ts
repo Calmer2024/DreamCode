@@ -1,12 +1,14 @@
 import { type ApprovalRequest, runTurn } from "@dreamcode/core";
-import type { ModelProvider } from "@dreamcode/shared";
+import type { MediaAttachment, ModelProvider } from "@dreamcode/shared";
 import { createId } from "@dreamcode/shared";
 import type { SkillRegistry } from "@dreamcode/skills";
 import {
   type DreamCodeConfig,
   type DreamCodeLlmProfile,
   loadDreamCodeConfig,
+  deleteSession,
 } from "@dreamcode/store";
+import type { DesktopAttachmentService } from "./attachment-service";
 import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
 import type {
   ApprovalResponse,
@@ -35,6 +37,7 @@ interface ActiveRun {
   approvals: Map<string, Deferred<boolean>>;
   questions: Map<string, Deferred<string>>;
   completion: Promise<void>;
+  attachments: MediaAttachment[];
 }
 
 export interface DesktopRunManagerOptions {
@@ -47,6 +50,7 @@ export interface DesktopRunManagerOptions {
   createRegistry?: typeof createDefaultToolRegistry;
   processSupervisor?: ProcessSupervisor;
   getSkillRegistry?: (workspaceRoot: string) => Promise<SkillRegistry>;
+  attachmentService?: Pick<DesktopAttachmentService, "resolve" | "discard">;
   emitEvent?: (event: DesktopRunEvent) => unknown;
   emitApproval?: (request: DesktopApprovalRequest) => unknown;
   emitQuestion?: (request: DesktopQuestionRequest) => unknown;
@@ -60,6 +64,7 @@ export class DesktopRunManager {
   readonly #createRegistry: NonNullable<DesktopRunManagerOptions["createRegistry"]>;
   readonly #processSupervisor: ProcessSupervisor;
   readonly #getSkillRegistry?: DesktopRunManagerOptions["getSkillRegistry"];
+  readonly #attachmentService?: DesktopRunManagerOptions["attachmentService"];
   readonly #emitEvent: NonNullable<DesktopRunManagerOptions["emitEvent"]>;
   readonly #emitApproval: NonNullable<DesktopRunManagerOptions["emitApproval"]>;
   readonly #emitQuestion: NonNullable<DesktopRunManagerOptions["emitQuestion"]>;
@@ -73,6 +78,7 @@ export class DesktopRunManager {
     this.#createRegistry = options.createRegistry ?? createDefaultToolRegistry;
     this.#processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
     this.#getSkillRegistry = options.getSkillRegistry;
+    this.#attachmentService = options.attachmentService;
     this.#emitEvent = options.emitEvent ?? (() => undefined);
     this.#emitApproval = options.emitApproval ?? (() => undefined);
     this.#emitQuestion = options.emitQuestion ?? (() => undefined);
@@ -88,12 +94,16 @@ export class DesktopRunManager {
       throw desktopError("run_already_active", "Another Turn is already active.");
     }
 
+    const attachments: MediaAttachment[] = request.attachmentIds?.length
+      ? this.#attachmentService?.resolve(request.attachmentIds) ?? (() => { throw new Error("Attachment service is unavailable."); })()
+      : [];
     const run: ActiveRun = {
       runId: createId("run"),
       abortController: new AbortController(),
       approvals: new Map(),
       questions: new Map(),
       completion: Promise.resolve(),
+      attachments,
     };
     this.#active = run;
     run.completion = this.#execute(run, request);
@@ -133,6 +143,8 @@ export class DesktopRunManager {
 
   async #execute(run: ActiveRun, request: StartTurnRequest): Promise<void> {
     let sensitiveValues: string[] = [];
+    let modelActivity = false;
+    let observedSessionId: string | undefined;
     let finalStatus: DesktopRunStatus = {
       runId: run.runId,
       status: "failed",
@@ -161,9 +173,9 @@ export class DesktopRunManager {
       }
       const { model } = providerResult;
       const provider = redactProviderErrors(providerResult.provider, sensitiveValues);
-
       for await (const event of runTurn({
         prompt: request.prompt,
+        attachments: run.attachments,
         workspaceRoot: request.workspaceRoot,
         sessionId: request.sessionId,
         mode: request.mode,
@@ -181,19 +193,37 @@ export class DesktopRunManager {
         questionHandler: (question) => this.#requestQuestion(run, question),
       })) {
         const outboundEvent = sanitizeEvent(event, sensitiveValues);
+        observedSessionId = outboundEvent.sessionId ?? observedSessionId;
+        if (outboundEvent.type === "model.delta" || outboundEvent.type === "model.tool_call") {
+          modelActivity = true;
+        }
         await this.#emitEvent({ runId: run.runId, event: outboundEvent });
         finalStatus =
-          statusFromEvent(run.runId, outboundEvent.type, outboundEvent.payload) ?? finalStatus;
+          statusFromEvent(
+            run.runId,
+            outboundEvent.type,
+            outboundEvent.payload,
+            outboundEvent.sessionId,
+          ) ?? finalStatus;
       }
     } catch (error) {
+      const interrupted = run.abortController.signal.aborted;
       finalStatus = {
         runId: run.runId,
-        status: run.abortController.signal.aborted ? "interrupted" : "failed",
-        ...(run.abortController.signal.aborted
+        status: interrupted ? "interrupted" : "failed",
+        ...(observedSessionId ? { sessionId: observedSessionId } : {}),
+        ...(!interrupted && !modelActivity ? { draftRestored: true } : {}),
+        ...(interrupted
           ? {}
           : { error: toDesktopError(error, "run_failed", sensitiveValues) }),
       };
     } finally {
+      if (request.attachmentIds?.length && !finalStatus.draftRestored) {
+        await this.#attachmentService?.discard(request.attachmentIds).catch(() => undefined);
+      }
+      if (finalStatus.draftRestored && !request.sessionId && finalStatus.sessionId) {
+        await deleteSession(finalStatus.sessionId, this.#home).catch(() => undefined);
+      }
       await this.#finalize(run, finalStatus, sensitiveValues);
     }
   }
@@ -289,26 +319,38 @@ function statusFromEvent(
   runId: string,
   type: DesktopRunEvent["event"]["type"],
   payload: unknown,
+  sessionId?: string,
 ): DesktopRunStatus | undefined {
   if (type === "turn.completed") {
-    return { runId, status: "completed" };
+    return { runId, status: "completed", sessionId };
   }
   if (type === "turn.interrupted") {
-    return { runId, status: "interrupted" };
+    return { runId, status: "interrupted", sessionId };
   }
   if (type === "turn.failed") {
     return {
       runId,
       status: "failed",
+      sessionId,
       error: statusError("run_failed", readFailureMessage(payload)),
+    };
+  }
+  if (type === "turn.reverted") {
+    return {
+      runId,
+      status: "failed",
+      sessionId,
+      error: statusError("run_failed", readFailureMessage(payload)),
+      draftRestored: true,
     };
   }
   return undefined;
 }
 
 function readFailureMessage(payload: unknown): string {
-  if (payload && typeof payload === "object" && "error" in payload) {
-    const error = (payload as { error?: unknown }).error;
+  if (payload && typeof payload === "object" && ("error" in payload || "reason" in payload)) {
+    const candidate = payload as { error?: unknown; reason?: unknown };
+    const error = candidate.error ?? candidate.reason;
     if (typeof error === "string" && error) {
       return error;
     }

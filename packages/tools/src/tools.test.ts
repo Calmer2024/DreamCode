@@ -51,6 +51,62 @@ describe("builtin tools", () => {
     expect(result.summary).toContain("offset=3");
   });
 
+  it("reads and searches absolute paths outside the workspace", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-local-workspace-"));
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-local-external-"));
+    const externalFile = path.join(externalRoot, "guide.txt");
+    await writeFile(externalFile, "external needle\n", "utf8");
+    const registry = createDefaultToolRegistry();
+    const context = {
+      workspaceRoot,
+      sessionDir: workspaceRoot,
+      mode: "yolo" as const,
+    };
+
+    const read = await registry
+      .get("file.read")!
+      .execute({ file_path: externalFile }, { ...context, toolCallId: "external_read" });
+    const glob = await registry
+      .get("search.glob")!
+      .execute(
+        { pattern: "*.txt", path: externalRoot },
+        { ...context, toolCallId: "external_glob" },
+      );
+    const grep = await registry
+      .get("search.grep")!
+      .execute(
+        { pattern: "needle", path: externalRoot },
+        { ...context, toolCallId: "external_grep" },
+      );
+
+    expect((read.data as { path: string }).path).toBe(path.resolve(externalFile));
+    expect((glob.data as { paths: string[] }).paths).toContain(path.resolve(externalFile));
+    expect((grep.data as { matches: Array<{ path: string }> }).matches[0]?.path).toBe(
+      path.resolve(externalFile),
+    );
+  });
+
+  it("excludes sensitive files from broad searches", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-sensitive-search-"));
+    await writeFile(path.join(workspaceRoot, "visible.txt"), "needle", "utf8");
+    await writeFile(path.join(workspaceRoot, ".env"), "TOKEN=needle", "utf8");
+    const registry = createDefaultToolRegistry();
+    const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo" as const };
+
+    const glob = await registry
+      .get("search.glob")!
+      .execute({ pattern: "*" }, { ...context, toolCallId: "sensitive_glob" });
+    const grep = await registry
+      .get("search.grep")!
+      .execute({ pattern: "needle" }, { ...context, toolCallId: "sensitive_grep" });
+
+    expect((glob.data as { paths: string[] }).paths).toContain("visible.txt");
+    expect((glob.data as { paths: string[] }).paths).not.toContain(".env");
+    expect((grep.data as { matches: Array<{ path: string }> }).matches).toEqual([
+      expect.objectContaining({ path: "visible.txt" }),
+    ]);
+  });
+
   it("discovers ignored hidden files at any depth and excludes VCS metadata", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-glob-"));
     await mkdir(path.join(workspaceRoot, "src", "nested"), { recursive: true });
@@ -60,22 +116,30 @@ describe("builtin tools", () => {
     await writeFile(path.join(workspaceRoot, "ignored.ts"), "ignored", "utf8");
     await writeFile(path.join(workspaceRoot, ".hidden.ts"), "hidden", "utf8");
     await writeFile(path.join(workspaceRoot, ".git", "private.ts"), "private", "utf8");
-    const result = await createDefaultToolRegistry().get("search.glob")!.execute(
-      { pattern: "*.ts" },
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "glob" },
+    const result = await createDefaultToolRegistry()
+      .get("search.glob")!
+      .execute(
+        { pattern: "*.ts" },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "glob" },
+      );
+    const paths = (result.data as { paths: string[] }).paths.map((item) =>
+      item.replaceAll("\\", "/"),
     );
-    const paths = (result.data as { paths: string[] }).paths.map((item) => item.replaceAll("\\", "/"));
-    expect(paths).toEqual(expect.arrayContaining(["src/nested/deep.ts", "ignored.ts", ".hidden.ts"]));
+    expect(paths).toEqual(
+      expect.arrayContaining(["src/nested/deep.ts", "ignored.ts", ".hidden.ts"]),
+    );
     expect(paths).not.toContain(".git/private.ts");
   });
 
   it("returns grep locations without colon-based parsing", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-grep-"));
     await writeFile(path.join(workspaceRoot, "colon.txt"), "prefix:value:needle:suffix\n", "utf8");
-    const result = await createDefaultToolRegistry().get("search.grep")!.execute(
-      { pattern: "needle", include: "*.txt" },
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "grep" },
-    );
+    const result = await createDefaultToolRegistry()
+      .get("search.grep")!
+      .execute(
+        { pattern: "needle", include: "*.txt" },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "grep" },
+      );
     expect(result.data).toEqual({
       matches: [{ path: "colon.txt", lineNumber: 1, line: "prefix:value:needle:suffix" }],
     });
@@ -94,10 +158,9 @@ describe("builtin tools", () => {
       sessionId: "patch_observation",
       mode: "yolo" as const,
     };
-    await registry.get("file.read")!.execute(
-      { file_path: "example.txt" },
-      { ...context, toolCallId: "call_read" },
-    );
+    await registry
+      .get("file.read")!
+      .execute({ file_path: "example.txt" }, { ...context, toolCallId: "call_read" });
 
     const result = await tool!.execute(
       { path: "example.txt", search: "old", replace: "new" },
@@ -127,15 +190,16 @@ describe("builtin tools", () => {
       sessionId: "stale_patch",
       mode: "yolo" as const,
     };
-    await registry.get("file.read")!.execute(
-      { file_path: "example.txt" },
-      { ...context, toolCallId: "stale_read" },
-    );
+    await registry
+      .get("file.read")!
+      .execute({ file_path: "example.txt" }, { ...context, toolCallId: "stale_read" });
     await writeFile(target, "external change", "utf8");
-    const result = await registry.get("file.patch")!.execute(
-      { path: "example.txt", search: "external", replace: "internal" },
-      { ...context, toolCallId: "stale_patch" },
-    );
+    const result = await registry
+      .get("file.patch")!
+      .execute(
+        { path: "example.txt", search: "external", replace: "internal" },
+        { ...context, toolCallId: "stale_patch" },
+      );
     expect(result).toMatchObject({ status: "error", error: { code: "stale_file_version" } });
     await expect(readFile(target, "utf8")).resolves.toBe("external change");
   });
@@ -144,8 +208,14 @@ describe("builtin tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-shell-many-"));
     const tool = createDefaultToolRegistry().get(shellToolName)!;
     const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo" as const };
-    const first = await tool.execute(shellCommand(process.platform === "win32" ? "Write-Output one" : "printf one"), { ...context, toolCallId: "shell_one" });
-    const second = await tool.execute(shellCommand(process.platform === "win32" ? "Write-Output two" : "printf two"), { ...context, toolCallId: "shell_two" });
+    const first = await tool.execute(
+      shellCommand(process.platform === "win32" ? "Write-Output one" : "printf one"),
+      { ...context, toolCallId: "shell_one" },
+    );
+    const second = await tool.execute(
+      shellCommand(process.platform === "win32" ? "Write-Output two" : "printf two"),
+      { ...context, toolCallId: "shell_two" },
+    );
     expect(first.status).toBe("success");
     expect(second.status).toBe("success");
   });
@@ -172,11 +242,16 @@ describe("builtin tools", () => {
   it("runs a platform shell command with an explicit environment", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-shell-"));
     const registry = createDefaultToolRegistry();
-    const command = process.platform === "win32" ? "Write-Output $env:DREAMCODE_PROCESS_TEST" : "printf $DREAMCODE_PROCESS_TEST";
-    const result = await registry.get(shellToolName)!.execute(
-      { ...shellCommand(command), env: { DREAMCODE_PROCESS_TEST: "structured" } },
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "process" },
-    );
+    const command =
+      process.platform === "win32"
+        ? "Write-Output $env:DREAMCODE_PROCESS_TEST"
+        : "printf $DREAMCODE_PROCESS_TEST";
+    const result = await registry
+      .get(shellToolName)!
+      .execute(
+        { ...shellCommand(command), env: { DREAMCODE_PROCESS_TEST: "structured" } },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "process" },
+      );
     expect(result.status).toBe("success");
     expect(result.execution).toMatchObject({ outcome: "exited_zero", started: true, exitCode: 0 });
     expect(result.streams?.stdout.preview.trim()).toBe("structured");
@@ -185,10 +260,12 @@ describe("builtin tools", () => {
   it("returns structured process failures and bounded output previews", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-output-"));
     const tool = createDefaultToolRegistry().get(shellToolName)!;
-    const failed = await tool.execute(
-      shellCommand("exit 7"),
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "failed" },
-    );
+    const failed = await tool.execute(shellCommand("exit 7"), {
+      workspaceRoot,
+      sessionDir: workspaceRoot,
+      mode: "yolo",
+      toolCallId: "failed",
+    });
     expect(failed.status).toBe("error");
     expect(failed.error).toMatchObject({
       category: "execution",
@@ -197,7 +274,11 @@ describe("builtin tools", () => {
     });
 
     const large = await tool.execute(
-      shellCommand(process.platform === "win32" ? 'Write-Host ("x" * 9000) -NoNewline' : "printf 'x%.0s' {1..9000}"),
+      shellCommand(
+        process.platform === "win32"
+          ? 'Write-Host ("x" * 9000) -NoNewline'
+          : "printf 'x%.0s' {1..9000}",
+      ),
       { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "large" },
     );
     expect(Buffer.byteLength(large.streams!.stdout.preview)).toBeLessThanOrEqual(4096);
@@ -218,7 +299,12 @@ describe("builtin tools", () => {
 
     try {
       const started = await registry.get(shellToolName)!.execute(
-        { command: "node -e 'console.log(\"managed-ready\"); setInterval(() => console.error(\"managed-tick\"), 25)'", description: "test-server", run_in_background: true },
+        {
+          command:
+            'node -e \'console.log("managed-ready"); setInterval(() => console.error("managed-tick"), 25)\'',
+          description: "test-server",
+          run_in_background: true,
+        },
         { ...context, toolCallId: "managed_start" },
       );
       expect(started.status).toBe("success");
@@ -241,7 +327,10 @@ describe("builtin tools", () => {
 
       const logs = await registry
         .get("job_output")!
-        .execute({ job_id: processId, wait: true, timeout_ms: 1000 }, { ...context, toolCallId: "managed_logs" });
+        .execute(
+          { job_id: processId, wait: true, timeout_ms: 1000 },
+          { ...context, toolCallId: "managed_logs" },
+        );
       expect((logs.data as { text: string }).text).toContain("managed-ready");
       expect(
         (logs.data as { nextCursor: { stdoutOffset: number } }).nextCursor.stdoutOffset,
@@ -256,13 +345,14 @@ describe("builtin tools", () => {
           { job_id: processId, cursor: nextCursor },
           { ...context, toolCallId: "managed_logs_incremental" },
         );
-      expect((incrementalLogs.data as { text: string }).text).not.toContain(
-        "managed-ready",
-      );
+      expect((incrementalLogs.data as { text: string }).text).not.toContain("managed-ready");
 
       const stopped = await registry
         .get("job_kill")!
-        .execute({ job_id: processId, reason: "test complete" }, { ...context, toolCallId: "managed_stop" });
+        .execute(
+          { job_id: processId, reason: "test complete" },
+          { ...context, toolCallId: "managed_stop" },
+        );
       expect(stopped.status).toBe("success");
       expect(stopped.data).toMatchObject({ processId, state: "stopped" });
 
@@ -280,7 +370,11 @@ describe("builtin tools", () => {
     const registry = createDefaultToolRegistry();
     try {
       const started = await registry.get(shellToolName)!.execute(
-        { command: "node -e \"setInterval(() => {}, 1000)\"", description: "scope test", run_in_background: true },
+        {
+          command: 'node -e "setInterval(() => {}, 1000)"',
+          description: "scope test",
+          run_in_background: true,
+        },
         {
           workspaceRoot,
           sessionDir: path.join(workspaceRoot, "session-a"),
@@ -320,14 +414,21 @@ describe("builtin tools", () => {
     };
     try {
       const started = await registry.get(shellToolName)!.execute(
-          { command: "node -e 'console.log(\"before-exit\"); process.exit(7)'", description: "fast exit", run_in_background: true },
+        {
+          command: "node -e 'console.log(\"before-exit\"); process.exit(7)'",
+          description: "fast exit",
+          run_in_background: true,
+        },
         { ...context, toolCallId: "fast_start" },
       );
       expect(started.status).toBe("success");
       const processId = (started.data as { jobId: string }).jobId;
       let status = await registry
         .get("job_output")!
-        .execute({ job_id: processId, wait: true, timeout_ms: 1000 }, { ...context, toolCallId: "fast_status_0" });
+        .execute(
+          { job_id: processId, wait: true, timeout_ms: 1000 },
+          { ...context, toolCallId: "fast_status_0" },
+        );
       for (
         let attempt = 1;
         attempt <= 20 && (status.data as { alive: boolean }).alive;
@@ -336,7 +437,10 @@ describe("builtin tools", () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
         status = await registry
           .get("job_output")!
-          .execute({ job_id: processId, wait: true, timeout_ms: 1000 }, { ...context, toolCallId: `fast_status_${attempt}` });
+          .execute(
+            { job_id: processId, wait: true, timeout_ms: 1000 },
+            { ...context, toolCallId: `fast_status_${attempt}` },
+          );
       }
       expect(status.data).toMatchObject({ job: { status: "exited" } });
       const logs = await registry
@@ -509,7 +613,7 @@ describe("builtin tools", () => {
     expect(result.summary).toContain("EXA_API_KEY");
   });
 
-  it("loads Skill instructions and resources through the turn-scoped Registry", async () => {
+  it("loads Skill instructions by name through the turn-scoped Registry", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-skills-workspace-"));
     await writeFile(path.join(workspaceRoot, "placeholder.txt"), "ok", "utf8");
     const registry = createDefaultToolRegistry();
@@ -521,7 +625,15 @@ describe("builtin tools", () => {
       skills: {
         generation: 1,
         catalog: [],
-        load: async (skillId: string) => ({
+        load: async (name: string) => ({
+          skillId: "skill_demo",
+          name,
+          path: path.join(workspaceRoot, "SKILL.md"),
+          content: "<skill_content>Demo Skill</skill_content>",
+          contentHash: "abc",
+          cacheHit: false,
+        }),
+        loadExplicit: async (skillId: string) => ({
           skillId,
           name: "demo",
           path: path.join(workspaceRoot, "SKILL.md"),
@@ -529,21 +641,13 @@ describe("builtin tools", () => {
           contentHash: "abc",
           cacheHit: false,
         }),
-        readResource: async (skillId: string, resourcePath: string) => ({
-          skillId,
-          resourcePath,
-          content: "Resource text",
-          truncated: false,
-        }),
       },
     };
 
-    const loaded = await registry.get("skill.load")!.execute({ skillId: "skill_demo" }, context);
+    const loaded = await registry.get("skill")!.execute({ name: "demo" }, context);
     expect((loaded.data as { content: string }).content).toContain("Demo Skill");
-    const resource = await registry
-      .get("skill.read_resource")!
-      .execute({ skillId: "skill_demo", resourcePath: "guide.md" }, context);
-    expect((resource.data as { content: string }).content).toBe("Resource text");
+    expect(registry.get("skill.load")).toBeUndefined();
+    expect(registry.get("skill.read_resource")).toBeUndefined();
   });
 
   it("calls a configured fake MCP stdio tool", async () => {

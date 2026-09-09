@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import {
+  attachmentIdsRequestSchema,
   approvalResponseSchema,
   createProfileRequestSchema,
   createProjectRequestSchema,
@@ -8,6 +9,7 @@ import {
   profileIdSchema,
   projectRequestSchema,
   questionResponseSchema,
+  readAttachmentRequestSchema,
   rollbackRequestSchema,
   runIdSchema,
   sanitizeDesktopError,
@@ -20,6 +22,7 @@ import {
   skillRootsRequestSchema,
   skillToggleRequestSchema,
   skillWorkspaceRequestSchema,
+  stageAttachmentBytesSchema,
   startTurnRequestSchema,
   testProfileRequestSchema,
   updateProfileRequestSchema,
@@ -27,6 +30,7 @@ import {
   workspaceRootSchema,
 } from "../shared/contracts";
 import type { DesktopAppService } from "./app-service";
+import type { DesktopAttachmentService } from "./attachment-service";
 import type { DesktopRunManager } from "./run-manager";
 import type { DesktopTerminalManager } from "./terminal-manager";
 
@@ -40,7 +44,10 @@ interface IpcMainLike {
 interface DialogLike {
   showOpenDialog(
     window: unknown,
-    options: { properties: Array<"openDirectory" | "createDirectory"> },
+    options: {
+      properties: Array<"openDirectory" | "createDirectory" | "openFile" | "multiSelections">;
+      filters?: Array<{ name: string; extensions: string[] }>;
+    },
   ): Promise<{ canceled: boolean; filePaths: string[] }>;
 }
 
@@ -74,6 +81,7 @@ export interface DesktopIpcDependencies {
     | "rollbackSkill"
     | "uninstallSkill"
   >;
+  attachmentService: Pick<DesktopAttachmentService, "importPaths" | "importBytes" | "discard" | "read">;
   runManager: Pick<DesktopRunManager, "start" | "stop" | "respondApproval" | "respondQuestion">;
   terminalManager: Pick<DesktopTerminalManager, "start" | "write" | "resize" | "close">;
   getWindow: () => unknown;
@@ -150,6 +158,38 @@ const handlers = {
     const parsed = parseRequest(skillLifecycleRequestSchema, request);
     return dependencies.service.rollbackSkill({ workspaceRoot: parsed.workspaceRoot, skillId: parsed.skillId });
   },
+  "desktop:choose-attachments": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    existing: unknown,
+  ) => {
+    const parsedExisting = stageAttachmentBytesSchema.shape.existing.parse(existing ?? []);
+    const result = await dependencies.dialog.showOpenDialog(dependencies.getWindow(), {
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "多模态附件", extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp3", "mp4"] }],
+    });
+    return result.canceled
+      ? { attachments: [], errors: [] }
+      : dependencies.attachmentService.importPaths(result.filePaths, parsedExisting);
+  },
+  "desktop:stage-attachment-bytes": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => {
+    const parsed = parseRequest(stageAttachmentBytesSchema, request);
+    return dependencies.attachmentService.importBytes(parsed.files, parsed.existing);
+  },
+  "desktop:discard-attachments": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.attachmentService.discard(parseRequest(attachmentIdsRequestSchema, request).ids),
+  "desktop:read-attachment": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.attachmentService.read(parseRequest(readAttachmentRequestSchema, request)),
   "desktop:uninstall-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) => {
     const parsed = parseRequest(skillLifecycleRequestSchema, request);
     return dependencies.service.uninstallSkill({ workspaceRoot: parsed.workspaceRoot, skillId: parsed.skillId });

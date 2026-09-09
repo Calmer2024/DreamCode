@@ -56,6 +56,14 @@ describe("desktop renderer architecture", () => {
     expect(tooltip).toContain("document.body");
   });
 
+  it("keeps the floating task panel free of background blur during window restoration", () => {
+    const css = readFileSync(path.join(desktopRoot, "src/renderer/app/app.css"), "utf8");
+    const panelRule = /\.todo-panel\s*\{([^}]*)\}/s.exec(css)?.[1] ?? "";
+
+    expect(panelRule).not.toMatch(/backdrop-filter\s*:/);
+    expect(panelRule).not.toMatch(/filter\s*:/);
+  });
+
   it("documents the production scrollbar and compact left-aligned dropdown menu", () => {
     const guide = readFileSync(
       path.resolve(desktopRoot, "../../docs/component-guidelines.html"),

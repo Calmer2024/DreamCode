@@ -11,23 +11,19 @@ import {
 import type {
   ChangedFile,
   ExecutionOutcome,
+  RunMode,
   ShellKind,
   TodoItem,
   Tool,
   ToolExecutionContext,
   ToolModelSpec,
   ToolResult,
-  RunMode,
 } from "@dreamcode/shared";
 import { todoItemSchema, toErrorMessage } from "@dreamcode/shared";
 import { createTwoFilesPatch } from "diff";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import {
-  type ProcessLogCursor,
-  type ProcessScope,
-  ProcessSupervisor,
-} from "./process-supervisor.js";
+import { type ProcessScope, ProcessSupervisor } from "./process-supervisor.js";
 
 export {
   type ManagedProcessInfo,
@@ -84,22 +80,26 @@ export class ToolRegistry {
   }
 
   toModelSpecs(mode?: RunMode): ToolModelSpec[] {
-    return this.list().filter((tool) => isToolExposedInMode(tool.name, mode)).map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: toToolInputSchema(tool.inputSchema),
-    }));
+    return this.list()
+      .filter((tool) => isToolExposedInMode(tool.name, mode))
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: toToolInputSchema(tool.inputSchema),
+      }));
   }
 }
 
 function isToolExposedInMode(toolName: string, mode?: RunMode): boolean {
   if (!mode) return true;
   if (mode === "plan") {
-    return !toolName.startsWith("file.write") &&
+    return (
+      !toolName.startsWith("file.write") &&
       !toolName.startsWith("file.patch") &&
       !toolName.startsWith("web.") &&
       !toolName.startsWith("mcp.") &&
-      toolName !== "job_kill";
+      toolName !== "job_kill"
+    );
   }
   return true;
 }
@@ -148,8 +148,7 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     questionAskTool,
     createWebSearchTool(options.webSearch),
     webFetchTool,
-    skillLoadTool,
-    skillReadResourceTool,
+    skillTool,
     createMcpListTool(options.mcpServers ?? {}),
     createMcpCallTool(options.mcpServers ?? {}),
   ];
@@ -177,33 +176,29 @@ type FileReadInput = z.infer<typeof fileReadSchema>;
 const fileReadTool: Tool<FileReadInput> = {
   name: "file.read",
   description:
-    "Read a UTF-8 text file as a line-numbered window. Use offset and limit to continue reading large files.",
+    "Read a UTF-8 local text file at a workspace-relative or absolute path as a line-numbered window. Use offset and limit to continue reading large files.",
   inputSchema: fileReadSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
   schedule: (rawInput) => ({
     mode: "parallel",
     resources: [
       {
-        key: `workspace:${String((rawInput as { file_path?: unknown })?.file_path ?? ".")}`,
+        key: `local-file:${String((rawInput as { file_path?: unknown })?.file_path ?? ".")}`,
         access: "read",
       },
     ],
   }),
   async execute(rawInput, context) {
     const input = fileReadSchema.parse(rawInput);
-    return readWorkspaceFile(input, context);
+    return readLocalFile(input, context);
   },
 };
 
-async function readWorkspaceFile(
+async function readLocalFile(
   input: FileReadInput,
   context: ToolExecutionContext,
 ): Promise<ToolResult> {
-  if (isSecretPath(input.file_path)) {
-    return denied(context.toolCallId, "Refused to read a secret-like file.");
-  }
-
-  const resolved = await safeExistingInside(context.workspaceRoot, input.file_path);
+  const resolved = await safeExistingPath(context.workspaceRoot, input.file_path);
   if (!resolved.ok) {
     const unresolved = resolveWorkspacePath(context.workspaceRoot, input.file_path);
     if (unresolved.isInside && !existsSync(unresolved.absolutePath)) {
@@ -214,7 +209,11 @@ async function readWorkspaceFile(
 
   const info = await stat(resolved.absolutePath);
   if (!info.isFile()) {
-    return errorResult(context.toolCallId, `Cannot read '${input.file_path}': not a regular file.`, "not_regular_file");
+    return errorResult(
+      context.toolCallId,
+      `Cannot read '${input.file_path}': not a regular file.`,
+      "not_regular_file",
+    );
   }
 
   let window: ReadWindowResult;
@@ -223,7 +222,7 @@ async function readWorkspaceFile(
       info.size >= READ_STREAM_MIN_SIZE
         ? createReadStream(resolved.absolutePath, { encoding: "utf8" })
         : [await readFile(resolved.absolutePath, "utf8")];
-    window = await buildReadWindow(chunks, input.offset, input.limit, resolved.relativePath);
+    window = await buildReadWindow(chunks, input.offset, input.limit, resolved.displayPath);
   } catch (error) {
     if (error instanceof BinaryFileError) {
       return errorResult(context.toolCallId, "Refused to read a binary file.", "binary_file");
@@ -238,9 +237,9 @@ async function readWorkspaceFile(
   return {
     toolCallId: context.toolCallId,
     status: "success",
-    summary: `Read ${window.lines.length} line(s) from ${resolved.relativePath}; ${window.totalLines} total.${continuation}`,
+    summary: `Read ${window.lines.length} line(s) from ${resolved.displayPath}; ${window.totalLines} total.${continuation}`,
     data: {
-      path: resolved.relativePath,
+      path: resolved.displayPath,
       offset: input.offset,
       lines: window.lines,
       totalLines: window.totalLines,
@@ -445,17 +444,20 @@ const filePatchTool: Tool<FilePatchInput> = {
 const searchGrepSchema = z.object({
   pattern: z.string().refine((value) => value.length > 0, "pattern must be non-empty"),
   path: z.string().trim().min(1).optional(),
-  include: z.string().optional().superRefine((value, issue) => {
-    if (value === undefined) return;
-    const error = validateSinglePositiveGlob(value);
-    if (error) issue.addIssue({ code: z.ZodIssueCode.custom, message: error });
-  }),
+  include: z
+    .string()
+    .optional()
+    .superRefine((value, issue) => {
+      if (value === undefined) return;
+      const error = validateSinglePositiveGlob(value);
+      if (error) issue.addIssue({ code: z.ZodIssueCode.custom, message: error });
+    }),
 });
 
 const searchGrepTool: Tool<z.infer<typeof searchGrepSchema>> = {
   name: "search.grep",
   description:
-    "Find matching lines with packaged ripgrep. Returns path, lineNumber, and line; use file.read for context.",
+    "Find matching lines under a workspace-relative or absolute local path. Broad searches skip sensitive files. Returns path, lineNumber, and line; use file.read for context.",
   inputSchema: searchGrepSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
   schedule: { mode: "parallel", maxConcurrency: 4 },
@@ -463,27 +465,37 @@ const searchGrepTool: Tool<z.infer<typeof searchGrepSchema>> = {
     const input = searchGrepSchema.parse(rawInput);
     const searchRoot = await resolveSearchPath(context, input.path, false);
     if (!searchRoot.ok) return searchRoot.result;
+    const secretExcludes =
+      isSecretPath(searchRoot.absolutePath) || (input.include && isSecretPath(input.include))
+        ? []
+        : sensitiveSearchExcludes();
     const run = await runPackagedRipgrep(
-      ["--json", `--regexp=${input.pattern}`, ...(input.include ? [`--glob=${input.include}`] : []), "--", searchRoot.relativePath],
-      context.workspaceRoot,
+      [
+        "--json",
+        `--regexp=${input.pattern}`,
+        ...(input.include ? [`--glob=${input.include}`] : []),
+        ...secretExcludes,
+        "--",
+        searchRoot.absolutePath,
+      ],
+      searchRoot.absolutePath,
       context.signal,
       "grep",
     );
     if (!run.ok) return searchErrorResult(context.toolCallId, run);
     const matches = run.noMatches
       ? []
-      : parseRipgrepJson(run.stdout).map((match) => ({ ...match, path: cleanRipgrepPath(match.path) }));
+      : parseRipgrepJson(run.stdout).map((match) => ({
+          ...match,
+          path: displaySearchResultPath(context.workspaceRoot, searchRoot.absolutePath, match.path),
+        }));
     const retained = matches.slice(0, GREP_MAX_MATCHES).map((match) => ({
       ...match,
       line: truncateUtf8(match.line, GREP_MAX_LINE_BYTES, " (line truncated)"),
     }));
     const artifactRef =
       matches.length > retained.length
-        ? await saveSearchArtifact(
-            context,
-            "grep-results.txt",
-            formatGrepMatches(matches),
-          )
+        ? await saveSearchArtifact(context, "grep-results.txt", formatGrepMatches(matches))
         : undefined;
 
     return {
@@ -507,7 +519,7 @@ const searchGlobSchema = z.object({
 const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
   name: "search.glob",
   description:
-    "Find files by glob with packaged ripgrep. Includes hidden and ignored files, excludes VCS metadata, and never returns directories.",
+    "Find files by glob under a workspace-relative or absolute local path. Includes hidden and ignored files, excludes VCS metadata and sensitive files by default, and never returns directories.",
   inputSchema: searchGlobSchema,
   risk: { tags: ["read_workspace"], readsFiles: true },
   schedule: { mode: "parallel", maxConcurrency: 4 },
@@ -515,6 +527,10 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
     const input = searchGlobSchema.parse(rawInput);
     const searchRoot = await resolveSearchPath(context, input.path, true);
     if (!searchRoot.ok) return searchRoot.result;
+    const secretExcludes =
+      isSecretPath(searchRoot.absolutePath) || isSecretPath(input.pattern)
+        ? []
+        : sensitiveSearchExcludes();
     const run = await runPackagedRipgrep(
       [
         "--files",
@@ -523,10 +539,11 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
         "--no-ignore",
         "--hidden",
         ...GLOB_VCS_EXCLUDES.flatMap((name) => [`--glob=!**/${name}`, `--glob=!**/${name}/**`]),
+        ...secretExcludes,
         "--",
-        searchRoot.relativePath,
+        searchRoot.absolutePath,
       ],
-      context.workspaceRoot,
+      searchRoot.absolutePath,
       context.signal,
       "glob",
     );
@@ -536,11 +553,17 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
       : run.stdout
           .split(/\r?\n/)
           .filter(Boolean)
-          .map(cleanRipgrepPath);
+          .map((resultPath) =>
+            displaySearchResultPath(context.workspaceRoot, searchRoot.absolutePath, resultPath),
+          );
     const sample =
       paths.length > GLOB_MAX_RESULTS
-        ? sampleAcrossTopLevel(paths, GLOB_MAX_RESULTS, searchRoot.relativePath)
-        : { items: paths, shown: countTopLevels(paths, searchRoot.relativePath), total: countTopLevels(paths, searchRoot.relativePath) };
+        ? sampleAcrossTopLevel(paths, GLOB_MAX_RESULTS, searchRoot.displayPath)
+        : {
+            items: paths,
+            shown: countTopLevels(paths, searchRoot.displayPath),
+            total: countTopLevels(paths, searchRoot.displayPath),
+          };
     const artifactRef =
       paths.length > sample.items.length
         ? await saveSearchArtifact(context, "glob-results.txt", paths.join("\n"))
@@ -552,7 +575,7 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
         paths.length > sample.items.length
           ? `Found ${paths.length} files; showing ${sample.items.length} sampled across ${sample.shown} of ${sample.total} top-level entries. Full result: ${artifactRef ?? "not saved; narrow pattern or path"}.`
           : `Found ${paths.length} file${paths.length === 1 ? "" : "s"} in modification-time order.`,
-      data: { root: searchRoot.relativePath, paths: sample.items },
+      data: { root: searchRoot.displayPath, paths: sample.items },
       ...(artifactRef ? { artifactRefs: [artifactRef] } : {}),
     };
   },
@@ -563,6 +586,31 @@ const GREP_MAX_LINE_BYTES = 2_000;
 const GLOB_MAX_RESULTS = 100;
 const SEARCH_RAW_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 const GLOB_VCS_EXCLUDES = [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"] as const;
+const SENSITIVE_SEARCH_NAMES = [
+  ".env",
+  ".env.*",
+  "credentials",
+  "credentials.json",
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+] as const;
+const SENSITIVE_SEARCH_DIRECTORIES = [".ssh", ".aws", ".azure", ".gnupg", ".kube"] as const;
+
+function sensitiveSearchExcludes(): string[] {
+  return [
+    ...SENSITIVE_SEARCH_NAMES.map((name) => `--glob=!**/${name}`),
+    ...SENSITIVE_SEARCH_DIRECTORIES.flatMap((name) => [
+      `--glob=!**/${name}`,
+      `--glob=!**/${name}/**`,
+    ]),
+  ];
+}
 
 type FileObservation = { kind: "absent" } | { kind: "present"; version: string };
 const fileObservations = new Map<string, Map<string, FileObservation>>();
@@ -692,11 +740,10 @@ async function resolveSearchPath(
   inputPath: string | undefined,
   requireDirectory: boolean,
 ): Promise<
-  | { ok: true; absolutePath: string; relativePath: string }
-  | { ok: false; result: ToolResult }
+  { ok: true; absolutePath: string; displayPath: string } | { ok: false; result: ToolResult }
 > {
   const requested = inputPath ?? ".";
-  const resolved = await safeExistingInside(context.workspaceRoot, requested);
+  const resolved = await safeExistingPath(context.workspaceRoot, requested);
   if (!resolved.ok) {
     return { ok: false, result: errorResult(context.toolCallId, resolved.summary, resolved.code) };
   }
@@ -704,10 +751,14 @@ async function resolveSearchPath(
   if (requireDirectory && !info.isDirectory()) {
     return {
       ok: false,
-      result: errorResult(context.toolCallId, `Search path is not a directory: ${requested}`, "not_directory"),
+      result: errorResult(
+        context.toolCallId,
+        `Search path is not a directory: ${requested}`,
+        "not_directory",
+      ),
     };
   }
-  return { ok: true, absolutePath: resolved.absolutePath, relativePath: resolved.relativePath };
+  return resolved;
 }
 
 type SearchRun =
@@ -728,13 +779,22 @@ async function runPackagedRipgrep(
   toolName: "grep" | "glob",
 ): Promise<SearchRun> {
   if (signal?.aborted) {
-    return { ok: false, code: "search_aborted", message: `${toolName} was aborted.`, cancelled: true };
+    return {
+      ok: false,
+      code: "search_aborted",
+      message: `${toolName} was aborted.`,
+      cancelled: true,
+    };
   }
   let executable: string;
   try {
     executable = await packagedRipgrepPath();
   } catch (error) {
-    return { ok: false, code: "search_failed", message: `Packaged ripgrep could not be loaded: ${toErrorMessage(error)}` };
+    return {
+      ok: false,
+      code: "search_failed",
+      message: `Packaged ripgrep could not be loaded: ${toErrorMessage(error)}`,
+    };
   }
   const result = await runProcess(executable, ["--no-config", ...args], {
     cwd,
@@ -751,7 +811,11 @@ async function runPackagedRipgrep(
     };
   }
   if (!result.started) {
-    return { ok: false, code: "search_failed", message: `${toolName} could not start packaged ripgrep.` };
+    return {
+      ok: false,
+      code: "search_failed",
+      message: `${toolName} could not start packaged ripgrep.`,
+    };
   }
   if (result.outputOverflow) {
     return {
@@ -762,7 +826,8 @@ async function runPackagedRipgrep(
   }
   if (result.exitCode === 1) return { ok: true, stdout: "", noMatches: true };
   if (result.exitCode !== 0) {
-    const invalid = result.exitCode === 2 && /regex parse error|error parsing regex/i.test(result.stderr);
+    const invalid =
+      result.exitCode === 2 && /regex parse error|error parsing regex/i.test(result.stderr);
     return {
       ok: false,
       code: invalid ? "search_invalid_pattern" : "search_failed",
@@ -796,7 +861,8 @@ function parseRipgrepJson(stdout: string): GrepMatch[] {
     } catch (error) {
       throw new Error(`grep received malformed ripgrep JSON: ${toErrorMessage(error)}`);
     }
-    if (!record || typeof record !== "object" || (record as { type?: unknown }).type !== "match") continue;
+    if (!record || typeof record !== "object" || (record as { type?: unknown }).type !== "match")
+      continue;
     const data = (record as { data?: unknown }).data;
     if (!data || typeof data !== "object") throw new Error("grep match record has no data");
     const item = data as {
@@ -804,7 +870,11 @@ function parseRipgrepJson(stdout: string): GrepMatch[] {
       line_number?: unknown;
       lines?: { text?: unknown; bytes?: unknown };
     };
-    if (typeof item.path?.text !== "string" || typeof item.line_number !== "number" || !item.lines) {
+    if (
+      typeof item.path?.text !== "string" ||
+      typeof item.line_number !== "number" ||
+      !item.lines
+    ) {
       throw new Error("grep match record is missing path, line number, or line content");
     }
     const line =
@@ -838,7 +908,10 @@ function formatGrepMatches(matches: GrepMatch[]): string {
     else groups.set(match.path, [match]);
   }
   return [...groups.entries()]
-    .map(([filePath, group]) => `${filePath}\n${group.map((item) => `Line ${item.lineNumber}: ${item.line}`).join("\n")}`)
+    .map(
+      ([filePath, group]) =>
+        `${filePath}\n${group.map((item) => `Line ${item.lineNumber}: ${item.line}`).join("\n")}`,
+    )
     .join("\n\n");
 }
 
@@ -981,9 +1054,12 @@ function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
     schedule: { mode: "exclusive" },
     preflight(rawInput, context) {
       const parsed = platformShellSchema.safeParse(rawInput);
-      if (!parsed.success) return commandInputValidationResult(context.toolCallId, parsed.error.issues);
+      if (!parsed.success)
+        return commandInputValidationResult(context.toolCallId, parsed.error.issues);
       const violations = validateShellCommand(parsed.data.command, shell);
-      return violations.length ? commandValidationResult(context.toolCallId, violations) : undefined;
+      return violations.length
+        ? commandValidationResult(context.toolCallId, violations)
+        : undefined;
     },
     async execute(rawInput, context) {
       const input = platformShellSchema.parse(rawInput);
@@ -1041,12 +1117,23 @@ function createJobTools(supervisor: ProcessSupervisor): Tool[] {
     job_id: jobIdSchema,
     wait: z.boolean().default(false),
     timeout_ms: z.number().int().nonnegative().max(MAX_COMMAND_TIMEOUT_MS).default(1000),
-    cursor: z.object({ stdoutOffset: z.number().int().nonnegative(), stderrOffset: z.number().int().nonnegative() }).default({ stdoutOffset: 0, stderrOffset: 0 }),
-    max_bytes: z.number().int().min(1024).max(64 * 1024).default(16 * 1024),
+    cursor: z
+      .object({
+        stdoutOffset: z.number().int().nonnegative(),
+        stderrOffset: z.number().int().nonnegative(),
+      })
+      .default({ stdoutOffset: 0, stderrOffset: 0 }),
+    max_bytes: z
+      .number()
+      .int()
+      .min(1024)
+      .max(64 * 1024)
+      .default(16 * 1024),
   });
   const output: Tool = {
     name: "job_output",
-    description: "Read output and lifecycle status for a background job. Set wait=true to wait briefly for completion.",
+    description:
+      "Read output and lifecycle status for a background job. Set wait=true to wait briefly for completion.",
     inputSchema: outputSchema,
     risk: { tags: [] },
     async execute(rawInput, context) {
@@ -1064,8 +1151,26 @@ function createJobTools(supervisor: ProcessSupervisor): Tool[] {
           supervisor.status(jobScope(context), input.job_id),
           supervisor.logs(jobScope(context), input.job_id, input.cursor, input.max_bytes),
         ]);
-        return { toolCallId: context.toolCallId, status: "success", summary: `Read output for job ${input.job_id}.`, data: { text: [logs.stdout.text, logs.stderr.text].filter(Boolean).join("\n"), job: { id: status.processId, status: status.state, label: status.label, startedAt: status.startedAt, finishedAt: status.endedAt }, nextCursor: logs.nextCursor, hasMore: logs.hasMore } };
-      } catch (error) { return managedProcessErrorResult(context.toolCallId, error); }
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: `Read output for job ${input.job_id}.`,
+          data: {
+            text: [logs.stdout.text, logs.stderr.text].filter(Boolean).join("\n"),
+            job: {
+              id: status.processId,
+              status: status.state,
+              label: status.label,
+              startedAt: status.startedAt,
+              finishedAt: status.endedAt,
+            },
+            nextCursor: logs.nextCursor,
+            hasMore: logs.hasMore,
+          },
+        };
+      } catch (error) {
+        return managedProcessErrorResult(context.toolCallId, error);
+      }
     },
   };
   const list: Tool = {
@@ -1073,7 +1178,22 @@ function createJobTools(supervisor: ProcessSupervisor): Tool[] {
     description: "List background jobs in the current session.",
     inputSchema: z.object({}),
     risk: { tags: [] },
-    async execute(_rawInput, context) { return { toolCallId: context.toolCallId, status: "success", summary: "Listed background jobs.", data: { jobs: (await supervisor.list(jobScope(context))).map((job) => ({ id: job.processId, status: job.state, label: job.label, startedAt: job.startedAt, finishedAt: job.endedAt })) } }; },
+    async execute(_rawInput, context) {
+      return {
+        toolCallId: context.toolCallId,
+        status: "success",
+        summary: "Listed background jobs.",
+        data: {
+          jobs: (await supervisor.list(jobScope(context))).map((job) => ({
+            id: job.processId,
+            status: job.state,
+            label: job.label,
+            startedAt: job.startedAt,
+            finishedAt: job.endedAt,
+          })),
+        },
+      };
+    },
   };
   const killSchema = z.object({ job_id: jobIdSchema, reason: z.string().max(500).optional() });
   const kill: Tool = {
@@ -1081,7 +1201,20 @@ function createJobTools(supervisor: ProcessSupervisor): Tool[] {
     description: "Stop a background job and its process tree.",
     inputSchema: killSchema,
     risk: { tags: ["long_running"], runsCommands: true },
-    async execute(rawInput, context) { const input = killSchema.parse(rawInput); try { const result = await supervisor.stop(jobScope(context), input.job_id); return { toolCallId: context.toolCallId, status: "success", summary: `Stopped job ${input.job_id}.`, data: { ...result, reason: input.reason } }; } catch (error) { return managedProcessErrorResult(context.toolCallId, error); } },
+    async execute(rawInput, context) {
+      const input = killSchema.parse(rawInput);
+      try {
+        const result = await supervisor.stop(jobScope(context), input.job_id);
+        return {
+          toolCallId: context.toolCallId,
+          status: "success",
+          summary: `Stopped job ${input.job_id}.`,
+          data: { ...result, reason: input.reason },
+        };
+      } catch (error) {
+        return managedProcessErrorResult(context.toolCallId, error);
+      }
+    },
   };
   return [output, list, kill];
 }
@@ -1327,18 +1460,18 @@ const webFetchTool: Tool<z.infer<typeof webFetchSchema>> = {
   },
 };
 
-const skillLoadSchema = z.object({
-  skillId: z.string().min(1),
+const skillSchema = z.object({
+  name: z.string().trim().min(1),
 });
 
-const skillLoadTool: Tool<z.infer<typeof skillLoadSchema>> = {
-  name: "skill.load",
+const skillTool: Tool<z.infer<typeof skillSchema>> = {
+  name: "skill",
   description:
-    "Load the complete instructions for one available Skill by the stable skillId from <available_skills>.",
-  inputSchema: skillLoadSchema,
+    "Validate and load the complete instructions for one Skill by its name from <available_skills>.",
+  inputSchema: skillSchema,
   risk: { tags: ["read_workspace"] },
   async execute(rawInput, context) {
-    const input = skillLoadSchema.parse(rawInput);
+    const input = skillSchema.parse(rawInput);
     if (!context.skills) {
       return errorResult(
         context.toolCallId,
@@ -1347,7 +1480,7 @@ const skillLoadTool: Tool<z.infer<typeof skillLoadSchema>> = {
       );
     }
     try {
-      const loaded = await context.skills.load(input.skillId);
+      const loaded = await context.skills.load(input.name);
       return {
         toolCallId: context.toolCallId,
         status: "success",
@@ -1358,53 +1491,16 @@ const skillLoadTool: Tool<z.infer<typeof skillLoadSchema>> = {
       return errorResult(
         context.toolCallId,
         error instanceof Error ? error.message : "Skill could not be loaded.",
-        "skill_load_failed",
+        skillErrorCode(error),
       );
     }
   },
 };
 
-const skillReadResourceSchema = z.object({
-  skillId: z.string().min(1),
-  resourcePath: z.string().min(1),
-  maxBytes: z.number().int().positive().max(200000).default(40000),
-});
-
-const skillReadResourceTool: Tool<z.infer<typeof skillReadResourceSchema>> = {
-  name: "skill.read_resource",
-  description: "Read a resource file inside a named skill directory.",
-  inputSchema: skillReadResourceSchema,
-  risk: { tags: ["read_workspace"] },
-  async execute(rawInput, context) {
-    const input = skillReadResourceSchema.parse(rawInput);
-    if (!context.skills) {
-      return errorResult(
-        context.toolCallId,
-        "Skill Registry is unavailable.",
-        "skill_registry_unavailable",
-      );
-    }
-    try {
-      const resource = await context.skills.readResource(
-        input.skillId,
-        input.resourcePath,
-        input.maxBytes,
-      );
-      return {
-        toolCallId: context.toolCallId,
-        status: "success",
-        summary: `Read Skill resource ${resource.resourcePath}.`,
-        data: resource,
-      };
-    } catch (error) {
-      return errorResult(
-        context.toolCallId,
-        error instanceof Error ? error.message : "Skill resource could not be read.",
-        "skill_resource_failed",
-      );
-    }
-  },
-};
+function skillErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object" || !("code" in error)) return "skill_load_failed";
+  return typeof error.code === "string" ? error.code : "skill_load_failed";
+}
 
 function createMcpListTool(servers: Record<string, McpServerConfig>): Tool {
   return {
@@ -1799,7 +1895,8 @@ export function validateShellCommand(command: string, shell: ShellKind): ShellCo
     ) {
       violations.push({
         code: "multiple_shell_steps",
-        message: "The shell tool accepts one expression or pipeline; run independent steps separately.",
+        message:
+          "The shell tool accepts one expression or pipeline; run independent steps separately.",
         position: index,
       });
       if (pair === "&&" || pair === "||") index += 1;
@@ -1941,6 +2038,40 @@ interface ProcessResult {
   outputOverflow?: boolean;
 }
 
+async function safeExistingPath(
+  workspaceRoot: string,
+  inputPath: string,
+): Promise<
+  | { ok: true; absolutePath: string; displayPath: string }
+  | { ok: false; summary: string; code: string }
+> {
+  try {
+    const resolved = await resolveExistingWorkspacePath(workspaceRoot, inputPath);
+    return {
+      ok: true,
+      absolutePath: resolved.absolutePath,
+      displayPath: resolved.isInside ? resolved.relativePath : resolved.absolutePath,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      summary: `Could not access '${inputPath}': ${toErrorMessage(error)}`,
+      code: "path_access_failed",
+    };
+  }
+}
+
+function displaySearchResultPath(
+  workspaceRoot: string,
+  searchRoot: string,
+  resultPath: string,
+): string {
+  const cleaned = cleanRipgrepPath(resultPath);
+  const absolutePath = path.resolve(searchRoot, cleaned);
+  const resolved = resolveWorkspacePath(workspaceRoot, absolutePath);
+  return resolved.isInside ? resolved.relativePath : resolved.absolutePath;
+}
+
 async function runProcess(
   command: string,
   args: string[],
@@ -1967,7 +2098,7 @@ async function runProcess(
 }
 
 async function runShellExpression(
-  command: string,
+  _command: string,
   shell: string,
   args: string[],
   options: {

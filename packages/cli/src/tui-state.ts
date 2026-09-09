@@ -434,14 +434,10 @@ export function reduceTuiEvent(state: TuiState, event: AgentEvent): TuiState {
     }
 
     case "skill.loaded":
-    case "skill.resource.loaded":
       return appendTimeline(state, {
         id: event.id,
-        title: event.type === "skill.loaded" ? "Skill loaded" : "Skill resource loaded",
-        detail:
-          stringValue(payload.name) ??
-          stringValue(payload.resourcePath) ??
-          stringValue(payload.path),
+        title: "Skill loaded",
+        detail: stringValue(payload.name) ?? stringValue(payload.path),
         tone: "success",
         timestamp: event.timestamp,
         turnId: event.turnId,

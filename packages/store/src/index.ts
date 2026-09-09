@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AgentEvent, ChangedFile, FinalSummary, Session, TodoItem } from "@dreamcode/shared";
+import type { AgentEvent, ChangedFile, FinalSummary, MediaAttachment, Session, TodoItem } from "@dreamcode/shared";
 import { createId, makeEvent, nowIso } from "@dreamcode/shared";
 import {
   type SkillLocator,
@@ -618,6 +618,17 @@ export interface ReplayedSessionState {
 }
 
 export function replaySession(events: AgentEvent[]): ReplayedSessionState {
+  const revertedTurnIds = new Set(
+    events.filter((event) => event.type === "turn.reverted").map((event) => event.turnId).filter(Boolean),
+  );
+  events = events.filter(
+    (event) =>
+      event.type === "session.created" ||
+      event.type === "session.resumed" ||
+      event.type === "turn.reverted" ||
+      !event.turnId ||
+      !revertedTurnIds.has(event.turnId),
+  );
   const state: ReplayedSessionState = {
     turns: [],
     status: "unknown",
@@ -665,12 +676,13 @@ export function replaySession(events: AgentEvent[]): ReplayedSessionState {
           break;
         }
         case "user.message": {
-          const payload = event.payload as { content?: string };
-          if (!state.firstPrompt && payload.content) {
-            state.firstPrompt = payload.content;
+          const payload = event.payload as { content?: string; attachments?: MediaAttachment[] };
+          const displayPrompt = payload.content || attachmentOnlyTitle(payload.attachments);
+          if (!state.firstPrompt && displayPrompt) {
+            state.firstPrompt = displayPrompt;
           }
-          if (payload.content) {
-            state.latestPrompt = payload.content;
+          if (displayPrompt) {
+            state.latestPrompt = displayPrompt;
           }
           break;
         }
@@ -772,6 +784,14 @@ export function replaySession(events: AgentEvent[]): ReplayedSessionState {
 
   state.turns = Array.from(turns.values());
   return state;
+}
+
+function attachmentOnlyTitle(attachments: MediaAttachment[] | undefined): string | undefined {
+  const first = attachments?.[0];
+  if (!first) return undefined;
+  return first.name.toLowerCase().startsWith("pasted-image")
+    ? "分析粘贴的图片"
+    : `分析 ${first.name}`;
 }
 
 export interface SessionListItem {

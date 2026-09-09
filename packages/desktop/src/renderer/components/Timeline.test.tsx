@@ -149,7 +149,9 @@ describe("Timeline", () => {
     expect(notice?.closest("details")).toBeNull();
   });
 
-  it("shows the active status at the bottom without an elapsed timer", () => {
+  it("shows a live elapsed timer beside the active execution status", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T00:01:05.000Z"));
     const state: DesktopState = {
       ...createDesktopState(),
       workspaceRoot: "D:\\Projects\\DreamCode",
@@ -160,12 +162,58 @@ describe("Timeline", () => {
       ],
     };
 
+    try {
+      render(<Timeline state={state} profileUsable onConfigure={vi.fn()} onChooseWorkspace={vi.fn()} />);
+
+      expect(screen.getByText("执行中 · 1分钟 5秒")).toBeVisible();
+      expect(screen.getByRole("status")).toHaveTextContent("正在思考");
+      expect(screen.getByTestId("timeline-assistant").compareDocumentPosition(screen.getByRole("status")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the live thinking state when a turn is interrupted", () => {
+    const state: DesktopState = {
+      ...createDesktopState(),
+      workspaceRoot: "D:\\Projects\\DreamCode",
+      runStatus: "interrupted",
+      timeline: [
+        entry("event", "Model started", "openai / gpt-5"),
+        entry("assistant", "Assistant", "中断前的输出"),
+        entry("status", "Turn interrupted", "Stopped by user", "warning"),
+      ],
+    };
+
     render(<Timeline state={state} profileUsable onConfigure={vi.fn()} onChooseWorkspace={vi.fn()} />);
 
-    expect(screen.getByText("执行中")).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("正在思考");
-    expect(screen.queryByText(/处理中|分钟|秒/)).toBeNull();
-    expect(screen.getByTestId("timeline-assistant").compareDocumentPosition(screen.getByRole("status")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    expect(screen.getByText(/已中断 · 耗时/)).toBeVisible();
+  });
+
+  it("automatically collapses long user text and lets the user expand and collapse it", () => {
+    const content = "Long user content ".repeat(40);
+    const state: DesktopState = {
+      ...createDesktopState(),
+      workspaceRoot: "D:\\Projects\\DreamCode",
+      timeline: [entry("user", "User message", content)],
+    };
+
+    render(<Timeline state={state} profileUsable onConfigure={vi.fn()} onChooseWorkspace={vi.fn()} />);
+
+    const message = screen.getByTestId("timeline-user");
+    const text = message.querySelector(".user-bubble-content");
+    expect(text).toHaveTextContent(content.trim());
+    const expand = within(message).getByRole("button", { name: "展开用户消息" });
+    expect(text).toHaveClass("is-collapsed");
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(expand);
+    expect(text).not.toHaveClass("is-collapsed");
+    expect(within(message).getByRole("button", { name: "折叠用户消息" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
   });
 
   it("renders only the diff belonging to each turn", () => {

@@ -40,14 +40,16 @@ class MemoryInstallationStore implements ManagedSkillInstallationStore {
 async function environment(): Promise<{
   base: string;
   workspaceRoot: string;
+  userHome: string;
   dreamCodeHome: string;
   store: MemoryInstallationStore;
 }> {
   const base = await mkdtemp(path.join(os.tmpdir(), "dreamcode-skill-lifecycle-"));
   const workspaceRoot = path.join(base, "workspace");
+  const userHome = path.join(base, "home");
   const dreamCodeHome = path.join(base, "home", ".dreamcode");
   await mkdir(workspaceRoot, { recursive: true });
-  return { base, workspaceRoot, dreamCodeHome, store: new MemoryInstallationStore() };
+  return { base, workspaceRoot, userHome, dreamCodeHome, store: new MemoryInstallationStore() };
 }
 
 async function writeSkill(root: string, version: string, body: string): Promise<void> {
@@ -79,7 +81,7 @@ describe("managed Skill lifecycle", () => {
       ...env,
     });
 
-    expect(installation.path).toBe(path.join(env.dreamCodeHome, "skills", "managed-demo"));
+    expect(installation.path).toBe(path.join(env.userHome, ".agents", "skills", "managed-demo"));
     await expect(readFile(path.join(installation.path, "SKILL.md"), "utf8")).resolves.toContain(
       "Source body.",
     );

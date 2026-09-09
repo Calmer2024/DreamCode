@@ -17,12 +17,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type {
-  SkillCatalogEntry,
-  SkillLoadedContent,
-  SkillResourceContent,
-  SkillTurnContext,
-} from "@dreamcode/shared";
+import type { SkillCatalogEntry, SkillLoadedContent, SkillTurnContext } from "@dreamcode/shared";
 import { unzipSync } from "fflate";
 import { parseDocument } from "yaml";
 
@@ -164,14 +159,7 @@ interface CachedSkillFile {
 
 export class SkillRegistryError extends Error {
   constructor(
-    readonly code:
-      | "skill_not_found"
-      | "skill_disabled"
-      | "skill_invalid"
-      | "skill_conflicted"
-      | "resource_outside_skill"
-      | "resource_not_text"
-      | "resource_too_large",
+    readonly code: "skill_not_found" | "skill_disabled" | "skill_invalid" | "skill_conflicted",
     message: string,
   ) {
     super(message);
@@ -214,14 +202,14 @@ export class SkillSnapshot {
             instance.validity === "valid" &&
             Boolean(instance.metadata?.allowImplicitInvocation),
         )
-        .sort(compareInstances)
+        .sort((left, right) => {
+          const leftName = normalizeName(left.metadata!.name);
+          const rightName = normalizeName(right.metadata!.name);
+          return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+        })
         .map((instance) => ({
-          skillId: instance.skillId,
           name: instance.metadata.name,
           description: instance.metadata.description,
-          source: instance.locator.source,
-          path: path.join(instance.locator.path, "SKILL.md"),
-          allowImplicitInvocation: instance.metadata.allowImplicitInvocation,
         })),
     );
   }
@@ -252,31 +240,51 @@ export class SkillSnapshot {
 
   createTurnContext(): SkillTurnContext {
     const loadCache = new Map<string, SkillLoadedContent>();
+    const loadInstance = async (instance: SkillInstance): Promise<SkillLoadedContent> => {
+      const cached = loadCache.get(instance.skillId);
+      if (cached) return { ...cached, cacheHit: true };
+      const content = this.contents.get(instance.skillId);
+      if (!content || !instance.metadata || !instance.contentHash) {
+        throw new SkillRegistryError(
+          "skill_invalid",
+          `Skill content is unavailable: ${instance.skillId}`,
+        );
+      }
+      const loaded: SkillLoadedContent = {
+        skillId: instance.skillId,
+        name: instance.metadata.name,
+        version: instance.metadata.version,
+        path: path.join(instance.locator.path, "SKILL.md"),
+        content: renderSkillContent(instance, content),
+        contentHash: instance.contentHash,
+        cacheHit: false,
+      };
+      loadCache.set(instance.skillId, loaded);
+      return loaded;
+    };
     return {
       generation: this.generation,
       catalog: this.catalog,
-      load: async (skillId) => {
-        const cached = loadCache.get(skillId);
-        if (cached) return { ...cached, cacheHit: true };
-        const instance = this.callable(skillId);
-        const content = this.contents.get(skillId);
-        if (!content || !instance.metadata || !instance.contentHash) {
-          throw new SkillRegistryError("skill_invalid", `Skill content is unavailable: ${skillId}`);
+      load: async (name) => {
+        const nameKey = normalizeName(name);
+        const instance =
+          this.resolve(name) ??
+          this.instances
+            .filter((candidate) => candidate.nameKey === nameKey)
+            .sort(compareInstances)[0];
+        if (!instance) {
+          throw new SkillRegistryError("skill_not_found", `Skill not found: ${name.trim()}`);
         }
-        const loaded: SkillLoadedContent = {
-          skillId,
-          name: instance.metadata.name,
-          version: instance.metadata.version,
-          path: path.join(instance.locator.path, "SKILL.md"),
-          content: renderSkillContent(instance, content),
-          contentHash: instance.contentHash,
-          cacheHit: false,
-        };
-        loadCache.set(skillId, loaded);
-        return loaded;
+        this.callable(instance.skillId);
+        if (!instance.metadata?.allowImplicitInvocation) {
+          throw new SkillRegistryError(
+            "skill_invalid",
+            `Skill does not allow implicit invocation: ${name.trim()}`,
+          );
+        }
+        return loadInstance(instance);
       },
-      readResource: async (skillId, resourcePath, maxBytes = 40_000) =>
-        readSkillResource(this.callable(skillId), resourcePath, maxBytes),
+      loadExplicit: async (skillId) => loadInstance(this.callable(skillId)),
     };
   }
 
@@ -290,7 +298,10 @@ export class SkillSnapshot {
       throw new SkillRegistryError("skill_invalid", `Skill is invalid: ${skillId}`);
     }
     if (instance.resolution === "conflicted") {
-      throw new SkillRegistryError("skill_conflicted", `Skill has an unresolved conflict: ${skillId}`);
+      throw new SkillRegistryError(
+        "skill_conflicted",
+        `Skill has an unresolved conflict: ${skillId}`,
+      );
     }
     return instance;
   }
@@ -505,44 +516,16 @@ export function parseExplicitSkillInvocations(
   return { prompt: taskPrompt || prompt, skillIds: [...skillIds], errors };
 }
 
-export function renderSkillCatalog(
-  entries: readonly SkillCatalogEntry[],
-  maxChars = 8_000,
-): string {
-  if (!entries.length || maxChars <= 0) return "";
+export function renderSkillCatalog(entries: readonly SkillCatalogEntry[]): string {
+  if (!entries.length) return "";
   const open = "<available_skills>\n";
   const close = "\n</available_skills>";
-  const warning =
-    "\n  <warning>Some skills were omitted to stay within the catalog budget.</warning>";
-  const rendered: string[] = [];
-  let omitted = false;
-  for (const entry of entries) {
-    let description = entry.description;
-    let line = renderCatalogEntry(entry, description);
-    const available = maxChars - open.length - close.length - rendered.join("\n").length - 1;
-    if (line.length > available) {
-      const fixedLength = line.length - description.length;
-      const descriptionBudget = Math.max(0, available - fixedLength - warning.length - 1);
-      if (descriptionBudget >= 24) {
-        description = `${description.slice(0, Math.max(0, descriptionBudget - 1)).trimEnd()}…`;
-        line = renderCatalogEntry(entry, description);
-      }
-    }
-    const body = [...rendered, line].join("\n");
-    if (open.length + body.length + close.length > maxChars) {
-      omitted = true;
-      break;
-    }
-    rendered.push(line);
-  }
-  if (!rendered.length) return "";
-  let body = rendered.join("\n");
-  if (omitted && open.length + body.length + warning.length + close.length <= maxChars) body += warning;
-  return `${open}${body}${close}`;
+  return `${open}${entries.map(renderCatalogEntry).join("\n")}${close}`;
 }
 
 export function renderSkillContent(instance: SkillInstance, content: string): string {
-  if (!instance.metadata) throw new SkillRegistryError("skill_invalid", "Skill metadata is missing.");
+  if (!instance.metadata)
+    throw new SkillRegistryError("skill_invalid", "Skill metadata is missing.");
   const attributes = [
     `id="${escapeXml(instance.skillId)}"`,
     `name="${escapeXml(instance.metadata.name)}"`,
@@ -625,6 +608,7 @@ export interface InstallManagedSkillInput {
   scope: "user" | "project";
   workspaceRoot: string;
   dreamCodeHome: string;
+  userHome?: string;
   store: ManagedSkillInstallationStore;
   confirmations?: SkillLifecycleConfirmations;
 }
@@ -639,12 +623,16 @@ export async function updateManagedSkill(input: {
   skillId: string;
   workspaceRoot: string;
   dreamCodeHome: string;
+  userHome?: string;
   store: ManagedSkillInstallationStore;
   confirmations?: SkillLifecycleConfirmations;
 }): Promise<ManagedSkillInstallation> {
   const installation = input.store.getInstallation(input.skillId);
   if (!installation) {
-    throw new SkillLifecycleError("installation_not_found", `Managed Skill not found: ${input.skillId}`);
+    throw new SkillLifecycleError(
+      "installation_not_found",
+      `Managed Skill not found: ${input.skillId}`,
+    );
   }
   return stageAndInstall(
     {
@@ -652,6 +640,7 @@ export async function updateManagedSkill(input: {
       scope: installation.scope,
       workspaceRoot: input.workspaceRoot,
       dreamCodeHome: input.dreamCodeHome,
+      userHome: input.userHome,
       store: input.store,
       confirmations: input.confirmations,
     },
@@ -663,17 +652,30 @@ export async function rollbackManagedSkill(input: {
   skillId: string;
   workspaceRoot: string;
   dreamCodeHome: string;
+  userHome?: string;
   store: ManagedSkillInstallationStore;
 }): Promise<ManagedSkillInstallation> {
   const installation = input.store.getInstallation(input.skillId);
   if (!installation) {
-    throw new SkillLifecycleError("installation_not_found", `Managed Skill not found: ${input.skillId}`);
+    throw new SkillLifecycleError(
+      "installation_not_found",
+      `Managed Skill not found: ${input.skillId}`,
+    );
   }
   const previous = installation.previous;
   if (!previous || !existsSync(previous.backupPath)) {
-    throw new SkillLifecycleError("rollback_unavailable", "No previous Skill version is available.");
+    throw new SkillLifecycleError(
+      "rollback_unavailable",
+      "No previous Skill version is available.",
+    );
   }
-  assertManagedPath(installation.path, installation.scope, input.workspaceRoot, input.dreamCodeHome);
+  assertManagedPath(
+    installation.path,
+    installation.scope,
+    input.workspaceRoot,
+    input.dreamCodeHome,
+    input.userHome,
+  );
   const parent = path.dirname(installation.path);
   const currentTemporary = await mkdtemp(path.join(parent, ".dreamcode-skill-rollback-"));
   const currentBackup = path.join(currentTemporary, "current");
@@ -719,13 +721,23 @@ export async function uninstallManagedSkill(input: {
   skillId: string;
   workspaceRoot: string;
   dreamCodeHome: string;
+  userHome?: string;
   store: ManagedSkillInstallationStore;
 }): Promise<void> {
   const installation = input.store.getInstallation(input.skillId);
   if (!installation) {
-    throw new SkillLifecycleError("installation_not_found", `Managed Skill not found: ${input.skillId}`);
+    throw new SkillLifecycleError(
+      "installation_not_found",
+      `Managed Skill not found: ${input.skillId}`,
+    );
   }
-  assertManagedPath(installation.path, installation.scope, input.workspaceRoot, input.dreamCodeHome);
+  assertManagedPath(
+    installation.path,
+    installation.scope,
+    input.workspaceRoot,
+    input.dreamCodeHome,
+    input.userHome,
+  );
   const parent = path.dirname(installation.path);
   const removalRoot = await mkdtemp(path.join(parent, ".dreamcode-skill-uninstall-"));
   const stagedInstallation = path.join(removalRoot, "installation");
@@ -743,6 +755,7 @@ export async function uninstallManagedSkill(input: {
         installation.scope,
         input.workspaceRoot,
         input.dreamCodeHome,
+        input.userHome,
       );
       await rename(installation.previous.backupPath, stagedPrevious);
       movedPrevious = true;
@@ -768,7 +781,7 @@ async function stageAndInstall(
 ): Promise<ManagedSkillInstallation> {
   const destinationRoot =
     input.scope === "user"
-      ? path.join(path.resolve(input.dreamCodeHome), "skills")
+      ? userSkillRoot(input.dreamCodeHome, input.userHome)
       : path.join(path.resolve(input.workspaceRoot), ".dreamcode", "skills");
   await mkdir(destinationRoot, { recursive: true });
   const stagingRoot = await mkdtemp(path.join(destinationRoot, ".dreamcode-skill-stage-"));
@@ -784,10 +797,18 @@ async function stageAndInstall(
     const inspected = await inspectSkillPackage(payload);
     const safeName = safeSkillDirectoryName(inspected.metadata.name);
     const destination = expectedInstallation?.path ?? path.join(destinationRoot, safeName);
-    assertManagedPath(destination, input.scope, input.workspaceRoot, input.dreamCodeHome);
+    assertManagedPath(
+      destination,
+      input.scope,
+      input.workspaceRoot,
+      input.dreamCodeHome,
+      input.userHome,
+    );
     const existing =
       expectedInstallation ??
-      input.store.listInstallations().find((installation) => samePath(installation.path, destination));
+      input.store
+        .listInstallations()
+        .find((installation) => samePath(installation.path, destination));
     const conflicts = await installationConflicts(
       destination,
       existing,
@@ -821,7 +842,7 @@ async function stageAndInstall(
       const realDestination = await realpath(destination);
       const locator: SkillLocator = {
         source: input.scope,
-        provider: "dreamcode",
+        provider: input.scope === "user" ? "agents" : "dreamcode",
         path: destination,
         realPath: realDestination,
         projectRelativePath:
@@ -847,8 +868,10 @@ async function stageAndInstall(
     } catch (error) {
       await rm(destination, { recursive: true, force: true }).catch(() => undefined);
       if (existsSync(backupPath)) await rename(backupPath, destination).catch(() => undefined);
-      else if (existsSync(stagedCurrent)) await rename(stagedCurrent, destination).catch(() => undefined);
-      if (existsSync(stagedPrevious)) await rename(stagedPrevious, backupPath).catch(() => undefined);
+      else if (existsSync(stagedCurrent))
+        await rename(stagedCurrent, destination).catch(() => undefined);
+      if (existsSync(stagedPrevious))
+        await rename(stagedPrevious, backupPath).catch(() => undefined);
       throw error;
     }
   } finally {
@@ -875,7 +898,10 @@ async function materializeManagedSource(
       throw new SkillLifecycleError("source_invalid", `Skill ZIP does not exist: ${archivePath}`);
     }
     if (archiveStat.size > 20 * 1024 * 1024) {
-      throw new SkillLifecycleError("package_limit_exceeded", "Compressed Skill ZIP exceeds 20 MiB.");
+      throw new SkillLifecycleError(
+        "package_limit_exceeded",
+        "Compressed Skill ZIP exceeds 20 MiB.",
+      );
     }
     const extractedRoot = path.join(stagingRoot, "extracted");
     await extractSafeZip(await readFile(archivePath), extractedRoot);
@@ -894,7 +920,10 @@ async function materializeManagedSource(
 function resolveSourceSubpath(root: string, subpath: string | undefined): string {
   const selected = path.resolve(root, subpath ?? ".");
   if (!isInsidePath(root, selected)) {
-    throw new SkillLifecycleError("source_invalid", "Skill source subpath escapes its source root.");
+    throw new SkillLifecycleError(
+      "source_invalid",
+      "Skill source subpath escapes its source root.",
+    );
   }
   return selected;
 }
@@ -927,7 +956,8 @@ async function inspectSkillPackage(
   if (!parsed.metadata) {
     throw new SkillLifecycleError(
       "source_invalid",
-      parsed.diagnostics.map((diagnostic) => diagnostic.message).join(" ") || "Skill metadata is invalid.",
+      parsed.diagnostics.map((diagnostic) => diagnostic.message).join(" ") ||
+        "Skill metadata is invalid.",
     );
   }
   return { metadata: parsed.metadata, contentHash: summary.contentHash };
@@ -944,14 +974,20 @@ async function inspectPackageTree(
   const visit = async (current: string): Promise<void> => {
     const currentReal = await realpath(current);
     if (!isInsidePath(root, currentReal)) {
-      throw new SkillLifecycleError("package_unsafe", "Skill package contains a path outside its root.");
+      throw new SkillLifecycleError(
+        "package_unsafe",
+        "Skill package contains a path outside its root.",
+      );
     }
     const info = await lstat(current);
     const relative = normalizePortablePath(path.relative(root, current));
     if (info.isSymbolicLink()) {
       const target = await realpath(current);
       if (!isInsidePath(root, target)) {
-        throw new SkillLifecycleError("package_unsafe", `Skill symlink escapes its root: ${relative}`);
+        throw new SkillLifecycleError(
+          "package_unsafe",
+          `Skill symlink escapes its root: ${relative}`,
+        );
       }
       fileCount += 1;
       hash.update(`link:${relative}:${await readlink(current)}\n`);
@@ -966,12 +1002,18 @@ async function inspectPackageTree(
       return;
     }
     if (!info.isFile()) {
-      throw new SkillLifecycleError("package_unsafe", `Skill package contains a non-regular file: ${relative}`);
+      throw new SkillLifecycleError(
+        "package_unsafe",
+        `Skill package contains a non-regular file: ${relative}`,
+      );
     }
     fileCount += 1;
     totalBytes += info.size;
     if (fileCount > 1_000 || totalBytes > 50 * 1024 * 1024 || info.size > 10 * 1024 * 1024) {
-      throw new SkillLifecycleError("package_limit_exceeded", "Skill package exceeds file count or size limits.");
+      throw new SkillLifecycleError(
+        "package_limit_exceeded",
+        "Skill package exceeds file count or size limits.",
+      );
     }
     hash.update(`file:${relative}:${info.size}\n`);
     hash.update(await readFile(current));
@@ -1001,7 +1043,10 @@ async function extractSafeZip(buffer: Buffer, destination: string): Promise<void
     entries.filter(([name]) => !name.endsWith("/")).length !==
     declaredEntries.filter((entry) => !entry.directory).length
   ) {
-    throw new SkillLifecycleError("package_unsafe", "Skill ZIP directory metadata does not match its payload.");
+    throw new SkillLifecycleError(
+      "package_unsafe",
+      "Skill ZIP directory metadata does not match its payload.",
+    );
   }
   await mkdir(destination, { recursive: true });
   for (const [entryName, data] of entries) {
@@ -1016,7 +1061,10 @@ async function extractSafeZip(buffer: Buffer, destination: string): Promise<void
     if (entryName.endsWith("/")) continue;
     totalBytes += data.byteLength;
     if (data.byteLength > 10 * 1024 * 1024 || totalBytes > 50 * 1024 * 1024) {
-      throw new SkillLifecycleError("package_limit_exceeded", "Skill ZIP exceeds expanded size limits.");
+      throw new SkillLifecycleError(
+        "package_limit_exceeded",
+        "Skill ZIP exceeds expanded size limits.",
+      );
     }
     const target = path.resolve(destination, normalized);
     if (!isInsidePath(destination, target)) {
@@ -1052,13 +1100,22 @@ function inspectZipCentralDirectory(buffer: Buffer): DeclaredZipEntry[] {
   const centralSize = buffer.readUInt32LE(eocd + 12);
   const centralOffset = buffer.readUInt32LE(eocd + 16);
   if (disk !== 0 || centralDisk !== 0 || entryCount === 0xffff) {
-    throw new SkillLifecycleError("package_unsafe", "Multi-disk and ZIP64 Skill archives are not supported.");
+    throw new SkillLifecycleError(
+      "package_unsafe",
+      "Multi-disk and ZIP64 Skill archives are not supported.",
+    );
   }
   if (entryCount > 1_000) {
-    throw new SkillLifecycleError("package_limit_exceeded", "Skill ZIP contains more than 1000 entries.");
+    throw new SkillLifecycleError(
+      "package_limit_exceeded",
+      "Skill ZIP contains more than 1000 entries.",
+    );
   }
   if (centralOffset + centralSize > eocd || centralOffset > buffer.length) {
-    throw new SkillLifecycleError("package_unsafe", "Skill ZIP central directory is outside the archive.");
+    throw new SkillLifecycleError(
+      "package_unsafe",
+      "Skill ZIP central directory is outside the archive.",
+    );
   }
   const entries: DeclaredZipEntry[] = [];
   let totalBytes = 0;
@@ -1076,27 +1133,39 @@ function inspectZipCentralDirectory(buffer: Buffer): DeclaredZipEntry[] {
     const externalAttributes = buffer.readUInt32LE(offset + 38);
     const entryEnd = offset + 46 + nameLength + extraLength + commentLength;
     if (entryEnd > buffer.length) {
-      throw new SkillLifecycleError("package_unsafe", "Skill ZIP entry metadata exceeds the archive.");
+      throw new SkillLifecycleError(
+        "package_unsafe",
+        "Skill ZIP entry metadata exceeds the archive.",
+      );
     }
     const name = buffer.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
     const directory = name.endsWith("/");
     if (hostSystem === 3) {
       const unixType = (externalAttributes >>> 16) & 0xf000;
       if (unixType !== 0 && unixType !== 0x8000 && unixType !== 0x4000) {
-        throw new SkillLifecycleError("package_unsafe", `Skill ZIP contains an unsafe special entry: ${name}`);
+        throw new SkillLifecycleError(
+          "package_unsafe",
+          `Skill ZIP contains an unsafe special entry: ${name}`,
+        );
       }
     }
     if (!directory) {
       totalBytes += uncompressedSize;
       if (uncompressedSize > 10 * 1024 * 1024 || totalBytes > 50 * 1024 * 1024) {
-        throw new SkillLifecycleError("package_limit_exceeded", "Skill ZIP exceeds expanded size limits.");
+        throw new SkillLifecycleError(
+          "package_limit_exceeded",
+          "Skill ZIP exceeds expanded size limits.",
+        );
       }
     }
     entries.push({ name, directory, uncompressedSize });
     offset = entryEnd;
   }
   if (offset !== centralOffset + centralSize) {
-    throw new SkillLifecycleError("package_unsafe", "Skill ZIP central directory size is inconsistent.");
+    throw new SkillLifecycleError(
+      "package_unsafe",
+      "Skill ZIP central directory size is inconsistent.",
+    );
   }
   return entries;
 }
@@ -1152,14 +1221,26 @@ function assertManagedPath(
   scope: "user" | "project",
   workspaceRoot: string,
   dreamCodeHome: string,
+  userHome?: string,
 ): void {
   const expectedRoot =
     scope === "user"
-      ? path.join(path.resolve(dreamCodeHome), "skills")
+      ? userSkillRoot(dreamCodeHome, userHome)
       : path.join(path.resolve(workspaceRoot), ".dreamcode", "skills");
   if (!isInsidePath(expectedRoot, target) || samePath(expectedRoot, target)) {
-    throw new SkillLifecycleError("managed_path_invalid", "Managed Skill path is outside its owned root.");
+    throw new SkillLifecycleError(
+      "managed_path_invalid",
+      "Managed Skill path is outside its owned root.",
+    );
   }
+}
+
+function userSkillRoot(dreamCodeHome: string, userHome?: string): string {
+  return path.join(
+    path.resolve(userHome ?? path.dirname(path.resolve(dreamCodeHome))),
+    ".agents",
+    "skills",
+  );
 }
 
 function safeSkillDirectoryName(name: string): string {
@@ -1171,7 +1252,10 @@ function safeSkillDirectoryName(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
   if (!safe || safe === "." || safe === "..") {
-    throw new SkillLifecycleError("source_invalid", "Skill name cannot form a safe directory name.");
+    throw new SkillLifecycleError(
+      "source_invalid",
+      "Skill name cannot form a safe directory name.",
+    );
   }
   return safe;
 }
@@ -1203,8 +1287,13 @@ function compareSemver(left: string, right: string): number | undefined {
   return 0;
 }
 
-function parseSemver(value: string): { core: [number, number, number]; prerelease: string[] } | undefined {
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value.trim());
+function parseSemver(
+  value: string,
+): { core: [number, number, number]; prerelease: string[] } | undefined {
+  const match =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
+      value.trim(),
+    );
   if (!match) return undefined;
   return {
     core: [Number(match[1]), Number(match[2]), Number(match[3])],
@@ -1228,27 +1317,34 @@ async function runGit(args: readonly string[]): Promise<string> {
     });
     child.once("close", (code) => {
       if (code === 0) resolve(stdout);
-      else reject(new SkillLifecycleError("git_failed", `Git failed (${code ?? "unknown"}): ${stderr.trim()}`));
+      else
+        reject(
+          new SkillLifecycleError(
+            "git_failed",
+            `Git failed (${code ?? "unknown"}): ${stderr.trim()}`,
+          ),
+        );
     });
   });
 }
 
 async function buildSkillRoots(options: SkillRegistryOptions): Promise<SkillRoot[]> {
   const userHome = options.userHome ?? os.homedir();
-  const dreamCodeHome = options.dreamCodeHome ?? path.join(userHome, ".dreamcode");
   const roots: SkillRoot[] = [];
   for (const [index, rootPath] of (options.builtInRoots ?? []).entries()) {
-    roots.push({ path: rootPath, source: "built_in", provider: "dreamcode", priority: 1_000 - index });
+    roots.push({
+      path: rootPath,
+      source: "built_in",
+      provider: "dreamcode",
+      priority: 1_000 - index,
+    });
   }
   const systemRoots = options.systemRoots ?? defaultSystemRoots();
   for (const [index, rootPath] of systemRoots.entries()) {
     roots.push({ path: rootPath, source: "system", provider: "system", priority: 2_000 - index });
   }
   const userRoots: Array<[string, string, number]> = [
-    [path.join(dreamCodeHome, "skills"), "dreamcode", 40],
-    [path.join(userHome, ".agents", "skills"), "agents", 30],
-    [path.join(userHome, ".claude", "skills"), "claude", 20],
-    [path.join(userHome, ".codex", "skills"), "codex", 10],
+    [path.join(userHome, ".agents", "skills"), "agents", 40],
   ];
   for (const [rootPath, provider, rank] of userRoots) {
     roots.push({ path: rootPath, source: "user", provider, priority: 4_000 + rank });
@@ -1263,9 +1359,27 @@ async function buildSkillRoots(options: SkillRegistryOptions): Promise<SkillRoot
   for (const [distance, directory] of projectDirectories.entries()) {
     const distanceRank = (projectDirectories.length - distance) * 100;
     roots.push(
-      { path: path.join(directory, ".dreamcode", "skills"), source: "project", provider: "dreamcode", priority: 5_000 + distanceRank + 30, projectRoot: repoRoot },
-      { path: path.join(directory, ".agents", "skills"), source: "project", provider: "agents", priority: 5_000 + distanceRank + 20, projectRoot: repoRoot },
-      { path: path.join(directory, ".claude", "skills"), source: "project", provider: "claude", priority: 5_000 + distanceRank + 10, projectRoot: repoRoot },
+      {
+        path: path.join(directory, ".dreamcode", "skills"),
+        source: "project",
+        provider: "dreamcode",
+        priority: 5_000 + distanceRank + 30,
+        projectRoot: repoRoot,
+      },
+      {
+        path: path.join(directory, ".agents", "skills"),
+        source: "project",
+        provider: "agents",
+        priority: 5_000 + distanceRank + 20,
+        projectRoot: repoRoot,
+      },
+      {
+        path: path.join(directory, ".claude", "skills"),
+        source: "project",
+        provider: "claude",
+        priority: 5_000 + distanceRank + 10,
+        projectRoot: repoRoot,
+      },
     );
   }
 
@@ -1340,7 +1454,8 @@ async function discoverCandidates(
         if (candidates.has(key)) {
           diagnostics.push({
             code: "duplicate_path",
-            message: "Skill path was discovered from more than one root; the higher-priority root won.",
+            message:
+              "Skill path was discovered from more than one root; the higher-priority root won.",
             path: candidatePath,
           });
           continue;
@@ -1386,7 +1501,9 @@ function makeLocator(candidate: ScannedCandidate, workspaceRoot: string): SkillL
     projectRelativePath:
       candidate.root.source === "project" ? path.relative(projectRoot, candidate.path) : undefined,
     pluginRelativePath:
-      candidate.root.source === "plugin" ? path.relative(candidate.root.path, candidate.path) : undefined,
+      candidate.root.source === "plugin"
+        ? path.relative(candidate.root.path, candidate.path)
+        : undefined,
     pluginId: candidate.root.pluginId,
     pluginDisplayName: candidate.root.pluginDisplayName,
     pluginVersion: candidate.root.pluginVersion,
@@ -1402,7 +1519,13 @@ async function parseSkillMetadata(
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/.exec(content);
   if (!match?.[1]) {
     return {
-      diagnostics: [{ code: "metadata_missing", message: "SKILL.md must begin with YAML frontmatter containing name and description.", path: skillFile }],
+      diagnostics: [
+        {
+          code: "metadata_missing",
+          message: "SKILL.md must begin with YAML frontmatter containing name and description.",
+          path: skillFile,
+        },
+      ],
     };
   }
   const parsed = parseYamlObject(match[1], skillFile);
@@ -1411,11 +1534,19 @@ async function parseSkillMetadata(
   const description = stringValue(parsed.value.description);
   const diagnostics = [...parsed.diagnostics];
   if (!name || !description) {
-    diagnostics.push({ code: "metadata_missing", message: "Skill metadata requires non-empty name and description.", path: skillFile });
+    diagnostics.push({
+      code: "metadata_missing",
+      message: "Skill metadata requires non-empty name and description.",
+      path: skillFile,
+    });
     return { diagnostics };
   }
   if (name.length > 64 || description.length > 1_024) {
-    diagnostics.push({ code: "metadata_invalid", message: "Skill name must be at most 64 characters and description at most 1024 characters.", path: skillFile });
+    diagnostics.push({
+      code: "metadata_invalid",
+      message: "Skill name must be at most 64 characters and description at most 1024 characters.",
+      path: skillFile,
+    });
     return { diagnostics };
   }
   const openAi = await readOpenAiMetadata(skillRoot);
@@ -1425,10 +1556,16 @@ async function parseSkillMetadata(
     name,
     description,
     version: stringValue(parsed.value.version),
-    allowImplicitInvocation: openAi.value?.allowImplicitInvocation ?? booleanValue(parsed.value.allow_implicit_invocation) ?? true,
+    allowImplicitInvocation:
+      openAi.value?.allowImplicitInvocation ??
+      booleanValue(parsed.value.allow_implicit_invocation) ??
+      true,
     capabilities,
     display: openAi.value?.display,
-    extensions: Object.freeze({ frontmatter: parsed.value, ...(openAi.raw ? { openai: openAi.raw } : {}) }),
+    extensions: Object.freeze({
+      frontmatter: parsed.value,
+      ...(openAi.raw ? { openai: openAi.raw } : {}),
+    }),
   };
   return { metadata, diagnostics };
 }
@@ -1469,7 +1606,14 @@ async function readOpenAiMetadata(skillRoot: string): Promise<{
     };
   } catch (error) {
     return {
-      diagnostics: [{ code: "metadata_invalid", message: "agents/openai.yaml could not be read.", path: metadataPath, detail: error instanceof Error ? error.message : String(error) }],
+      diagnostics: [
+        {
+          code: "metadata_invalid",
+          message: "agents/openai.yaml could not be read.",
+          path: metadataPath,
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      ],
     };
   }
 }
@@ -1481,21 +1625,46 @@ function parseYamlObject(
   const document = parseDocument(source, { schema: "core", customTags: [] });
   if (document.errors.length) {
     return {
-      diagnostics: document.errors.map((error) => ({ code: "metadata_invalid", message: "YAML metadata is invalid.", path: sourcePath, detail: error.message })),
+      diagnostics: document.errors.map((error) => ({
+        code: "metadata_invalid",
+        message: "YAML metadata is invalid.",
+        path: sourcePath,
+        detail: error.message,
+      })),
     };
   }
   try {
     const value = document.toJS({ maxAliasCount: 0 });
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return { diagnostics: [{ code: "metadata_invalid", message: "YAML metadata must be an object.", path: sourcePath }] };
+      return {
+        diagnostics: [
+          {
+            code: "metadata_invalid",
+            message: "YAML metadata must be an object.",
+            path: sourcePath,
+          },
+        ],
+      };
     }
     return { value: value as Record<string, unknown>, diagnostics: [] };
   } catch (error) {
-    return { diagnostics: [{ code: "metadata_invalid", message: "YAML aliases are not allowed in Skill metadata.", path: sourcePath, detail: error instanceof Error ? error.message : String(error) }] };
+    return {
+      diagnostics: [
+        {
+          code: "metadata_invalid",
+          message: "YAML aliases are not allowed in Skill metadata.",
+          path: sourcePath,
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      ],
+    };
   }
 }
 
-function normalizeCapabilities(frontmatter: unknown, dependencies: unknown): readonly SkillCapability[] {
+function normalizeCapabilities(
+  frontmatter: unknown,
+  dependencies: unknown,
+): readonly SkillCapability[] {
   const result = new Set<SkillCapability>();
   const values = Array.isArray(frontmatter) ? frontmatter : [];
   for (const value of values) {
@@ -1513,7 +1682,13 @@ function normalizeCapabilities(frontmatter: unknown, dependencies: unknown): rea
 }
 
 function isSkillCapability(value: unknown): value is SkillCapability {
-  return ["filesystem.read", "filesystem.write", "process.execute", "network.access", "mcp.use"].includes(String(value));
+  return [
+    "filesystem.read",
+    "filesystem.write",
+    "process.execute",
+    "network.access",
+    "mcp.use",
+  ].includes(String(value));
 }
 
 async function applyEnablement(
@@ -1521,7 +1696,8 @@ async function applyEnablement(
   state: SkillStateProvider | undefined,
 ): Promise<void> {
   if (!state) return;
-  for (const instance of instances) instance.enabled = (await state.isEnabled(instance.locator)) ?? true;
+  for (const instance of instances)
+    instance.enabled = (await state.isEnabled(instance.locator)) ?? true;
 }
 
 function resolveInstances(instances: SkillInstance[], diagnostics: SkillDiagnostic[]): void {
@@ -1543,7 +1719,11 @@ function resolveInstances(instances: SkillInstance[], diagnostics: SkillDiagnost
     if (tied.length > 1) {
       for (const instance of tied) instance.resolution = "conflicted";
       for (const instance of group.slice(tied.length)) instance.resolution = "overridden";
-      diagnostics.push({ code: "name_conflict", message: `No unique Skill could be selected for ${winner.metadata?.name ?? winner.nameKey}.`, path: winner.locator.path });
+      diagnostics.push({
+        code: "name_conflict",
+        message: `No unique Skill could be selected for ${winner.metadata?.name ?? winner.nameKey}.`,
+        path: winner.locator.path,
+      });
       continue;
     }
     winner.resolution = "resolved";
@@ -1552,7 +1732,11 @@ function resolveInstances(instances: SkillInstance[], diagnostics: SkillDiagnost
 }
 
 function freezeInstances(instances: SkillInstance[]): readonly SkillInstance[] {
-  return Object.freeze(instances.map((instance) => Object.freeze({ ...instance, diagnostics: Object.freeze([...instance.diagnostics]) })));
+  return Object.freeze(
+    instances.map((instance) =>
+      Object.freeze({ ...instance, diagnostics: Object.freeze([...instance.diagnostics]) }),
+    ),
+  );
 }
 
 function compareInstances(left: SkillInstance, right: SkillInstance): number {
@@ -1565,37 +1749,15 @@ function invalidInstance(
   priority: number,
   ...diagnostics: SkillDiagnostic[]
 ): SkillInstance {
-  return { skillId, locator, enabled: true, validity: "invalid", resolution: "ineligible", priority, diagnostics };
-}
-
-async function readSkillResource(
-  instance: SkillInstance,
-  resourcePath: string,
-  requestedMaxBytes: number,
-): Promise<SkillResourceContent> {
-  const maxBytes = Math.min(Math.max(1, Math.trunc(requestedMaxBytes)), 200_000);
-  const target = path.resolve(instance.locator.realPath, resourcePath);
-  if (!isInsidePath(instance.locator.realPath, target)) {
-    throw new SkillRegistryError("resource_outside_skill", "Refused to read outside the Skill directory.");
-  }
-  let targetRealPath: string;
-  try {
-    targetRealPath = await realpath(target);
-  } catch {
-    throw new SkillRegistryError("skill_not_found", `Skill resource not found: ${resourcePath}`);
-  }
-  if (!isInsidePath(instance.locator.realPath, targetRealPath)) {
-    throw new SkillRegistryError("resource_outside_skill", "Refused to follow a resource symlink outside the Skill directory.");
-  }
-  const info = await lstat(targetRealPath);
-  if (!info.isFile()) throw new SkillRegistryError("resource_not_text", "Skill resource is not a regular file.");
-  const buffer = await readFile(targetRealPath);
-  if (buffer.subarray(0, Math.min(buffer.length, 8_192)).includes(0)) {
-    throw new SkillRegistryError("resource_not_text", "Skill resource is binary.");
-  }
-  const truncated = buffer.byteLength > maxBytes;
-  const visible = truncated ? buffer.subarray(0, maxBytes).toString("utf8") : buffer.toString("utf8");
-  return { skillId: instance.skillId, resourcePath, content: visible, truncated };
+  return {
+    skillId,
+    locator,
+    enabled: true,
+    validity: "invalid",
+    resolution: "ineligible",
+    priority,
+    diagnostics,
+  };
 }
 
 function resolveToken(snapshot: SkillSnapshot, token: string): SkillInstance | undefined {
@@ -1637,20 +1799,26 @@ function normalizeSourceQualifier(value: string): SkillSource | undefined {
   return undefined;
 }
 
-function renderCatalogEntry(entry: SkillCatalogEntry, description: string): string {
-  return `  <skill id="${escapeXml(entry.skillId)}" name="${escapeXml(entry.name)}" source="${entry.source}" path="${escapeXml(entry.path)}">${escapeXml(description)}</skill>`;
+function renderCatalogEntry(entry: SkillCatalogEntry): string {
+  return `  <skill name="${escapeXml(entry.name)}">${escapeXml(entry.description)}</skill>`;
 }
 
 function escapeXml(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 export function createSkillId(locator: SkillLocator): string {
-  const identity = locator.source === "project"
-    ? `${locator.source}:${locator.provider}:${locator.projectRelativePath}`
-    : locator.source === "plugin"
-      ? `${locator.source}:${locator.pluginId}:${normalizePortablePath(locator.pluginRelativePath ?? locator.path)}`
-      : `${locator.source}:${locator.provider}:${pathKey(locator.path)}`;
+  const identity =
+    locator.source === "project"
+      ? `${locator.source}:${locator.provider}:${locator.projectRelativePath}`
+      : locator.source === "plugin"
+        ? `${locator.source}:${locator.pluginId}:${normalizePortablePath(locator.pluginRelativePath ?? locator.path)}`
+        : `${locator.source}:${locator.provider}:${pathKey(locator.path)}`;
   return `skill_${sha256(identity).slice(0, 20)}`;
 }
 
@@ -1661,7 +1829,8 @@ export function skillLocatorStateKey(locator: SkillLocator): string {
   if (locator.source === "plugin") {
     return `${locator.pluginId ?? locator.provider}:${normalizePortablePath(locator.path)}`;
   }
-  if (locator.source === "built_in") return `built_in:${locator.provider}:${path.basename(locator.path)}`;
+  if (locator.source === "built_in")
+    return `built_in:${locator.provider}:${path.basename(locator.path)}`;
   return `${locator.source}:${locator.provider}:${pathKey(locator.path)}`;
 }
 

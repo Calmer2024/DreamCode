@@ -2,7 +2,7 @@
 
 import type { AgentEvent } from "@dreamcode/shared";
 import type { ReplayedSessionState } from "@dreamcode/store";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   DesktopApi,
@@ -72,7 +72,7 @@ describe("DreamCode desktop shell", () => {
     expect(screen.getByText("设置")).toBeVisible();
     expect(screen.queryByText("拉取请求")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-mode-icon")).toHaveAttribute("data-lucide", "shield-check");
-    expect(screen.queryByRole("button", { name: "添加附件" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加附件" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "搜索" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "通知" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
@@ -290,6 +290,41 @@ describe("DreamCode desktop shell", () => {
     expect(await screen.findByText("Early reply")).toBeVisible();
     expect(await screen.findByText("已完成")).toBeVisible();
     expect(screen.getByRole("button", { name: "发送" })).toBeVisible();
+  });
+
+  it("restores a rejected Turn without losing the next draft prepared while it was running", async () => {
+    let deliverRunStatus: Parameters<DesktopApi["onRunStatus"]>[0] | undefined;
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          startTurn: vi.fn().mockResolvedValue({ runId: "run_rejected" }),
+          onRunStatus: (listener) => {
+            deliverRunStatus = listener;
+            return () => undefined;
+          },
+        })}
+      />,
+    );
+
+    const prompt = await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" });
+    fireEvent.change(prompt, { target: { value: "Rejected request" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("button", { name: "停止" });
+
+    fireEvent.change(prompt, { target: { value: "Prepared next draft" } });
+    act(() =>
+      deliverRunStatus?.({
+        runId: "run_rejected",
+        status: "failed",
+        draftRestored: true,
+        error: { code: "run_failed", message: "Unsupported media.", recoverable: true },
+      }),
+    );
+
+    expect(await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" })).toHaveValue(
+      "Rejected request\n\nPrepared next draft",
+    );
   });
 
   it("uses an available configured profile instead of a stale current profile", async () => {
@@ -859,6 +894,48 @@ describe("DreamCode desktop shell", () => {
     expect(await screen.findByText("First reply")).toBeVisible();
   });
 
+  it("floats the collapsible todo card above the composer and keeps the current task visible", async () => {
+    let deliverRunEvent: ((message: DesktopRunEvent) => void) | undefined;
+    render(
+      <App
+        api={fakeDesktopApi({
+          bootstrap,
+          startTurn: vi.fn().mockResolvedValue({ runId: "run_todo" }),
+          onRunEvent: (listener) => {
+            deliverRunEvent = listener;
+            return () => undefined;
+          },
+        })}
+      />,
+    );
+
+    const prompt = await screen.findByRole("textbox", { name: "给 DreamCode 发送消息" });
+    fireEvent.change(prompt, { target: { value: "Build the feature" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("button", { name: "停止" });
+
+    act(() =>
+      deliverRunEvent?.({
+        runId: "run_todo",
+        event: agentEvent("todo.updated", {
+          items: [
+            { content: "Inspect the project", status: "completed" },
+            { content: "Implement the floating card", status: "in_progress" },
+            { content: "Run verification", status: "pending" },
+          ],
+        }),
+      }),
+    );
+
+    const card = await screen.findByRole("region", { name: "任务清单" });
+    expect(card.closest(".composer-stack-anchor")).not.toBeNull();
+    expect(card.closest(".timeline")).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: /任务清单/ }));
+    expect(within(card).getByText("Implement the floating card")).toBeVisible();
+    expect(within(card).queryByText("Inspect the project")).not.toBeInTheDocument();
+    expect(within(card).queryByText("Run verification")).not.toBeInTheDocument();
+  });
+
   it("shows a recoverable configuration state when bootstrap fails", async () => {
     const api = fakeDesktopApi();
     api.bootstrap = vi.fn().mockRejectedValue({
@@ -903,6 +980,10 @@ function fakeDesktopApi(
   const api: DesktopApi = {
     bootstrap: vi.fn().mockResolvedValue(bootstrapValue),
     chooseWorkspace: vi.fn().mockResolvedValue(undefined),
+    chooseAttachments: vi.fn().mockResolvedValue({ attachments: [], errors: [] }),
+    stageAttachmentBytes: vi.fn().mockResolvedValue({ attachments: [], errors: [] }),
+    discardAttachments: vi.fn().mockResolvedValue(undefined),
+    readAttachment: vi.fn().mockResolvedValue(new Uint8Array()),
     openWorkspace: vi.fn().mockResolvedValue(undefined),
     createProfile: vi.fn().mockResolvedValue(bootstrapValue),
     updateProfile: vi.fn().mockResolvedValue(bootstrapValue),

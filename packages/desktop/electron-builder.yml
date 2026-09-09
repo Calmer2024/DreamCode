@@ -8,6 +8,8 @@ files:
   - dist-main/**
   - dist-renderer/**
 asar: true
+asarUnpack:
+  - dist-main/bin/**
 npmRebuild: false
 win:
   icon: build/icon.ico

@@ -1,8 +1,9 @@
-import type { ChangedFile, TodoItem } from "@dreamcode/shared";
+import type { ChangedFile, MediaAttachment } from "@dreamcode/shared";
 import {
   Activity,
   BrainCircuit,
   Bug,
+  Check,
   ChevronDown,
   CircleCheck,
   CircleDot,
@@ -11,7 +12,6 @@ import {
   CircleX,
   Clock,
   Copy,
-  Check,
   FileCode2,
   FilePenLine,
   Globe,
@@ -29,7 +29,7 @@ import {
   Telescope,
   Wrench,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { memo, type ReactNode, useEffect, useId, useState } from "react";
 import type {
   DesktopApi,
   DesktopQuestionRequest,
@@ -51,10 +51,11 @@ interface TimelineProps {
   onChooseWorkspace: () => void;
   questionRequest?: DesktopQuestionRequest;
   questionApi?: Pick<DesktopApi, "respondQuestion">;
+  mediaApi?: Pick<DesktopApi, "readAttachment">;
   onQuestionResolved?: () => void;
 }
 
-export function Timeline({
+export const Timeline = memo(function Timeline({
   state,
   profileUsable,
   workspaceName,
@@ -63,6 +64,7 @@ export function Timeline({
   onChooseWorkspace,
   questionRequest,
   questionApi,
+  mediaApi,
   onQuestionResolved,
 }: TimelineProps) {
   if (!profileUsable) {
@@ -130,20 +132,20 @@ export function Timeline({
       {state.request && !state.timeline.some((entry) => entry.kind === "user") ? (
         <UserMessage content={state.request.prompt} timestamp={state.requestTimestamp ?? ""} />
       ) : null}
-      {state.todoItems.length ? <TodoPanel items={state.todoItems} /> : null}
-      {conversationBlocks(state.timeline, state.tools, state.turnUsage, state.changedFilesByTurn)}
+      {conversationBlocks(state.timeline, state.tools, state.turnUsage, state.changedFilesByTurn, mediaApi)}
       {questionRequest && questionApi && onQuestionResolved ? (
         <QuestionCard api={questionApi} request={questionRequest} onResolved={onQuestionResolved} />
       ) : null}
     </section>
   );
-}
+});
 
 function conversationBlocks(
   entries: DesktopTimelineEntry[],
   tools: DesktopToolEvent[],
   turnUsage: Record<string, DesktopTurnUsage>,
   changedFilesByTurn: Record<string, ChangedFile[]>,
+  mediaApi?: Pick<DesktopApi, "readAttachment">,
 ): ReactNode[] {
   const blocks: ReactNode[] = [];
   let execution: DesktopTimelineEntry[] = [];
@@ -158,6 +160,7 @@ function conversationBlocks(
         changedFiles={execution.find((entry) => entry.turnId)?.turnId
           ? changedFilesByTurn[execution.find((entry) => entry.turnId)?.turnId ?? ""] ?? []
           : []}
+        mediaApi={mediaApi}
         key={`execution-${execution[0]?.id ?? blocks.length}`}
       />,
     );
@@ -169,7 +172,7 @@ function conversationBlocks(
     if (entry.kind === "session" || entry.kind === "turn") continue;
     if (entry.kind === "user") {
       flushExecution();
-      blocks.push(<TimelineItem entry={entry} key={entry.id} />);
+      blocks.push(<TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />);
     } else {
       if (execution.length && entry.turnId && executionTurnId && entry.turnId !== executionTurnId) {
         flushExecution();
@@ -187,14 +190,32 @@ function ExecutionSegment({
   tools,
   usage,
   changedFiles,
+  mediaApi,
 }: {
   entries: DesktopTimelineEntry[];
   tools: DesktopToolEvent[];
   usage?: DesktopTurnUsage;
   changedFiles: ChangedFile[];
+  mediaApi?: Pick<DesktopApi, "readAttachment">;
 }) {
   const liveStatusDelayMs = 800;
-  const completed = entries.some((entry) => entry.title === "Turn completed");
+  const terminalEntry = [...entries]
+    .reverse()
+    .find(
+      (entry) =>
+        entry.kind === "status" &&
+        (entry.title === "Turn completed" ||
+          entry.title === "Turn failed" ||
+          entry.title === "Turn interrupted"),
+    );
+  const terminal = Boolean(terminalEntry);
+  const completed = terminalEntry?.title === "Turn completed";
+  const terminalLabel =
+    terminalEntry?.title === "Turn completed"
+      ? "已完成"
+      : terminalEntry?.title === "Turn failed"
+        ? "执行失败"
+        : "已中断";
   const turnId = entries.find((entry) => entry.turnId)?.turnId;
   const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
   const runningTools = segmentTools.some((tool) => tool.status === "running" || tool.status === "queued");
@@ -212,23 +233,25 @@ function ExecutionSegment({
   const hasVisibleOutput = summaries.some((entry) => Boolean(entry.detail?.trim()));
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (completed || runningTools || !hasVisibleOutput) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 100);
+    if (terminal) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
-  }, [completed, hasVisibleOutput, runningTools]);
+  }, [terminal]);
   const latestOutputAt = latestVisibleSummary ? new Date(latestVisibleSummary.timestamp).valueOf() : Number.NaN;
   const outputIsFresh = Number.isFinite(latestOutputAt) && now - latestOutputAt < liveStatusDelayMs;
-  const showLiveStatus = !completed && (runningTools || !hasVisibleOutput || !outputIsFresh);
+  const showLiveStatus = !terminal && (runningTools || !hasVisibleOutput || !outputIsFresh);
   const liveStatus = runningTools ? "正在调用工具" : "正在思考";
   let processRendered = false;
 
   return (
     <>
       {processEntries.length ? (
-        <details className="execution-segment" open={completed ? undefined : true}>
+        <details className="execution-segment" open={terminal ? undefined : true}>
           <summary className="execution-summary">
             <span>
-              {completed ? `已完成 · 耗时 ${formatElapsed(entries)}` : "执行中"}
+              {terminalEntry
+                ? `${terminalLabel} · 耗时 ${formatElapsed(entries)}`
+                : `执行中 · ${formatElapsed(entries, now)}`}
             </span>
             <ChevronDown aria-hidden="true" />
           </summary>
@@ -239,17 +262,18 @@ function ExecutionSegment({
                 processRendered = true;
                 return <ToolProcess tools={segmentTools} key={`process-${entry.id}`} />;
               }
-              return <TimelineItem entry={entry} key={entry.id} />;
+              return <TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />;
             })}
           </div>
         </details>
       ) : null}
       {notices.map((entry) => (
-        <TimelineItem entry={entry} key={entry.id} />
+        <TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />
       ))}
       {summaries.map((entry, index) => (
         <TimelineItem
           entry={entry}
+          mediaApi={mediaApi}
           usage={index === summaries.length - 1 ? usage : undefined}
           liveStatus={showLiveStatus && index === summaries.length - 1 ? liveStatus : undefined}
           key={entry.id}
@@ -262,24 +286,6 @@ function ExecutionSegment({
       ) : null}
       {completed && changedFiles.length ? <DiffSummaryCard files={changedFiles} /> : null}
     </>
-  );
-}
-
-function TodoPanel({ items }: { items: TodoItem[] }) {
-  const [open, setOpen] = useState(true);
-  const completed = items.filter((item) => item.status === "completed").length;
-  return (
-    <section className="todo-panel" aria-label="任务清单">
-      <button type="button" className="todo-panel-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-        <span className="todo-panel-title"><CircleCheck aria-hidden="true" /> 任务清单</span>
-        <span className="todo-panel-count">{completed}/{items.length}</span>
-        <ChevronDown aria-hidden="true" className={open ? "todo-chevron-open" : ""} />
-      </button>
-      {open ? <div className="todo-list">{items.map((item, index) => {
-        const Icon = item.status === "completed" ? CircleCheck : item.status === "blocked" ? CircleX : CircleDot;
-        return <div className={`todo-item todo-${item.status}`} key={`${item.content}-${index}`}><Icon aria-hidden="true" /><span>{item.content}</span></div>;
-      })}</div> : null}
-    </section>
   );
 }
 
@@ -388,13 +394,23 @@ function TimelineItem({
   entry,
   usage,
   liveStatus,
+  mediaApi,
 }: {
   entry: DesktopTimelineEntry;
   usage?: DesktopTurnUsage;
   liveStatus?: string;
+  mediaApi?: Pick<DesktopApi, "readAttachment">;
 }) {
   if (entry.kind === "user") {
-    return <UserMessage content={entry.detail ?? ""} timestamp={entry.timestamp} />;
+    return (
+      <UserMessage
+        content={entry.detail ?? ""}
+        timestamp={entry.timestamp}
+        attachments={entry.attachments}
+        sessionId={entry.sessionId}
+        mediaApi={mediaApi}
+      />
+    );
   }
 
   if (entry.kind === "assistant") {
@@ -477,8 +493,23 @@ function TimelineItem({
   );
 }
 
-function UserMessage({ content, timestamp }: { content: string; timestamp: string }) {
+function UserMessage({
+  content,
+  timestamp,
+  attachments = [],
+  sessionId,
+  mediaApi,
+}: {
+  content: string;
+  timestamp: string;
+  attachments?: MediaAttachment[];
+  sessionId?: string;
+  mediaApi?: Pick<DesktopApi, "readAttachment">;
+}) {
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  const collapsible = content.length > 600 || content.split(/\r?\n/).length > 8;
   const copy = async () => {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
@@ -503,7 +534,40 @@ function UserMessage({ content, timestamp }: { content: string; timestamp: strin
   };
   return (
     <article className="timeline-entry user-entry" data-testid="timeline-user">
-      <div className="user-bubble">{content}</div>
+      <div className="user-bubble">
+        <div
+          className={`user-bubble-content${collapsible && !expanded ? " is-collapsed" : ""}`}
+          id={contentId}
+        >
+          {content ? <span>{content}</span> : null}
+          {attachments.length ? (
+            <div className="message-attachments">
+              {attachments.map((attachment, index) => (
+                <HistoryAttachment
+                  key={attachment.id}
+                  attachment={attachment}
+                  index={index}
+                  sessionId={sessionId}
+                  api={mediaApi}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+        {collapsible ? (
+          <button
+            type="button"
+            className="user-message-toggle"
+            aria-controls={contentId}
+            aria-expanded={expanded}
+            aria-label={expanded ? "折叠用户消息" : "展开用户消息"}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? "收起" : "展开"}
+            <ChevronDown aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
       <div className="user-bubble-actions">
         <time dateTime={timestamp}>{formatTime(timestamp)}</time>
         <button
@@ -563,19 +627,75 @@ function formatTime(timestamp: string): string {
   return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function formatElapsed(
-  entries: DesktopTimelineEntry[],
-): string {
+function formatElapsed(entries: DesktopTimelineEntry[], endAt?: number): string {
   const timestamps = entries.filter((entry) => entry.kind !== "session")
     .map((entry) => new Date(entry.timestamp).valueOf())
     .filter(Number.isFinite);
   if (!timestamps.length) return "0秒";
-  const end = Math.max(...timestamps);
+  const end = endAt ?? Math.max(...timestamps);
   const elapsedMs = Math.max(0, end - Math.min(...timestamps));
   const elapsedSeconds = Math.floor(elapsedMs / 1000);
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
   return minutes ? `${minutes}分钟 ${seconds}秒` : `${seconds}秒`;
+}
+
+function HistoryAttachment({
+  attachment,
+  index,
+  sessionId,
+  api,
+}: {
+  attachment: MediaAttachment;
+  index: number;
+  sessionId?: string;
+  api?: Pick<DesktopApi, "readAttachment">;
+}) {
+  const [url, setUrl] = useState<string>();
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (!api || !sessionId) return;
+    let active = true;
+    let objectUrl: string | undefined;
+    void api.readAttachment({ attachmentId: attachment.id, sessionId }).then((bytes) => {
+      if (!active) return;
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      objectUrl = URL.createObjectURL(new Blob([copy.buffer], { type: attachment.mimeType }));
+      setUrl(objectUrl);
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [api, attachment.id, attachment.mimeType, sessionId]);
+  return (
+    <figure className="message-attachment">
+      {attachment.kind === "image" && url ? (
+        <button type="button" className="message-image-button" aria-label={`放大图片 ${attachment.name}`} onClick={() => setExpanded(true)}>
+          <img src={url} alt={attachment.name} />
+        </button>
+      ) : null}
+      {attachment.kind === "audio" && url ? <audio src={url} controls preload="metadata" /> : null}
+      {attachment.kind === "video" && url ? <video src={url} controls preload="metadata" /> : null}
+      {!url ? <div className="message-attachment-loading">正在载入附件…</div> : null}
+      <figcaption>
+        <strong>附件 {index + 1} · {attachment.name}</strong>
+        <small>{attachment.mimeType} · {formatAttachmentSize(attachment.size)}</small>
+      </figcaption>
+      {expanded && url ? (
+        <div className="attachment-lightbox" role="dialog" aria-modal="true" aria-label={attachment.name} onClick={() => setExpanded(false)}>
+          <button type="button" aria-label="关闭图片预览" onClick={() => setExpanded(false)}>关闭</button>
+          <img src={url} alt={attachment.name} onClick={(event) => event.stopPropagation()} />
+        </div>
+      ) : null}
+    </figure>
+  );
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function EventIcon({ entry }: { entry: DesktopTimelineEntry }) {

@@ -46,7 +46,6 @@ interface CliOptions {
   apiKey?: string;
   apiKeyEnv?: string;
   baseUrl?: string;
-  maxToolCalls: string;
   home?: string;
   listProviders?: boolean;
   tui?: boolean;
@@ -66,7 +65,6 @@ interface ReplState {
   workspaceRoot: string;
   mode: RunMode;
   home?: string;
-  maxToolCalls: number;
   conversation: ConversationEntry[];
   processSupervisor: ProcessSupervisor;
 }
@@ -104,7 +102,6 @@ export async function main(argv = process.argv): Promise<void> {
     .option("--api-key-env <name>", "从指定环境变量读取模型 API key")
     .option("--base-url <url>", "覆盖模型 provider 的 OpenAI-compatible base URL")
     .option("--list-providers", "列出可用模型 provider preset")
-    .option("--max-tool-calls <count>", "最大工具调用次数", "80")
     .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
     .option("--no-tui", "无 prompt 时禁用 Ink TUI, 使用旧版 REPL")
     .showHelpAfterError()
@@ -142,7 +139,6 @@ export async function main(argv = process.argv): Promise<void> {
       .option("--api-key <key>", "直接传入模型 API key")
       .option("--api-key-env <name>", "从指定环境变量读取模型 API key")
       .option("--base-url <url>", "覆盖模型 provider base URL")
-      .option("--max-tool-calls <count>", "最大工具调用次数", "80")
       .action(
         async (
           sessionId: string | undefined,
@@ -246,7 +242,6 @@ export async function main(argv = process.argv): Promise<void> {
   }
 
   const mode = runModeSchema.parse(options.mode);
-  const maxToolCalls = parseMaxToolCalls(options.maxToolCalls);
   const config = await loadDreamCodeConfig(options.home);
   const prompt = program.args.join(" ").trim();
 
@@ -259,13 +254,12 @@ export async function main(argv = process.argv): Promise<void> {
         workspaceRoot: path.resolve(options.cwd),
         mode,
         home: options.home,
-        maxToolCalls,
         createProvider: (nextPrompt: string) =>
           createCliProvider(nextPrompt, options, config, transientProfile),
       });
       return;
     }
-    await runInteractiveShell({ options, config, mode, maxToolCalls });
+    await runInteractiveShell({ options, config, mode });
     return;
   }
 
@@ -281,7 +275,6 @@ export async function main(argv = process.argv): Promise<void> {
       model,
       mode,
       home: options.home,
-      maxToolCalls,
       registry: createDefaultToolRegistry({ mcpServers: config.mcpServers, processSupervisor }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
@@ -299,7 +292,6 @@ async function runInteractiveShell(input: {
   options: CliOptions;
   config: DreamCodeConfig;
   mode: RunMode;
-  maxToolCalls: number;
 }): Promise<void> {
   const state: ReplState = {
     config: input.config,
@@ -307,7 +299,6 @@ async function runInteractiveShell(input: {
     workspaceRoot: path.resolve(input.options.cwd),
     mode: input.mode,
     home: input.options.home,
-    maxToolCalls: input.maxToolCalls,
     conversation: [],
     processSupervisor: new ProcessSupervisor(),
   };
@@ -359,7 +350,6 @@ async function runInteractiveTurn(
       mode: state.mode,
       conversationSummary: buildConversationSummary(state.conversation),
       home: state.home,
-      maxToolCalls: state.maxToolCalls,
       registry: createDefaultToolRegistry({
         mcpServers: state.config.mcpServers,
         processSupervisor: state.processSupervisor,
@@ -876,7 +866,6 @@ async function resumeSessionCommand(
     apiKey?: string;
     apiKeyEnv?: string;
     baseUrl?: string;
-    maxToolCalls: string;
   },
 ): Promise<void> {
   const normalized = normalizeResumeInlineOptions(promptParts, options);
@@ -893,7 +882,6 @@ async function resumeSessionCommand(
     "继续这个 DreamCode 历史任务。请先根据已有事件确认状态, 然后完成仍未完成的目标。";
   const config = await loadDreamCodeConfig(effectiveOptions.home);
   const mode = runModeSchema.parse(effectiveOptions.mode);
-  const maxToolCalls = parseMaxToolCalls(effectiveOptions.maxToolCalls);
   const { provider, model } = createCliProvider(prompt, effectiveOptions, config);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const processSupervisor = new ProcessSupervisor();
@@ -906,7 +894,6 @@ async function resumeSessionCommand(
       model,
       mode,
       home: effectiveOptions.home,
-      maxToolCalls,
       registry: createDefaultToolRegistry({ mcpServers: config.mcpServers, processSupervisor }),
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
@@ -931,7 +918,6 @@ function normalizeResumeInlineOptions(
     apiKey?: string;
     apiKeyEnv?: string;
     baseUrl?: string;
-    maxToolCalls: string;
   },
 ): {
   promptParts: string[];
@@ -944,7 +930,6 @@ function normalizeResumeInlineOptions(
     apiKey?: string;
     apiKeyEnv?: string;
     baseUrl?: string;
-    maxToolCalls: string;
   };
 } {
   const nextOptions = { ...options };
@@ -952,11 +937,6 @@ function normalizeResumeInlineOptions(
   for (let index = 0; index < promptParts.length; index += 1) {
     const token = promptParts[index] ?? "";
     const next = promptParts[index + 1];
-    if (token === "--max-tool-calls" && next) {
-      nextOptions.maxToolCalls = next;
-      index += 1;
-      continue;
-    }
     if (token === "--mode" && next) {
       nextOptions.mode = next;
       index += 1;
@@ -1470,14 +1450,6 @@ function isReadlineClosedError(error: unknown): boolean {
   return error instanceof Error && error.message === "readline was closed";
 }
 
-function parseMaxToolCalls(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`--max-tool-calls 必须是正整数, 当前值: ${value}`);
-  }
-  return parsed;
-}
-
 function normalizeOptional(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
@@ -1507,7 +1479,6 @@ function shouldTreatAsRootPrompt(argv: string[]): boolean {
     "--api-key",
     "--api-key-env",
     "--base-url",
-    "--max-tool-calls",
     "--home",
   ]);
 

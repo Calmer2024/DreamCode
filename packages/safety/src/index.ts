@@ -72,14 +72,25 @@ const secretBasenames = new Set([
   "id_ed25519",
   "credentials",
   "credentials.json",
+  ".ssh",
+  ".aws",
+  ".azure",
+  ".gnupg",
+  ".kube",
 ]);
 
 const secretNamePattern =
   /(^|[._-])(secret|secrets|token|tokens|credential|credentials|password|passwd|private[_-]?key|api[_-]?key)([._-]|$)|\.(pem|key|p12|pfx)$/i;
 
 export function isSecretPath(inputPath: string): boolean {
-  const basename = path.basename(inputPath).toLowerCase();
-  return secretBasenames.has(basename) || secretNamePattern.test(inputPath);
+  const components = inputPath
+    .split(/[\\/]+/)
+    .map((component) => component.toLowerCase())
+    .filter(Boolean);
+  return (
+    components.some((component) => secretBasenames.has(component)) ||
+    secretNamePattern.test(inputPath)
+  );
 }
 
 export interface CommandClassification {
@@ -186,7 +197,7 @@ export function classifyCommand(command: string): CommandClassification {
   };
 }
 
-export const PERMISSION_RULES_VERSION = "catalog-1";
+export const PERMISSION_RULES_VERSION = "catalog-2";
 
 export const PermissionRuleCatalog = {
   classify(command: string): CommandClassification {
@@ -195,7 +206,7 @@ export const PermissionRuleCatalog = {
   categories: [
     {
       id: "workspace_read",
-      summary: "Read workspace files and inspect repository state.",
+      summary: "Read local files and inspect repository state.",
       examples: ["rg pattern .", "git status"],
     },
     {
@@ -220,8 +231,13 @@ export const PermissionRuleCatalog = {
     },
     {
       id: "external_read",
-      summary: "Read paths outside the workspace.",
+      summary: "Read and search local paths outside the workspace.",
       examples: ["file.read C:/temp/report.txt"],
+    },
+    {
+      id: "sensitive_read",
+      summary: "Read or explicitly search sensitive local files.",
+      examples: ["file.read .env"],
     },
     { id: "mcp", summary: "Call configured external MCP tools.", examples: ["mcp.call"] },
     {
@@ -250,11 +266,11 @@ export function buildPermissionCapabilityContract(
   });
   const modes: PermissionCapabilityContract["modes"] = {
     plan: {
-      allow: [category("workspace_read"), category("tests_checks")],
+      allow: [category("workspace_read"), category("external_read"), category("tests_checks")],
       ask: [
         category("network", "Web/network reads require approval in plan mode."),
         category("mcp", "MCP tools require approval in plan mode."),
-        category("external_read", "Workspace-external reads require approval in plan mode."),
+        category("sensitive_read"),
       ].filter(Boolean),
       deny: [
         category("workspace_write"),
@@ -264,24 +280,29 @@ export function buildPermissionCapabilityContract(
       ],
     },
     guided: {
-      allow: [category("workspace_read"), category("tests_checks")],
+      allow: [category("workspace_read"), category("external_read"), category("tests_checks")],
       ask: [
         category("workspace_write"),
         category("dependency_install"),
         category("network"),
         category("mcp"),
-        category("external_read"),
+        category("sensitive_read"),
         category("other_command"),
       ].filter(Boolean),
       deny: [category("destructive")],
     },
     yolo: {
-      allow: [category("workspace_read"), category("tests_checks"), category("workspace_write")],
+      allow: [
+        category("workspace_read"),
+        category("external_read"),
+        category("tests_checks"),
+        category("workspace_write"),
+      ],
       ask: [
         category("dependency_install"),
         category("network"),
         category("mcp"),
-        category("external_read"),
+        category("sensitive_read"),
         category("other_command"),
       ].filter(Boolean),
       deny: [category("destructive")],
@@ -295,6 +316,7 @@ export function buildPermissionCapabilityContract(
         category("network"),
         category("mcp"),
         category("external_read"),
+        category("sensitive_read"),
         category("other_command"),
       ].filter(Boolean),
       ask: [],
@@ -336,8 +358,10 @@ export class PermissionEngine {
       return allow("Planning and user-question tools are always safe.", []);
     }
 
-    if (toolName === "skill.load" || toolName === "skill.read_resource") {
-      return allow("Skill metadata and resources are local read-only context.", ["read_workspace"]);
+    if (toolName === "skill") {
+      return allow("Loading validated Skill instructions is local read-only context.", [
+        "read_workspace",
+      ]);
     }
 
     if (toolName === "web.search" || toolName === "web.fetch") {
@@ -369,11 +393,28 @@ export class PermissionEngine {
       ]);
     }
 
-    if (
-      toolName === "search.grep" ||
-      toolName === "search.glob"
-    ) {
-      return allow("Search within the workspace is allowed.", ["read_workspace"]);
+    if (toolName === "search.grep" || toolName === "search.glob") {
+      const target = stringField(toolInput, "path") ?? ".";
+      const resolved = resolveWorkspacePath(workspaceRoot, target);
+      const sensitiveSelector =
+        toolName === "search.glob"
+          ? stringField(toolInput, "pattern")
+          : stringField(toolInput, "include");
+      if (isSecretPath(target) || (sensitiveSelector && isSecretPath(sensitiveSelector))) {
+        return mode === "full"
+          ? allow("Full mode allows an explicit sensitive search.", [
+              "secret_access",
+              ...(resolved.isInside ? [] : ["read_external_path" as const]),
+            ])
+          : ask("Searching an explicitly sensitive path requires approval.", [
+              "secret_access",
+              ...(resolved.isInside ? [] : ["read_external_path" as const]),
+            ]);
+      }
+      return allow(
+        resolved.isInside ? "Local search is allowed." : "External local search is allowed.",
+        [resolved.isInside ? "read_workspace" : "read_external_path"],
+      );
     }
 
     if (toolName === "git.status" || toolName === "git.diff") {
@@ -399,28 +440,18 @@ export class PermissionEngine {
       }
       const classified = PermissionRuleCatalog.classify(command);
       const isBackground = toolInput.run_in_background === true;
-      const classifiedRisk = isBackground ? [...new Set([...classified.risk, "long_running" as const])] : classified.risk;
-      if (isBackground && mode === "plan") return deny("Plan mode does not allow starting long-running processes.", classifiedRisk);
+      let classifiedRisk = isBackground
+        ? [...new Set([...classified.risk, "long_running" as const])]
+        : classified.risk;
+      if (isBackground && mode === "plan")
+        return deny("Plan mode does not allow starting long-running processes.", classifiedRisk);
       if (mode === "plan" && classified.risk.includes("shell_mutating")) {
         return deny("Plan mode does not allow mutating shell commands.", classifiedRisk);
       }
       const cwd = stringField(toolInput, "cwd") ?? ".";
       const externalCwd = !resolveWorkspacePath(workspaceRoot, cwd).isInside;
       if (externalCwd) {
-        const externalRisk = [...new Set([...classifiedRisk, "read_external_path" as const])];
-        if (classified.decision === "deny") {
-          return deny(classified.reason, externalRisk);
-        }
-        if (mode === "full") {
-          return allow("Full mode allows this command with an external cwd.", externalRisk);
-        }
-        if (mode === "yolo" && classified.decision === "allow") {
-          return allow("Safe YOLO policy allows this command with an external cwd.", externalRisk);
-        }
-        return ask(
-          "Using a cwd outside the workspace requires approval in this mode.",
-          externalRisk,
-        );
+        classifiedRisk = [...new Set([...classifiedRisk, "read_external_path" as const])];
       }
       if (isBackground && mode === "guided" && classified.decision !== "deny") {
         return ask(
@@ -456,22 +487,24 @@ export class PermissionEngine {
       stringField(input.toolInput, "dir") ??
       ".";
     const resolved = resolveWorkspacePath(input.workspaceRoot, target);
-    const isWrite =
-      input.toolName === "file.write" ||
-      input.toolName === "file.patch";
+    const isWrite = input.toolName === "file.write" || input.toolName === "file.patch";
 
     if (isWrite && !resolved.isInside) {
       return deny("Writing outside the workspace is denied.", ["write_external_path"]);
     }
 
-    if (!isWrite && !resolved.isInside) {
+    if (!isWrite && isSecretPath(target)) {
+      const risk = [
+        "secret_access" as const,
+        ...(resolved.isInside ? [] : ["read_external_path" as const]),
+      ];
       return input.mode === "full"
-        ? allow("Full mode allows this external read.", ["read_external_path"])
-        : ask("Reading outside the workspace requires approval.", ["read_external_path"]);
+        ? allow("Full mode allows this sensitive file read.", risk)
+        : ask("Reading a sensitive file requires approval.", risk);
     }
 
-    if (!isWrite && isSecretPath(target)) {
-      return deny("Reading secret-like files is denied.", ["secret_access"]);
+    if (!isWrite && !resolved.isInside) {
+      return allow("External local file reads are allowed.", ["read_external_path"]);
     }
 
     if (isWrite && input.mode === "plan") {
@@ -496,15 +529,6 @@ export class PermissionEngine {
       [isWrite ? "write_workspace" : "read_workspace"],
     );
   }
-}
-
-function processCommand(input: Record<string, unknown>): string | undefined {
-  const program = stringField(input, "program");
-  if (!program) return undefined;
-  const args = Array.isArray(input.args)
-    ? input.args.filter((value): value is string => typeof value === "string")
-    : [];
-  return [program, ...args].join(" ");
 }
 
 function readObject(input: unknown): Record<string, unknown> {

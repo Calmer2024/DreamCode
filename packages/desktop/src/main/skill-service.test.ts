@@ -25,6 +25,7 @@ describe("DesktopSkillService", () => {
     expect(listed.skills).toEqual([
       expect.objectContaining({ name: "review", source: "user", enabled: true }),
     ]);
+    expect(listed.skills[0]?.path).toBe(path.join(userHome, ".agents", "skills", "review"));
     const skillId = listed.skills[0]!.skillId;
     await service.setEnabled({ workspaceRoot: workspaceA, skillId, enabled: false });
 

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rm, statfs, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ContextBuilder, contextOptionsForModel } from "@dreamcode/context";
@@ -10,12 +10,12 @@ import type {
   ChatMessage,
   FinalSummary,
   ModelProvider,
+  MediaAttachment,
   NormalizedToolCall,
   PermissionDecision,
   RunMode,
   TodoItem,
   ToolCallObservation,
-  ToolModelSpec,
   ToolResult,
   Turn,
 } from "@dreamcode/shared";
@@ -44,6 +44,7 @@ export interface ApprovalRequest {
 
 export interface RunTurnInput {
   prompt: string;
+  attachments?: MediaAttachment[];
   workspaceRoot: string;
   provider: ModelProvider;
   sessionId?: string;
@@ -51,7 +52,6 @@ export interface RunTurnInput {
   mode?: RunMode;
   conversationSummary?: string;
   home?: string;
-  maxToolCalls?: number;
   registry?: ToolRegistry;
   permissionEngine?: PermissionEngine;
   contextBuilder?: ContextBuilder;
@@ -75,7 +75,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const permissionEngine = input.permissionEngine ?? new PermissionEngine();
   const contextOptions = contextOptionsForModel(input.provider.name, input.model);
   const contextBuilder = input.contextBuilder ?? new ContextBuilder(contextOptions);
-  const maxToolCalls = input.maxToolCalls ?? 80;
   const { session, eventLog } = input.sessionId
     ? await openSession({ sessionId: input.sessionId, home: input.home })
     : await createSession({
@@ -93,7 +92,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
     startedAt: nowIso(),
   };
   const state: RunTurnState = {
-    messages: projectConversationMessages(priorEvents),
+    messages: projectConversationMessages(priorEvents, session.sessionDir),
     observations: [],
     todoItems: resumeState?.todoItems ?? [],
     // A turn summary must describe only the changes produced by this turn.
@@ -107,10 +106,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       content: `Additional conversation context:\n${input.conversationSummary.trim()}`,
     });
   }
-  let toolCallCount = 0;
-  let consecutiveFailures = 0;
   let workspaceRevision = 0;
-  let forceSynthesisReason: "budget_exhausted" | "repeated_tools" | undefined;
+  let forceSynthesisForRepeatedTools = false;
   let latestCheckpointKey: string | undefined;
   const inspectionCounts = new Map<string, number>();
   const readOnlyCache = new Map<string, ToolResult>();
@@ -138,18 +135,19 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const baseSkills = skillSnapshot.createTurnContext();
   const skills = {
     ...baseSkills,
-    load: async (skillId: string) => {
-      const loaded = await baseSkills.load(skillId);
-      loadedSkillIds.add(skillId);
+    load: async (name: string) => {
+      const loaded = await baseSkills.load(name);
+      loadedSkillIds.add(loaded.skillId);
+      return loaded;
+    },
+    loadExplicit: async (skillId: string) => {
+      const loaded = await baseSkills.loadExplicit(skillId);
+      loadedSkillIds.add(loaded.skillId);
       return loaded;
     },
   };
   const explicitSkills = parseExplicitSkillInvocations(input.prompt, skillSnapshot);
-  const catalogMaxChars = Math.max(
-    1,
-    Math.floor((contextOptions.maxContextTokens ?? 100_000) * 0.02 * 4),
-  );
-  const skillCatalog = renderSkillCatalog(skillSnapshot.catalog, catalogMaxChars);
+  const skillCatalog = renderSkillCatalog(skillSnapshot.catalog);
 
   const emit = async <TPayload>(
     type: AgentEvent["type"],
@@ -175,59 +173,68 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         }
       : undefined,
   });
-  yield await emit("turn.started", { turn });
-  const userEvent = await emit("user.message", { content: input.prompt });
-  yield userEvent;
-  state.messages.push({ id: userEvent.id, role: "user", content: explicitSkills.prompt });
-  if (explicitSkills.errors.length) {
-    state.messages.push({
-      role: "system",
-      content: `Explicit Skill invocation failed:\n${explicitSkills.errors.map((error) => `- ${error}`).join("\n")}\nTell the user the exact reason and do not silently substitute another Skill.`,
-    });
-  }
-  for (const skillId of explicitSkills.skillIds) {
-    const loaded = await skills.load(skillId);
-    const toolCallId = createId("explicit_skill");
-    state.messages.push({
-      role: "assistant",
-      content: "",
-      toolCalls: [{ id: toolCallId, name: "skill.load", input: { skillId } }],
-    });
-    state.messages.push({
-      role: "tool",
-      name: "skill.load",
-      toolCallId,
-      content: loaded.content,
-    });
-    yield await emit("skill.loaded", {
-      toolCallId,
-      name: loaded.name,
-      path: loaded.path,
-      skillId: loaded.skillId,
-      explicit: true,
-    });
-  }
-
+  let attachments: MediaAttachment[] = [];
+  let modelProducedOutput = false;
   try {
+    attachments = await materializeTurnAttachments(session.sessionDir, input.attachments ?? []);
+    yield await emit("turn.started", { turn });
+    const userEvent = await emit("user.message", {
+      content: input.prompt,
+      attachments: attachments.map(publicMediaAttachment),
+    });
+    yield userEvent;
+    state.messages.push({
+      id: userEvent.id,
+      role: "user",
+      content: explicitSkills.prompt,
+      attachments,
+    });
+    if (explicitSkills.errors.length) {
+      state.messages.push({
+        role: "system",
+        content: `Explicit Skill invocation failed:\n${explicitSkills.errors.map((error) => `- ${error}`).join("\n")}\nTell the user the exact reason and do not silently substitute another Skill.`,
+      });
+    }
+    for (const skillId of explicitSkills.skillIds) {
+      const loaded = await skills.loadExplicit(skillId);
+      const toolCallId = createId("explicit_skill");
+      state.messages.push({
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: toolCallId, name: "skill", input: { name: loaded.name } }],
+      });
+      state.messages.push({
+        role: "tool",
+        name: "skill",
+        toolCallId,
+        content: loaded.content,
+      });
+      yield await emit("skill.loaded", {
+        toolCallId,
+        name: loaded.name,
+        path: loaded.path,
+        skillId: loaded.skillId,
+        explicit: true,
+      });
+    }
+
     while (true) {
       throwIfInterrupted(input.signal);
-      const synthesizing = forceSynthesisReason !== undefined;
-      const budgetMessage = synthesizing
+      const synthesizing = forceSynthesisForRepeatedTools;
+      const synthesisMessage = synthesizing
         ? {
             role: "system" as const,
             content:
-              forceSynthesisReason === "budget_exhausted"
-                ? "The tool budget is exhausted. Do not call tools. Give the most useful final answer from existing evidence and state anything unfinished."
-                : "Repeated tool requests were detected. Do not call tools. Use the evidence already collected and give the final answer now.",
+              "Repeated tool requests were detected. Do not call tools. Use the evidence already collected and give the final answer now.",
           }
-        : buildBudgetGuidance(toolCallCount, maxToolCalls);
+        : undefined;
       // Expose every registered tool to the model. PermissionEngine remains the
       // execution-time gate for tools that require approval or are denied.
       const toolSpecs = synthesizing ? [] : registry.toModelSpecs(mode);
       const context = await contextBuilder.build({
         mode,
         workspaceRoot: session.workspaceRoot,
-        messages: budgetMessage ? [...state.messages, budgetMessage] : state.messages,
+        messages: synthesisMessage ? [...state.messages, synthesisMessage] : state.messages,
         todoItems: state.todoItems,
         skillCatalog,
         tools: toolSpecs,
@@ -303,10 +310,12 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       })) {
         throwIfInterrupted(input.signal);
         if (modelEvent.type === "text_delta") {
+          modelProducedOutput = true;
           assistantText += modelEvent.text;
           yield await emit("model.delta", { text: modelEvent.text });
         }
         if (modelEvent.type === "tool_call") {
+          modelProducedOutput = true;
           if (!synthesizing) {
             toolCalls.push(modelEvent.toolCall);
             yield await emit("model.tool_call", { toolCall: modelEvent.toolCall });
@@ -356,13 +365,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       state.messages.push({ ...assistantMessage, id: assistantEvent.id });
 
       if (synthesizing) {
-        const fallback =
-          forceSynthesisReason === "budget_exhausted"
-            ? "Tool budget exhausted. Returning the evidence collected so far; some work may remain."
-            : "Stopped after repeated tool requests and returned the evidence already collected.";
+        const fallback = "Stopped after repeated tool requests and returned the evidence already collected.";
         const summary = buildFinalSummary({
-          status:
-            forceSynthesisReason === "budget_exhausted" ? "budget_exhausted" : "completed_partial",
+          status: "completed_partial",
           message: assistantText.trim() || fallback,
           state,
           eventLogPath: eventLog.filePath,
@@ -428,21 +433,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
 
         for (const scheduled of wave.calls) {
           const { toolCall } = scheduled;
-          const actionCost = scheduled.plan.actionCost ?? 1;
-          if (
-            forceSynthesisReason === "budget_exhausted" ||
-            toolCallCount + actionCost > maxToolCalls
-          ) {
-            const result: ToolResult = {
-              toolCallId: toolCall.id,
-              status: "cancelled",
-              summary: `Tool action budget exhausted (${maxToolCalls}); this call costing ${actionCost} action(s) was not executed.`,
-            };
-            state.messages.push(resultAggregator.project(toolCall, result));
-            forceSynthesisReason = "budget_exhausted";
-            continue;
-          }
-          toolCallCount += actionCost;
 
           const preflightResult = await registry.get(toolCall.name)?.preflight?.(toolCall.input, {
             ...executionContext,
@@ -469,10 +459,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
               result: preflightResult,
             });
             state.messages.push(resultAggregator.project(toolCall, preflightResult));
-            consecutiveFailures += 1;
-            if (consecutiveFailures >= 5) {
-              throw new Error("Stopped after 5 consecutive tool failures.");
-            }
             continue;
           }
 
@@ -605,21 +591,12 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
             readOnlyCache.clear();
           }
           if (item.inspectionCount >= 3 && readOnlyTools.has(item.toolCall.name)) {
-            forceSynthesisReason = "repeated_tools";
+            forceSynthesisForRepeatedTools = true;
           }
           throwIfInterrupted(input.signal);
 
-          if (result.status === "success") {
-            consecutiveFailures = 0;
-          } else {
-            consecutiveFailures += 1;
-            if (consecutiveFailures >= 5) {
-              throw new Error("Stopped after 5 consecutive tool failures.");
-            }
-          }
         }
       }
-      if (toolCallCount >= maxToolCalls) forceSynthesisReason = "budget_exhausted";
     }
   } catch (error) {
     if (error instanceof TurnInterruptedError || input.signal?.aborted) {
@@ -637,6 +614,21 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       eventLogPath: eventLog.filePath,
     });
     yield await emit("turn.failed", { error: toErrorMessage(error), summary });
+    if (!modelProducedOutput && state.changedFiles.length === 0) {
+      yield await emit("turn.reverted", { reason: toErrorMessage(error), restoreDraft: true });
+      const attachmentIds = new Set([
+        ...attachments.map((attachment) => attachment.id),
+        ...(input.attachments ?? []).map((attachment) => attachment.id),
+      ]);
+      await Promise.all(
+        [...attachmentIds].map((attachmentId) =>
+          rm(path.join(session.sessionDir, "attachments", attachmentId), {
+            recursive: true,
+            force: true,
+          }),
+        ),
+      );
+    }
     await safelyRebuildIndex(input.home);
   }
 }
@@ -716,12 +708,12 @@ function requiredSkillCapability(
     return "filesystem.write";
   }
   if (toolName === "bash" || toolName === "pwsh") return "process.execute";
-  if (toolName === "job_output" || toolName === "job_list" || toolName === "job_kill") return "process.execute";
+  if (toolName === "job_output" || toolName === "job_list" || toolName === "job_kill")
+    return "process.execute";
   if (toolName.startsWith("web.")) return "network.access";
   if (toolName === "mcp.call") return "mcp.use";
   return undefined;
 }
-
 
 function compactCacheHit(
   source: ToolResult,
@@ -784,22 +776,6 @@ function canonicalToolCall(toolCall: NormalizedToolCall): NormalizedToolCall {
   };
 }
 
-function buildBudgetGuidance(toolCallCount: number, maxToolCalls: number): ChatMessage | undefined {
-  const ratio = toolCallCount / maxToolCalls;
-  if (ratio < 0.6) return undefined;
-  const remaining = Math.max(0, maxToolCalls - toolCallCount);
-  const instruction =
-    ratio >= 0.9
-      ? "Avoid low-value inspection. Finish the critical path and prepare the final answer."
-      : ratio >= 0.8
-        ? "Converge the plan and reuse existing evidence before calling more tools."
-        : "The tool budget is becoming limited; prioritize calls that add new evidence.";
-  return {
-    role: "system",
-    content: `Tool budget: ${remaining} of ${maxToolCalls} calls remain. ${instruction}`,
-  };
-}
-
 function truncateContext(value: string, maxChars = 12_000): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n...[tool output truncated; use its artifact reference for more]`;
@@ -813,7 +789,10 @@ function safeJson(value: unknown): string {
   }
 }
 
-function projectConversationMessages(events: AgentEvent[]): ChatMessage[] {
+function projectConversationMessages(events: AgentEvent[], sessionDir: string): ChatMessage[] {
+  const revertedTurnIds = new Set(
+    events.filter((event) => event.type === "turn.reverted").map((event) => event.turnId).filter(Boolean),
+  );
   const messages: ChatMessage[] = [];
   let pendingText = "";
   let pendingCalls: NormalizedToolCall[] = [];
@@ -832,10 +811,21 @@ function projectConversationMessages(events: AgentEvent[]): ChatMessage[] {
   };
 
   for (const event of events) {
+    if (event.type !== "turn.reverted" && event.turnId && revertedTurnIds.has(event.turnId)) continue;
     if (event.type === "user.message") {
       flushPending();
-      const payload = event.payload as { content?: string };
-      if (payload.content) messages.push({ id: event.id, role: "user", content: payload.content });
+      const payload = event.payload as { content?: string; attachments?: MediaAttachment[] };
+      if (payload.content || payload.attachments?.length) {
+        messages.push({
+          id: event.id,
+          role: "user",
+          content: payload.content ?? "",
+          attachments: payload.attachments?.map((attachment) => ({
+            ...attachment,
+            sourcePath: path.join(sessionDir, ...attachment.sendRelativePath.split("/")),
+          })),
+        });
+      }
       continue;
     }
     if (event.type === "model.started") {
@@ -921,6 +911,51 @@ function projectConversationMessages(events: AgentEvent[]): ChatMessage[] {
   }
   flushPending();
   return messages;
+}
+
+async function materializeTurnAttachments(
+  sessionDir: string,
+  attachments: MediaAttachment[],
+): Promise<MediaAttachment[]> {
+  if (attachments.length) {
+    const disk = await statfs(sessionDir);
+    const requiredBytes =
+      attachments.reduce((total, attachment) => total + attachment.size * 2, 0) +
+      64 * 1024 * 1024;
+    if (disk.bavail * disk.bsize < requiredBytes) {
+      throw new Error("Insufficient disk space to save the attachment snapshot.");
+    }
+  }
+  return Promise.all(attachments.map(async (attachment) => {
+    if (!attachment.sourcePath || !attachment.originalSourcePath) {
+      throw new Error(`Attachment ${attachment.name} is no longer available.`);
+    }
+    const extension = extensionForMime(attachment.mimeType);
+    const relativePath = path.posix.join("attachments", attachment.id, `original.${extension}`);
+    const sendRelativePath = path.posix.join("attachments", attachment.id, `send.${extension}`);
+    const originalTarget = path.join(sessionDir, ...relativePath.split("/"));
+    const sendTarget = path.join(sessionDir, ...sendRelativePath.split("/"));
+    await mkdir(path.dirname(originalTarget), { recursive: true });
+    await copyFile(attachment.originalSourcePath, originalTarget);
+    await copyFile(attachment.sourcePath, sendTarget);
+    return { ...attachment, relativePath, sendRelativePath, sourcePath: sendTarget, originalSourcePath: undefined };
+  }));
+}
+
+function publicMediaAttachment(attachment: MediaAttachment): MediaAttachment {
+  const { sourcePath: _sourcePath, originalSourcePath: _originalSourcePath, ...persisted } = attachment;
+  return persisted;
+}
+
+function extensionForMime(mimeType: string): string {
+  return ({
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "audio/mpeg": "mp3",
+    "video/mp4": "mp4",
+  } as Record<string, string>)[mimeType] ?? "bin";
 }
 
 async function resolveApproval(input: {
@@ -1054,7 +1089,7 @@ async function executeToolWithEvents(input: {
       );
     }
 
-    if (input.toolCall.name === "skill.load" && result.status === "success") {
+    if (input.toolCall.name === "skill" && result.status === "success") {
       const data = result.data as { skillId?: string; name?: string; path?: string } | undefined;
       await input.yieldEvent(
         await input.emit("skill.loaded", {
@@ -1062,17 +1097,6 @@ async function executeToolWithEvents(input: {
           name: data?.name,
           path: data?.path,
           skillId: data?.skillId,
-        }),
-      );
-    }
-
-    if (input.toolCall.name === "skill.read_resource" && result.status === "success") {
-      const data = result.data as { skillId?: string; resourcePath?: string } | undefined;
-      await input.yieldEvent(
-        await input.emit("skill.resource.loaded", {
-          toolCallId: input.toolCall.id,
-          skillId: data?.skillId,
-          resourcePath: data?.resourcePath,
         }),
       );
     }
@@ -1179,10 +1203,7 @@ function applyResultToState(
     }
   }
 
-  if (
-    (toolCall.name === "bash" || toolCall.name === "pwsh") &&
-    result.status !== "denied"
-  ) {
+  if ((toolCall.name === "bash" || toolCall.name === "pwsh") && result.status !== "denied") {
     const data = result.data as { command?: string; exitCode?: number } | undefined;
     state.commands.push({
       command: data?.command ?? JSON.stringify(toolCall.input),

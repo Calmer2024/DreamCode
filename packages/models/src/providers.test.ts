@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
+  buildProviderRequest,
+  buildProviderRequestWithMedia,
   createModelProvider,
   detectConfiguredProvider,
   findModelProviderPreset,
@@ -110,5 +115,63 @@ describe("模型 provider preset", () => {
       totalTokens: 1280,
     });
     expect(normalizeOpenAIUsage({ prompt_tokens: 12 })?.cachedInputTokens).toBeUndefined();
+  });
+
+  it("为多模态消息估算传输开销且不暴露本机路径", () => {
+    const request = buildProviderRequest({
+      model: "vision-model",
+      tools: [],
+      messages: [{
+        role: "user",
+        content: "比较这些内容",
+        attachments: [{
+          id: "attachment_1",
+          name: "photo.png",
+          kind: "image",
+          mimeType: "image/png",
+          size: 1024,
+          sha256: "abc",
+          relativePath: "attachments/attachment_1/original.png",
+          sendRelativePath: "attachments/attachment_1/send.png",
+          sourcePath: "C:\\Users\\secret\\send.png",
+        }],
+      }],
+    });
+    const serialized = JSON.stringify(request.messages);
+    expect(serialized).toContain("photo.png");
+    expect(serialized).not.toContain("Users");
+  });
+
+  it("在发送时把图片内容序列化为 data URL", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "dreamcode-provider-media-"));
+    const sourcePath = path.join(directory, "send.png");
+    await writeFile(sourcePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    try {
+      const request = await buildProviderRequestWithMedia({
+        model: "vision-model",
+        tools: [],
+        messages: [{
+          role: "user",
+          content: "查看图片",
+          attachments: [{
+            id: "attachment_1",
+            name: "photo.png",
+            kind: "image",
+            mimeType: "image/png",
+            size: 4,
+            sha256: "abc",
+            relativePath: "attachments/attachment_1/original.png",
+            sendRelativePath: "attachments/attachment_1/send.png",
+            sourcePath,
+          }],
+        }],
+      }, "openai");
+      const serialized = JSON.stringify(request.messages);
+      expect(serialized).toContain("data:image/png;base64,iVBORw==");
+      expect(serialized).toContain("附件 1：photo.png");
+      expect(serialized).not.toContain(directory);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

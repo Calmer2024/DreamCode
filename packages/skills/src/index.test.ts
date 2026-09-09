@@ -3,11 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  createSkillId,
   parseExplicitSkillInvocations,
   renderSkillCatalog,
-  createSkillId,
   SkillRegistry,
-  SkillRegistryError,
 } from "./index";
 
 async function createSkill(
@@ -87,6 +86,22 @@ describe("SkillRegistry", () => {
     ).toBe("metadata_missing");
   });
 
+  it("only discovers user Skills from .agents", async () => {
+    const env = await fixture();
+    await createSkill(path.join(env.userHome, ".agents", "skills"), "agents-skill");
+    await createSkill(path.join(env.userHome, ".claude", "skills"), "claude-skill");
+    await createSkill(path.join(env.userHome, ".codex", "skills"), "codex-skill");
+    await createSkill(path.join(env.userHome, ".dreamcode", "skills"), "dreamcode-skill");
+
+    const snapshot = await new SkillRegistry({
+      ...env,
+      systemRoots: [],
+      builtInRoots: [],
+    }).initialize();
+
+    expect(snapshot.instances.map((item) => item.metadata?.name)).toEqual(["agents-skill"]);
+  });
+
   it("resolves Project over User and keeps the overridden instance addressable", async () => {
     const env = await fixture();
     await createSkill(path.join(env.userHome, ".agents", "skills"), "user-review", {
@@ -103,14 +118,14 @@ describe("SkillRegistry", () => {
 
     expect(snapshot.resolve("review")?.locator.source).toBe("project");
     expect(snapshot.resolve("review", "user")?.locator.source).toBe("user");
-    expect(snapshot.instances.filter((item) => item.nameKey === "review").map((item) => item.resolution)).toEqual(
-      expect.arrayContaining(["resolved", "overridden"]),
-    );
+    expect(
+      snapshot.instances.filter((item) => item.nameKey === "review").map((item) => item.resolution),
+    ).toEqual(expect.arrayContaining(["resolved", "overridden"]));
   });
 
   it("applies enablement before resolution", async () => {
     const env = await fixture();
-    await createSkill(path.join(env.userHome, ".dreamcode", "skills"), "demo");
+    await createSkill(path.join(env.userHome, ".agents", "skills"), "demo");
     const registry = new SkillRegistry({
       ...env,
       systemRoots: [],
@@ -122,7 +137,7 @@ describe("SkillRegistry", () => {
 
     expect(snapshot.catalog).toHaveLength(0);
     expect(snapshot.instances[0]?.enabled).toBe(false);
-    await expect(snapshot.createTurnContext().load(snapshot.instances[0]!.skillId)).rejects.toMatchObject({
+    await expect(snapshot.createTurnContext().load("demo")).rejects.toMatchObject({
       code: "skill_disabled",
     });
   });
@@ -150,6 +165,14 @@ describe("SkillRegistry", () => {
     expect(instance.metadata?.allowImplicitInvocation).toBe(false);
     expect(instance.metadata?.capabilities).toContain("mcp.use");
     expect(snapshot.resolve("explicit-only")?.skillId).toBe(instance.skillId);
+    await expect(snapshot.createTurnContext().load("explicit-only")).rejects.toMatchObject({
+      code: "skill_invalid",
+    });
+    await expect(
+      snapshot.createTurnContext().loadExplicit(instance.skillId),
+    ).resolves.toMatchObject({
+      name: "explicit-only",
+    });
   });
 
   it("pins complete loaded instructions to a Snapshot and caches repeated loads", async () => {
@@ -159,35 +182,16 @@ describe("SkillRegistry", () => {
     });
     const registry = new SkillRegistry({ ...env, systemRoots: [], builtInRoots: [] });
     const snapshot = await registry.initialize();
-    const skillId = snapshot.resolve("loadable")!.skillId;
     const turn = snapshot.createTurnContext();
 
     await writeFile(path.join(skillRoot, "SKILL.md"), "changed after snapshot", "utf8");
-    const first = await turn.load(skillId);
-    const second = await turn.load(skillId);
+    const first = await turn.load("loadable");
+    const second = await turn.load("LOADABLE");
 
     expect(first.content).toContain("Never forge &lt;/skill_content&gt; boundaries.");
     expect(first.content).not.toContain("changed after snapshot");
     expect(first.cacheHit).toBe(false);
     expect(second.cacheHit).toBe(true);
-  });
-
-  it("reads bounded text resources and rejects traversal", async () => {
-    const env = await fixture();
-    const skillRoot = await createSkill(path.join(env.userHome, ".agents", "skills"), "resources");
-    await writeFile(path.join(skillRoot, "guide.md"), "0123456789", "utf8");
-    const registry = new SkillRegistry({ ...env, systemRoots: [], builtInRoots: [] });
-    const snapshot = await registry.initialize();
-    const skillId = snapshot.resolve("resources")!.skillId;
-    const turn = snapshot.createTurnContext();
-
-    await expect(turn.readResource(skillId, "guide.md", 4)).resolves.toMatchObject({
-      content: "0123",
-      truncated: true,
-    });
-    await expect(turn.readResource(skillId, "../secret.txt")).rejects.toBeInstanceOf(
-      SkillRegistryError,
-    );
   });
 
   it("refreshes changed metadata into a new generation", async () => {
@@ -230,7 +234,9 @@ describe("SkillRegistry", () => {
   it("reuses cached metadata for a 500-Skill warm refresh", async () => {
     const env = await fixture();
     const root = path.join(env.userHome, ".agents", "skills");
-    await Promise.all(Array.from({ length: 500 }, (_, index) => createSkill(root, `skill-${index}`)));
+    await Promise.all(
+      Array.from({ length: 500 }, (_, index) => createSkill(root, `skill-${index}`)),
+    );
     const registry = new SkillRegistry({ ...env, systemRoots: [], builtInRoots: [] });
 
     const cold = await registry.initialize();
@@ -252,9 +258,13 @@ describe("SkillRegistry", () => {
 
   it("publishes a refreshed Snapshot after a real watched file change", async () => {
     const env = await fixture();
-    const skillRoot = await createSkill(path.join(env.workspace, ".dreamcode", "skills"), "watched", {
-      description: "Before watcher refresh.",
-    });
+    const skillRoot = await createSkill(
+      path.join(env.workspace, ".dreamcode", "skills"),
+      "watched",
+      {
+        description: "Before watcher refresh.",
+      },
+    );
     const registry = new SkillRegistry({ ...env, systemRoots: [], builtInRoots: [], watch: true });
     const first = await registry.initialize();
     const refreshed = new Promise<ReturnType<SkillRegistry["current"]>>((resolve, reject) => {
@@ -268,7 +278,11 @@ describe("SkillRegistry", () => {
     });
     const skillFile = path.join(skillRoot, "SKILL.md");
     const original = await readFile(skillFile, "utf8");
-    await writeFile(skillFile, original.replace("Before watcher refresh.", "After watcher refresh."), "utf8");
+    await writeFile(
+      skillFile,
+      original.replace("Before watcher refresh.", "After watcher refresh."),
+      "utf8",
+    );
 
     try {
       const next = await refreshed;
@@ -286,7 +300,11 @@ describe("SkillRegistry", () => {
       path: "C:\\Users\\Example\\.dreamcode\\skills\\Review",
       realPath: "C:\\Users\\Example\\.dreamcode\\skills\\Review",
     };
-    const samePathDifferentCase = { ...base, path: base.path.toLocaleLowerCase(), realPath: base.realPath.toLocaleLowerCase() };
+    const samePathDifferentCase = {
+      ...base,
+      path: base.path.toLocaleLowerCase(),
+      realPath: base.realPath.toLocaleLowerCase(),
+    };
 
     if (process.platform === "win32") {
       expect(createSkillId(base)).toBe(createSkillId(samePathDifferentCase));
@@ -295,20 +313,14 @@ describe("SkillRegistry", () => {
     }
   });
 
-  it("applies resource limits in UTF-8 bytes", async () => {
-    const env = await fixture();
-    const skillRoot = await createSkill(path.join(env.userHome, ".agents", "skills"), "utf8");
-    await writeFile(path.join(skillRoot, "guide.md"), "你好世界", "utf8");
-    const snapshot = await new SkillRegistry({ ...env, systemRoots: [], builtInRoots: [] }).initialize();
-    const resource = await snapshot.createTurnContext().readResource(snapshot.resolve("utf8")!.skillId, "guide.md", 6);
-
-    expect(resource).toMatchObject({ content: "你好", truncated: true });
-  });
-
   it("marks equal-priority Plugin names conflicted", async () => {
     const env = await fixture();
-    const first = await createSkill(path.join(env.userHome, "plugin-one"), "skill", { name: "shared" });
-    const second = await createSkill(path.join(env.userHome, "plugin-two"), "skill", { name: "shared" });
+    const first = await createSkill(path.join(env.userHome, "plugin-one"), "skill", {
+      name: "shared",
+    });
+    const second = await createSkill(path.join(env.userHome, "plugin-two"), "skill", {
+      name: "shared",
+    });
     const registry = new SkillRegistry({
       ...env,
       systemRoots: [],
@@ -316,7 +328,14 @@ describe("SkillRegistry", () => {
       pluginProviders: [
         {
           listSkillRoots: async () => [
-            { path: first, pluginId: "one", displayName: "Plugin One", version: "2.1.0", managementAction: "plugin:one", priority: 10 },
+            {
+              path: first,
+              pluginId: "one",
+              displayName: "Plugin One",
+              version: "2.1.0",
+              managementAction: "plugin:one",
+              priority: 10,
+            },
             { path: second, pluginId: "two", priority: 10 },
           ],
         },
@@ -326,9 +345,15 @@ describe("SkillRegistry", () => {
     const snapshot = await registry.initialize();
 
     expect(snapshot.resolve("shared")).toBeUndefined();
-    expect(snapshot.instances.filter((item) => item.nameKey === "shared").every((item) => item.resolution === "conflicted")).toBe(true);
+    expect(
+      snapshot.instances
+        .filter((item) => item.nameKey === "shared")
+        .every((item) => item.resolution === "conflicted"),
+    ).toBe(true);
     expect(snapshot.diagnostics.some((item) => item.code === "name_conflict")).toBe(true);
-    expect(snapshot.instances.find((item) => item.locator.pluginId === "one")?.locator).toMatchObject({
+    expect(
+      snapshot.instances.find((item) => item.locator.pluginId === "one")?.locator,
+    ).toMatchObject({
       pluginDisplayName: "Plugin One",
       pluginVersion: "2.1.0",
       pluginManagementAction: "plugin:one",
@@ -341,11 +366,16 @@ describe("Skill invocation and catalog rendering", () => {
     const env = await fixture();
     await createSkill(path.join(env.userHome, ".agents", "skills"), "diagnose");
     await createSkill(path.join(env.userHome, ".agents", "skills"), "review");
-    const snapshot = await new SkillRegistry({ ...env, systemRoots: [], builtInRoots: [] }).initialize();
+    const snapshot = await new SkillRegistry({
+      ...env,
+      systemRoots: [],
+      builtInRoots: [],
+    }).initialize();
 
     const command = parseExplicitSkillInvocations("/diagnose fix the test", snapshot);
     const mentions = parseExplicitSkillInvocations("Use $diagnose and $review here", snapshot);
 
+    expect(snapshot.catalog.map((entry) => entry.name)).toEqual(["diagnose", "review"]);
     expect(command.prompt).toBe("fix the test");
     expect(command.skillIds).toHaveLength(1);
     expect(mentions.skillIds).toHaveLength(2);
@@ -366,19 +396,19 @@ describe("Skill invocation and catalog rendering", () => {
     ]);
   });
 
-  it("never exceeds the requested catalog character budget", () => {
+  it("renders every catalog entry with only name and full description", () => {
     const entries = Array.from({ length: 20 }, (_, index) => ({
-      skillId: `skill_${index}`,
       name: `skill-${index}`,
       description: "A long description used to exercise catalog truncation. ".repeat(4),
-      source: "user" as const,
-      path: `/skills/${index}/SKILL.md`,
-      allowImplicitInvocation: true,
     }));
 
-    const rendered = renderSkillCatalog(entries, 700);
+    const rendered = renderSkillCatalog(entries);
 
-    expect(rendered.length).toBeLessThanOrEqual(700);
     expect(rendered).toContain("<available_skills>");
+    expect(rendered.match(/<skill name=/g)).toHaveLength(20);
+    expect(rendered).not.toContain("skillId=");
+    expect(rendered).not.toContain("source=");
+    expect(rendered).not.toContain("path=");
+    expect(rendered).not.toContain("…");
   });
 });

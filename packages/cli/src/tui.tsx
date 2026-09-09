@@ -53,7 +53,6 @@ export interface InkTuiInput {
   workspaceRoot: string;
   mode: RunMode;
   home?: string;
-  maxToolCalls: number;
   createProvider: (prompt: string) => { provider: ModelProvider; model?: string };
   processSupervisor?: ProcessSupervisor;
 }
@@ -242,7 +241,6 @@ export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
           model,
           mode: runMode,
           home: input.home,
-          maxToolCalls: input.maxToolCalls,
           registry: createDefaultToolRegistry({
             mcpServers: input.config.mcpServers,
             processSupervisor: processSupervisorRef.current,

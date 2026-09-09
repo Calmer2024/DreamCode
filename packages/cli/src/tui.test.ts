@@ -426,7 +426,6 @@ function createTuiInput(): InkTuiInput {
     workspaceRoot: "/repo",
     mode: "yolo",
     home: "/tmp/dreamcode",
-    maxToolCalls: 1,
     createProvider: () => {
       throw new Error("createProvider should not be called while typing.");
     },
