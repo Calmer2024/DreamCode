@@ -14,6 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@dreamcode/mcp": "workspace:*",
     "@dreamcode/skills": "workspace:*",
     "@dreamcode/shared": "workspace:*"
   }

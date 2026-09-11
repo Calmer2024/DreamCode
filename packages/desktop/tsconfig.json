@@ -13,6 +13,7 @@
     { "path": "../skills" },
     { "path": "../store" },
     { "path": "../models" },
+    { "path": "../mcp" },
     { "path": "../tools" },
     { "path": "../core" }
   ]

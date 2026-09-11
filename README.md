@@ -91,13 +91,39 @@ pnpm --filter @dreamcode/desktop checksums
 /sessions  查看当前工作区历史 session
 /diff ID   查看 session 文件变更 diff
 /skills    列出可用 Skill
-/mcp       列出配置的 MCP 工具
+/mcp       刷新并查看配置的 MCP Server 及状态
 /clear     清空当前 REPL 的对话摘要
 /config    显示配置文件路径
 /exit      退出
 ```
 
 `/llm` 使用方向键选择 provider/model, 并默认把 API key 明文保存到 `~/.dreamcode/config.json`。后续可以直接运行 `pnpm dreamcode` 使用已保存的模型配置。
+
+MCP Server 也保存在这个全局配置中，对所有项目可用。桌面端“设置 → MCP”提供 Server 列表、搜索、启用开关和手动刷新；它只管理已有配置，不在界面内新增或编辑 Server。配置示例：
+
+```json
+{
+  "version": 3,
+  "profiles": {},
+  "mcpServers": {
+    "filesystem": {
+      "transport": "stdio",
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/work"],
+      "env": {}
+    },
+    "remote": {
+      "transport": "streamable-http",
+      "enabled": false,
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+启用 Server 会建立并维持长期连接，发现到的工具会直接出现在 `tool.list` 对应的 Registry 视图中。远程 HTTP 必须使用 HTTPS，只有 localhost/loopback 可使用 HTTP；当前不支持旧式 SSE transport 或 OAuth。
 
 构建并运行编译后的 CLI:
 
@@ -157,8 +183,8 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - `todo.write`, `question.ask`
   - `web.search`, `web.fetch`
   - `skill`
-  - `mcp.list`, `mcp.call`
-  - Core 默认将 Tool Registry 中的全部工具 schema 发送给模型，包括 Web、Skill 和 MCP；实际执行仍由 Permission Engine 控制。
+  - 启用的 MCP Server 工具以 `mcp__<server>__<tool>` 注册为原生 Tool；不再向模型暴露 `mcp.list` / `mcp.call`。
+  - Core 在每次模型请求开始时读取 Tool Registry 快照；运行中的 MCP 刷新不会改变该次请求的工具视图。
 - 命令执行采用平台专属 Shell：Windows 使用 `pwsh`，Unix 使用 `bash`；长任务通过 `run_in_background` 启动，并使用 `job_output`、`job_list`、`job_kill` 管理。
 - 长期程序由 session 隔离的 Process Supervisor 管理，日志直接落盘并受容量限制，宿主正常退出或 session 删除时清理活动进程。
 - 命令结果提供机器可读的错误分类、execution outcome、4 KiB stdout/stderr 首尾预览和完整 artifact 引用。
@@ -170,7 +196,7 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
   - 拒绝 workspace 外写入、递归危险删除、强推、硬重置等高风险动作。
 - Safe YOLO v1 扩展:
   - Web 只读访问在 yolo/full 下允许, guided 下询问, plan 下拒绝。
-  - MCP 工具默认询问, full mode 才自动允许配置内 MCP tool。
+  - MCP 工具在 guided/yolo 下逐次询问，full 下自动允许，plan 下不暴露。
   - dependency install 标记为 `install_dependency` 风险。
 - Context Builder: 加载 `DREAMCODE.md`、包含 todo 状态，并按实际 messages、工具 schema 与 Provider 协议开销估算和压缩上下文。
 - Model usage 区分完整输入、缓存命中输入、未缓存输入和输出 Token；缓存输入仍计入上下文容量。
@@ -204,7 +230,7 @@ pnpm build
   - snapshot rollback。
   - local web fetch artifact。
   - skill 渐进读取。
-  - fake MCP stdio server tool call。
+  - MCP stdio 与 Streamable HTTP server 原生工具注册和调用。
 
 真实模型链路评测见 [docs/evals/real-model-cinemo-eval.md](docs/evals/real-model-cinemo-eval.md)。fake model 只作为确定性运行时回归, 真实能力以 DeepSeek 读取和理解 `D:\Files\Github\Cinemo`、连续问答、写入项目文档的闭环为准。
 

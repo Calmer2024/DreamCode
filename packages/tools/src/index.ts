@@ -36,15 +36,7 @@ export {
   type ProcessSupervisorOptions,
 } from "./process-supervisor.js";
 
-export interface McpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-}
-
 export interface ToolRegistryOptions {
-  mcpServers?: Record<string, McpServerConfig>;
   webSearch?: {
     exaApiKey?: string;
     exaBaseUrl?: string;
@@ -54,6 +46,8 @@ export interface ToolRegistryOptions {
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
+  private readonly namespaces = new Map<string, Set<string>>();
+  private generationValue = 0;
 
   constructor(
     private readonly configuredOptionalFamilies = new Set<string>(),
@@ -65,6 +59,32 @@ export class ToolRegistry {
       throw new Error(`Tool already registered: ${tool.name}`);
     }
     this.tools.set(tool.name, tool);
+    this.generationValue += 1;
+  }
+
+  replaceNamespace(namespace: string, tools: readonly Tool[]): void {
+    const previous = this.namespaces.get(namespace) ?? new Set<string>();
+    const names = new Set<string>();
+    for (const tool of tools) {
+      if (names.has(tool.name))
+        throw new Error(`Duplicate tool in namespace ${namespace}: ${tool.name}`);
+      const existing = this.tools.get(tool.name);
+      if (existing && !previous.has(tool.name))
+        throw new Error(`Tool already registered: ${tool.name}`);
+      names.add(tool.name);
+    }
+    for (const name of previous) this.tools.delete(name);
+    for (const tool of tools) this.tools.set(tool.name, tool);
+    this.namespaces.set(namespace, names);
+    this.generationValue += 1;
+  }
+
+  removeNamespace(namespace: string): void {
+    const names = this.namespaces.get(namespace);
+    if (!names) return;
+    for (const name of names) this.tools.delete(name);
+    this.namespaces.delete(namespace);
+    this.generationValue += 1;
   }
 
   get(name: string): Tool | undefined {
@@ -75,13 +95,25 @@ export class ToolRegistry {
     return Array.from(this.tools.values());
   }
 
+  get generation(): number {
+    return this.generationValue;
+  }
+
+  snapshot(): ToolRegistrySnapshot {
+    return new ToolRegistrySnapshot(
+      this.generationValue,
+      new Map(this.tools),
+      this.processSupervisor,
+    );
+  }
+
   isOptionalFamilyConfigured(family: "web" | "skill" | "mcp"): boolean {
     return this.configuredOptionalFamilies.has(family);
   }
 
   toModelSpecs(mode?: RunMode): ToolModelSpec[] {
     return this.list()
-      .filter((tool) => isToolExposedInMode(tool.name, mode))
+      .filter((tool) => isToolExposedInMode(tool, mode))
       .map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -90,21 +122,54 @@ export class ToolRegistry {
   }
 }
 
-function isToolExposedInMode(toolName: string, mode?: RunMode): boolean {
+export interface ToolRegistryView {
+  readonly processSupervisor: ProcessSupervisor;
+  get(name: string): Tool | undefined;
+  list(): Tool[];
+  toModelSpecs(mode?: RunMode): ToolModelSpec[];
+}
+
+export class ToolRegistrySnapshot implements ToolRegistryView {
+  constructor(
+    readonly generation: number,
+    private readonly tools: ReadonlyMap<string, Tool>,
+    readonly processSupervisor: ProcessSupervisor,
+  ) {}
+
+  get(name: string): Tool | undefined {
+    return this.tools.get(name);
+  }
+  list(): Tool[] {
+    return Array.from(this.tools.values());
+  }
+  toModelSpecs(mode?: RunMode): ToolModelSpec[] {
+    return this.list()
+      .filter((tool) => isToolExposedInMode(tool, mode))
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: toToolInputSchema(tool.inputSchema),
+      }));
+  }
+}
+
+function isToolExposedInMode(tool: Tool, mode?: RunMode): boolean {
   if (!mode) return true;
+  const toolName = tool.name;
   if (mode === "plan") {
     return (
       !toolName.startsWith("file.write") &&
       !toolName.startsWith("file.patch") &&
       !toolName.startsWith("web.") &&
-      !toolName.startsWith("mcp.") &&
+      tool.source?.kind !== "mcp" &&
       toolName !== "job_kill"
     );
   }
   return true;
 }
 
-function toToolInputSchema(inputSchema: z.ZodTypeAny): Record<string, unknown> {
+function toToolInputSchema(inputSchema: Tool["inputSchema"]): Record<string, unknown> {
+  if (!(inputSchema instanceof z.ZodType)) return inputSchema as Record<string, unknown>;
   const schema = zodToJsonSchema(inputSchema, { $refStrategy: "none" }) as Record<string, unknown>;
   delete schema.$schema;
   delete schema.definitions;
@@ -122,12 +187,15 @@ function toToolInputSchema(inputSchema: z.ZodTypeAny): Record<string, unknown> {
 
 export function createDefaultToolRegistry(options: ToolRegistryOptions = {}): ToolRegistry {
   const configuredFamilies = new Set<string>(["web", "skill"]);
-  if (Object.keys(options.mcpServers ?? {}).length) configuredFamilies.add("mcp");
   const processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
   const registry = new ToolRegistry(configuredFamilies, processSupervisor);
-  for (const tool of createBuiltinTools({ ...options, processSupervisor })) {
-    registry.register(tool);
-  }
+  registry.replaceNamespace(
+    "dreamcode:builtins",
+    createBuiltinTools({ ...options, processSupervisor }).map((tool) => ({
+      ...tool,
+      source: tool.source ?? { kind: "builtin" as const },
+    })),
+  );
   return registry;
 }
 
@@ -149,8 +217,6 @@ export function createBuiltinTools(options: ToolRegistryOptions = {}): Tool[] {
     createWebSearchTool(options.webSearch),
     webFetchTool,
     skillTool,
-    createMcpListTool(options.mcpServers ?? {}),
-    createMcpCallTool(options.mcpServers ?? {}),
   ];
 }
 
@@ -1502,68 +1568,6 @@ function skillErrorCode(error: unknown): string {
   return typeof error.code === "string" ? error.code : "skill_load_failed";
 }
 
-function createMcpListTool(servers: Record<string, McpServerConfig>): Tool {
-  return {
-    name: "mcp.list",
-    description: "List configured MCP stdio servers and their tools.",
-    inputSchema: z.object({ server: z.string().optional() }),
-    risk: { tags: ["mcp_tool", "external_side_effect"] },
-    async execute(rawInput, context) {
-      const input = z.object({ server: z.string().optional() }).parse(rawInput);
-      const selected = selectMcpServers(servers, input.server);
-      const output: Array<{ server: string; tools: unknown[] }> = [];
-      for (const [name, server] of selected) {
-        const tools = await listMcpTools(name, server, context.signal);
-        output.push({ server: name, tools });
-      }
-      return {
-        toolCallId: context.toolCallId,
-        status: "success",
-        summary: `Listed MCP tools for ${output.length} server${output.length === 1 ? "" : "s"}.`,
-        data: { servers: output },
-      };
-    },
-  };
-}
-
-function createMcpCallTool(servers: Record<string, McpServerConfig>): Tool {
-  const schema = z.object({
-    server: z.string().min(1),
-    tool: z.string().min(1),
-    arguments: z.record(z.unknown()).default({}),
-  });
-  return {
-    name: "mcp.call",
-    description: "Call a tool on a configured MCP stdio server.",
-    inputSchema: schema,
-    risk: { tags: ["mcp_tool", "external_side_effect"] },
-    async execute(rawInput, context) {
-      const input = schema.parse(rawInput);
-      const server = servers[input.server];
-      if (!server) {
-        return errorResult(
-          context.toolCallId,
-          `MCP server not configured: ${input.server}`,
-          "mcp_server_not_found",
-        );
-      }
-      const result = await callMcpTool(
-        input.server,
-        server,
-        input.tool,
-        input.arguments,
-        context.signal,
-      );
-      return {
-        toolCallId: context.toolCallId,
-        status: "success",
-        summary: `Called MCP tool ${input.server}.${input.tool}.`,
-        data: result,
-      };
-    },
-  };
-}
-
 async function safeExistingInside(
   workspaceRoot: string,
   inputPath: string,
@@ -1689,166 +1693,6 @@ function decodeHtml(text: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#x2F;/g, "/");
-}
-
-function selectMcpServers(
-  servers: Record<string, McpServerConfig>,
-  serverName: string | undefined,
-): Array<[string, McpServerConfig]> {
-  if (!serverName) {
-    return Object.entries(servers);
-  }
-  const server = servers[serverName];
-  if (!server) {
-    throw new Error(`MCP server not configured: ${serverName}`);
-  }
-  return [[serverName, server]];
-}
-
-async function listMcpTools(
-  serverName: string,
-  server: McpServerConfig,
-  signal?: AbortSignal,
-): Promise<unknown[]> {
-  return withMcpClient(serverName, server, signal, async (request, notify) => {
-    await request("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "DreamCode", version: "0.1.0" },
-    });
-    notify("notifications/initialized", {});
-    const result = (await request("tools/list", {})) as { tools?: unknown[] };
-    return result.tools ?? [];
-  });
-}
-
-async function callMcpTool(
-  serverName: string,
-  server: McpServerConfig,
-  toolName: string,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  return withMcpClient(serverName, server, signal, async (request, notify) => {
-    await request("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "DreamCode", version: "0.1.0" },
-    });
-    notify("notifications/initialized", {});
-    return request("tools/call", { name: toolName, arguments: args });
-  });
-}
-
-async function withMcpClient<T>(
-  serverName: string,
-  server: McpServerConfig,
-  signal: AbortSignal | undefined,
-  run: (
-    request: (method: string, params: unknown) => Promise<unknown>,
-    notify: (method: string, params: unknown) => void,
-  ) => Promise<T>,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const child = spawn(server.command, server.args ?? [], {
-      cwd: server.cwd,
-      env: { ...process.env, ...(server.env ?? {}) },
-      shell: false,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-      signal,
-    });
-    let buffer = "";
-    let nextId = 1;
-    const pending = new Map<
-      number,
-      { resolve: (value: unknown) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }
-    >();
-
-    const cleanup = () => {
-      for (const pendingRequest of pending.values()) {
-        clearTimeout(pendingRequest.timeout);
-      }
-      pending.clear();
-      child.kill();
-    };
-
-    const request = (method: string, params: unknown): Promise<unknown> => {
-      const id = nextId++;
-      const payload = { jsonrpc: "2.0", id, method, params };
-      return new Promise((requestResolve, requestReject) => {
-        const timeout = setTimeout(() => {
-          pending.delete(id);
-          requestReject(new Error(`MCP request timed out: ${serverName}.${method}`));
-        }, 10000);
-        pending.set(id, { resolve: requestResolve, reject: requestReject, timeout });
-        child.stdin?.write(`${JSON.stringify(payload)}\n`);
-      });
-    };
-
-    const notify = (method: string, params: unknown): void => {
-      child.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
-    };
-
-    child.stdout?.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) {
-          continue;
-        }
-        try {
-          const message = JSON.parse(line) as {
-            id?: number;
-            result?: unknown;
-            error?: { message?: string };
-          };
-          if (typeof message.id !== "number") {
-            continue;
-          }
-          const pendingRequest = pending.get(message.id);
-          if (!pendingRequest) {
-            continue;
-          }
-          pending.delete(message.id);
-          clearTimeout(pendingRequest.timeout);
-          if (message.error) {
-            pendingRequest.reject(new Error(message.error.message ?? "MCP error"));
-          } else {
-            pendingRequest.resolve(message.result);
-          }
-        } catch {
-          // Ignore non-JSON stdout lines from poorly behaved local servers.
-        }
-      }
-    });
-
-    child.on("error", (error) => {
-      cleanup();
-      reject(error);
-    });
-    child.on("close", (code) => {
-      if (pending.size) {
-        const error = new Error(`MCP server ${serverName} exited with code ${code ?? "unknown"}.`);
-        for (const pendingRequest of pending.values()) {
-          clearTimeout(pendingRequest.timeout);
-          pendingRequest.reject(error);
-        }
-        pending.clear();
-      }
-    });
-
-    run(request, notify)
-      .then((value) => {
-        cleanup();
-        resolve(value);
-      })
-      .catch((error) => {
-        cleanup();
-        reject(error);
-      });
-  });
 }
 
 export interface ShellCommandViolation {

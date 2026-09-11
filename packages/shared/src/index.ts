@@ -150,6 +150,14 @@ export interface ToolModelSpec {
   inputSchema: Record<string, unknown>;
 }
 
+export type ToolSource =
+  | { kind: "builtin" }
+  | { kind: "mcp"; serverId: string; rawToolName: string };
+
+export type ToolInputSchema<TInput = unknown> =
+  | z.ZodType<TInput, z.ZodTypeDef, unknown>
+  | Record<string, unknown>;
+
 export interface SkillCatalogEntry {
   name: string;
   description: string;
@@ -206,7 +214,8 @@ export type ToolSchedulePolicy =
 export interface Tool<TInput = unknown, TOutput = unknown> {
   name: string;
   description: string;
-  inputSchema: z.ZodType<TInput, z.ZodTypeDef, unknown>;
+  inputSchema: ToolInputSchema<TInput>;
+  source?: ToolSource;
   risk: ToolRiskProfile;
   /** Defaults to exclusive so tools must opt in to concurrent execution. */
   schedule?: ToolSchedulePolicy;

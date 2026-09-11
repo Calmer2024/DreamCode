@@ -1,10 +1,12 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ProcessSupervisor } from "@dreamcode/tools";
+import { loadDreamCodeConfig } from "@dreamcode/store";
+import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { DesktopAppService } from "./app-service";
 import { DesktopAttachmentService } from "./attachment-service";
 import { registerDesktopIpc } from "./ipc";
+import { DesktopMcpService } from "./mcp-service";
 import { DesktopRunManager } from "./run-manager";
 import { DesktopTerminalManager } from "./terminal-manager";
 import { type BrowserWindowConstructor, createMainWindow, type DesktopWindow } from "./window";
@@ -110,7 +112,13 @@ export async function startDesktopApplication(): Promise<void> {
 
   let mainWindow: DesktopWindow | undefined;
   const processSupervisor = new ProcessSupervisor();
-  const service = new DesktopAppService(undefined, undefined, processSupervisor);
+  const startupConfig = await loadDreamCodeConfig();
+  const registry = createDefaultToolRegistry({
+    webSearch: { exaApiKey: startupConfig.exaApiKey },
+    processSupervisor,
+  });
+  const mcp = new DesktopMcpService({ registry });
+  const service = new DesktopAppService(undefined, undefined, processSupervisor, mcp);
   const attachmentService = new DesktopAttachmentService();
   await attachmentService.initialize();
   const send = (channel: string, payload: unknown) => {
@@ -121,6 +129,7 @@ export async function startDesktopApplication(): Promise<void> {
   };
   const runManager = new DesktopRunManager({
     processSupervisor,
+    registry,
     attachmentService,
     getSkillRegistry: (workspaceRoot) => service.skills.registryFor(workspaceRoot),
     emitEvent: (message) => send("desktop:run-event", message),
@@ -129,6 +138,7 @@ export async function startDesktopApplication(): Promise<void> {
     emitStatus: (status) => send("desktop:run-status", status),
   });
   const terminalManager = new DesktopTerminalManager();
+  const unsubscribeMcp = mcp.subscribe((snapshot) => send("desktop:mcp-status", snapshot));
   const disposeIpc = registerDesktopIpc({
     ipcMain,
     dialog,
@@ -168,6 +178,7 @@ export async function startDesktopApplication(): Promise<void> {
   };
 
   openWindow();
+  void mcp.initialize().catch(() => undefined);
   registerApplicationLifecycle({
     app,
     platform: process.platform,
@@ -177,6 +188,8 @@ export async function startDesktopApplication(): Promise<void> {
       disposeIpc();
       terminalManager.dispose();
       await runManager.dispose();
+      unsubscribeMcp();
+      await mcp.dispose();
       service.skills.close();
     },
   });

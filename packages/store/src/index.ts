@@ -1,9 +1,17 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AgentEvent, ChangedFile, FinalSummary, MediaAttachment, Session, TodoItem } from "@dreamcode/shared";
+import type { McpServerConfig } from "@dreamcode/mcp";
+import type {
+  AgentEvent,
+  ChangedFile,
+  FinalSummary,
+  MediaAttachment,
+  Session,
+  TodoItem,
+} from "@dreamcode/shared";
 import { createId, makeEvent, nowIso } from "@dreamcode/shared";
 import {
   type SkillLocator,
@@ -187,19 +195,14 @@ export interface DreamCodeStoredLlmProfile extends DreamCodeLlmProfile {
   alias: string;
 }
 
-export interface DreamCodeMcpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-}
+export type DreamCodeMcpServerConfig = McpServerConfig;
 
 export interface DreamCodeConfig {
-  version: 2;
+  version: 2 | 3;
   currentProfileId?: string;
   profiles: Record<string, DreamCodeStoredLlmProfile>;
   exaApiKey?: string;
-  mcpServers?: Record<string, DreamCodeMcpServerConfig>;
+  mcpServers?: Record<string, unknown>;
   projects?: DreamCodeProject[];
   pinnedSessionIds?: string[];
   sessionTitles?: Record<string, string>;
@@ -221,7 +224,14 @@ export async function loadDreamCodeConfig(home = getDreamCodeHome()): Promise<Dr
 
   try {
     const content = await readFile(configPath, "utf8");
-    return normalizeConfig(JSON.parse(content));
+    const raw = JSON.parse(content) as Record<string, unknown>;
+    const normalized = normalizeConfig(raw);
+    if (raw.version === 2) {
+      const backupPath = path.join(home, "config.v2.backup.json");
+      if (!existsSync(backupPath)) await copyFile(configPath, backupPath);
+      await saveDreamCodeConfig(normalized, home);
+    }
+    return normalized;
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return createEmptyConfig();
@@ -619,7 +629,10 @@ export interface ReplayedSessionState {
 
 export function replaySession(events: AgentEvent[]): ReplayedSessionState {
   const revertedTurnIds = new Set(
-    events.filter((event) => event.type === "turn.reverted").map((event) => event.turnId).filter(Boolean),
+    events
+      .filter((event) => event.type === "turn.reverted")
+      .map((event) => event.turnId)
+      .filter(Boolean),
   );
   events = events.filter(
     (event) =>
@@ -784,6 +797,46 @@ export function replaySession(events: AgentEvent[]): ReplayedSessionState {
 
   state.turns = Array.from(turns.values());
   return state;
+}
+
+export async function setMcpServerEnabled(
+  serverId: string,
+  enabled: boolean,
+  home = getDreamCodeHome(),
+): Promise<DreamCodeConfig> {
+  const configPath = getConfigPath(home);
+  const previous = configWriteQueues.get(configPath) ?? Promise.resolve();
+  const write = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const raw = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+      const servers = raw.mcpServers;
+      if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+        throw new Error("MCP Server 不存在。");
+      }
+      const current = Object.hasOwn(servers, serverId)
+        ? (servers as Record<string, unknown>)[serverId]
+        : undefined;
+      if (!current || typeof current !== "object" || Array.isArray(current)) {
+        throw new Error("MCP Server 已被删除，请刷新后重试。");
+      }
+      (servers as Record<string, Record<string, unknown>>)[serverId] = { ...current, enabled };
+      const temporaryPath = `${configPath}.${process.pid}.${createId("mcp-toggle")}.tmp`;
+      await writeFile(temporaryPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+      try {
+        await rename(temporaryPath, configPath);
+      } catch (error) {
+        await rm(temporaryPath, { force: true });
+        throw error;
+      }
+    });
+  configWriteQueues.set(configPath, write);
+  try {
+    await write;
+  } finally {
+    if (configWriteQueues.get(configPath) === write) configWriteQueues.delete(configPath);
+  }
+  return loadDreamCodeConfig(home);
 }
 
 function attachmentOnlyTitle(attachments: MediaAttachment[] | undefined): string | undefined {
@@ -986,7 +1039,7 @@ async function rollbackChangedFile(input: {
 
 function createEmptyConfig(): DreamCodeConfig {
   return {
-    version: 2,
+    version: 3,
     profiles: {},
   };
 }
@@ -999,7 +1052,7 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
   const input = raw as Record<string, unknown>;
   const profiles: Record<string, DreamCodeStoredLlmProfile> = {};
   const rawProfiles = input.profiles;
-  const isVersion2 = input.version === 2;
+  const hasStableProfileIds = input.version === 2 || input.version === 3;
   if (rawProfiles && typeof rawProfiles === "object" && !Array.isArray(rawProfiles)) {
     for (const [key, profile] of Object.entries(rawProfiles)) {
       if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
@@ -1009,12 +1062,12 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
       const provider = normalizeString(candidate.provider) ?? "fake";
       const requestedAlias = normalizeString(candidate.alias) ?? key;
       const alias = uniqueMigratedAlias(profiles, provider, requestedAlias);
-      const profileId = isVersion2 ? key : legacyProfileId(key);
+      const profileId = hasStableProfileIds ? key : legacyProfileId(key);
       profiles[profileId] = normalizeStoredProfile(candidate, alias);
     }
   }
 
-  const requestedCurrentProfileId = isVersion2
+  const requestedCurrentProfileId = hasStableProfileIds
     ? normalizeString(input.currentProfileId)
     : normalizeString(input.currentProfile)
       ? legacyProfileId(normalizeString(input.currentProfile)!)
@@ -1024,7 +1077,7 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
       ? requestedCurrentProfileId
       : undefined;
 
-  const mcpServers = normalizeMcpServers(input.mcpServers);
+  const mcpServers = normalizeMcpServers(input.mcpServers, input.version === 2);
   const projects = normalizeProjects(input.projects);
   const pinnedSessionIds = Array.isArray(input.pinnedSessionIds)
     ? [
@@ -1038,7 +1091,7 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
   const sessionTitles = normalizeStringRecord(input.sessionTitles) ?? {};
   const exaApiKey = normalizeString(input.exaApiKey);
   return {
-    version: 2,
+    version: 3,
     currentProfileId,
     profiles,
     ...(exaApiKey ? { exaApiKey } : {}),
@@ -1248,29 +1301,34 @@ function hasProfileAlias(
   );
 }
 
-function normalizeMcpServers(input: unknown): Record<string, DreamCodeMcpServerConfig> {
+function normalizeMcpServers(input: unknown, migrateLegacy = false): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {};
   }
 
-  const servers: Record<string, DreamCodeMcpServerConfig> = {};
+  const servers: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(input)) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
+      servers[name] = structuredClone(value);
       continue;
     }
-    const server = value as Partial<DreamCodeMcpServerConfig>;
-    const command = normalizeString(server.command);
-    if (!command) {
-      continue;
+    const server = value as Record<string, unknown>;
+    if (migrateLegacy && !server.transport && normalizeString(server.command)) {
+      servers[name] = {
+        transport: "stdio",
+        enabled: false,
+        command: normalizeString(server.command),
+        args: Array.isArray(server.args)
+          ? server.args.filter((item): item is string => typeof item === "string")
+          : [],
+        env: normalizeStringRecord(server.env) ?? {},
+        ...(normalizeString(server.cwd) ? { cwd: normalizeString(server.cwd) } : {}),
+        toolCallTimeoutMs: 60_000,
+        reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30_000, maxAttempts: 10 },
+      };
+    } else {
+      servers[name] = structuredClone(server);
     }
-    servers[name] = {
-      command,
-      args: Array.isArray(server.args)
-        ? server.args.filter((item): item is string => typeof item === "string")
-        : undefined,
-      env: normalizeStringRecord(server.env),
-      cwd: normalizeString(server.cwd),
-    };
   }
   return servers;
 }

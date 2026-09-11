@@ -4,7 +4,7 @@ import type {
   ToolExecutionMode,
   ToolSchedulePlan,
 } from "@dreamcode/shared";
-import type { ToolRegistry } from "@dreamcode/tools";
+import type { ToolRegistryView } from "@dreamcode/tools";
 
 export interface ScheduledToolCall {
   index: number;
@@ -21,7 +21,7 @@ export interface ToolCallWave {
 const DEFAULT_PARALLELISM = 8;
 
 export function resolveToolSchedule(
-  registry: ToolRegistry,
+  registry: ToolRegistryView,
   toolCall: NormalizedToolCall,
   context: ToolExecutionContext,
 ): ToolSchedulePlan {
@@ -41,7 +41,7 @@ export function resolveToolSchedule(
  * preserving the existing serial semantics around edits, processes and interaction.
  */
 export function buildToolCallWaves(
-  registry: ToolRegistry,
+  registry: ToolRegistryView,
   toolCalls: NormalizedToolCall[],
   context: ToolExecutionContext,
 ): ToolCallWave[] {

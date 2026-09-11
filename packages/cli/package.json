@@ -19,6 +19,7 @@
   "dependencies": {
     "@dreamcode/core": "workspace:*",
     "@dreamcode/models": "workspace:*",
+    "@dreamcode/mcp": "workspace:*",
     "@dreamcode/shared": "workspace:*",
     "@dreamcode/store": "workspace:*",
     "@dreamcode/tools": "workspace:*",

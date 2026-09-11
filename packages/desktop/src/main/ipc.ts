@@ -1,11 +1,12 @@
 import type { z } from "zod";
 import {
-  attachmentIdsRequestSchema,
   approvalResponseSchema,
+  attachmentIdsRequestSchema,
   createProfileRequestSchema,
   createProjectRequestSchema,
   type DesktopError,
   type DesktopIpcResponse,
+  mcpServerToggleSchema,
   profileIdSchema,
   projectRequestSchema,
   questionResponseSchema,
@@ -80,8 +81,14 @@ export interface DesktopIpcDependencies {
     | "updateSkill"
     | "rollbackSkill"
     | "uninstallSkill"
+    | "listMcpServers"
+    | "refreshMcpServers"
+    | "setMcpServerEnabled"
   >;
-  attachmentService: Pick<DesktopAttachmentService, "importPaths" | "importBytes" | "discard" | "read">;
+  attachmentService: Pick<
+    DesktopAttachmentService,
+    "importPaths" | "importBytes" | "discard" | "read"
+  >;
   runManager: Pick<DesktopRunManager, "start" | "stop" | "respondApproval" | "respondQuestion">;
   terminalManager: Pick<DesktopTerminalManager, "start" | "write" | "resize" | "close">;
   getWindow: () => unknown;
@@ -142,21 +149,52 @@ const handlers = {
     dependencies.service.updateWebSearchCredential(
       parseRequest(webSearchCredentialRequestSchema, request),
     ),
-  "desktop:list-skills": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
-    dependencies.service.listSkills(parseRequest(skillWorkspaceRequestSchema, request).workspaceRoot),
-  "desktop:rescan-skills": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
-    dependencies.service.rescanSkills(parseRequest(skillWorkspaceRequestSchema, request).workspaceRoot),
-  "desktop:set-skill-enabled": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
-    dependencies.service.setSkillEnabled(parseRequest(skillToggleRequestSchema, request)),
-  "desktop:set-skill-roots": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
-    dependencies.service.setSkillRoots(parseRequest(skillRootsRequestSchema, request)),
-  "desktop:install-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
-    dependencies.service.installSkill(parseRequest(skillInstallRequestSchema, request)),
-  "desktop:update-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) =>
-    dependencies.service.updateSkill(parseRequest(skillLifecycleRequestSchema, request)),
-  "desktop:rollback-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) => {
+  "desktop:list-skills": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) =>
+    dependencies.service.listSkills(
+      parseRequest(skillWorkspaceRequestSchema, request).workspaceRoot,
+    ),
+  "desktop:rescan-skills": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) =>
+    dependencies.service.rescanSkills(
+      parseRequest(skillWorkspaceRequestSchema, request).workspaceRoot,
+    ),
+  "desktop:set-skill-enabled": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.setSkillEnabled(parseRequest(skillToggleRequestSchema, request)),
+  "desktop:set-skill-roots": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.setSkillRoots(parseRequest(skillRootsRequestSchema, request)),
+  "desktop:install-skill": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.installSkill(parseRequest(skillInstallRequestSchema, request)),
+  "desktop:update-skill": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.updateSkill(parseRequest(skillLifecycleRequestSchema, request)),
+  "desktop:rollback-skill": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => {
     const parsed = parseRequest(skillLifecycleRequestSchema, request);
-    return dependencies.service.rollbackSkill({ workspaceRoot: parsed.workspaceRoot, skillId: parsed.skillId });
+    return dependencies.service.rollbackSkill({
+      workspaceRoot: parsed.workspaceRoot,
+      skillId: parsed.skillId,
+    });
   },
   "desktop:choose-attachments": async (
     _event: unknown,
@@ -166,7 +204,9 @@ const handlers = {
     const parsedExisting = stageAttachmentBytesSchema.shape.existing.parse(existing ?? []);
     const result = await dependencies.dialog.showOpenDialog(dependencies.getWindow(), {
       properties: ["openFile", "multiSelections"],
-      filters: [{ name: "多模态附件", extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp3", "mp4"] }],
+      filters: [
+        { name: "多模态附件", extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp3", "mp4"] },
+      ],
     });
     return result.canceled
       ? { attachments: [], errors: [] }
@@ -184,16 +224,33 @@ const handlers = {
     _event: unknown,
     dependencies: DesktopIpcDependencies,
     request: unknown,
-  ) => dependencies.attachmentService.discard(parseRequest(attachmentIdsRequestSchema, request).ids),
+  ) =>
+    dependencies.attachmentService.discard(parseRequest(attachmentIdsRequestSchema, request).ids),
   "desktop:read-attachment": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,
     request: unknown,
   ) => dependencies.attachmentService.read(parseRequest(readAttachmentRequestSchema, request)),
-  "desktop:uninstall-skill": async (_event: unknown, dependencies: DesktopIpcDependencies, request: unknown) => {
+  "desktop:uninstall-skill": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => {
     const parsed = parseRequest(skillLifecycleRequestSchema, request);
-    return dependencies.service.uninstallSkill({ workspaceRoot: parsed.workspaceRoot, skillId: parsed.skillId });
+    return dependencies.service.uninstallSkill({
+      workspaceRoot: parsed.workspaceRoot,
+      skillId: parsed.skillId,
+    });
   },
+  "desktop:list-mcp-servers": async (_event: unknown, dependencies: DesktopIpcDependencies) =>
+    dependencies.service.listMcpServers(),
+  "desktop:refresh-mcp-servers": async (_event: unknown, dependencies: DesktopIpcDependencies) =>
+    dependencies.service.refreshMcpServers(),
+  "desktop:set-mcp-server-enabled": async (
+    _event: unknown,
+    dependencies: DesktopIpcDependencies,
+    request: unknown,
+  ) => dependencies.service.setMcpServerEnabled(parseRequest(mcpServerToggleSchema, request)),
   "desktop:save-project": async (
     _event: unknown,
     dependencies: DesktopIpcDependencies,

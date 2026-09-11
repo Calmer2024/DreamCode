@@ -49,29 +49,85 @@ function api(overrides: Partial<DesktopApi> = {}): DesktopApi {
 }
 
 describe("ConfigDialog", () => {
+  it("lists, searches, refreshes, and toggles configured MCP servers", async () => {
+    const snapshot = {
+      generation: 1,
+      servers: [
+        {
+          serverId: "filesystem",
+          transport: "stdio" as const,
+          enabled: true,
+          state: "connected" as const,
+          toolCount: 4,
+        },
+        {
+          serverId: "remote",
+          transport: "streamable-http" as const,
+          enabled: false,
+          state: "disabled" as const,
+          toolCount: 0,
+        },
+      ],
+    };
+    const listMcpServers = vi.fn().mockResolvedValue(snapshot);
+    const refreshMcpServers = vi.fn().mockResolvedValue({ ...snapshot, generation: 2 });
+    const setMcpServerEnabled = vi.fn().mockResolvedValue({ ...snapshot, generation: 3 });
+    render(
+      <ConfigDialog
+        api={api({
+          listMcpServers,
+          refreshMcpServers,
+          setMcpServerEnabled,
+          onMcpStatus: vi.fn().mockReturnValue(() => undefined),
+        })}
+        bootstrap={bootstrap}
+        open
+        initialSection="mcp"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("filesystem")).toBeVisible();
+    expect(screen.getByText("已连接 · 4 个工具")).toBeVisible();
+    fireEvent.change(screen.getByPlaceholderText("搜索 MCP 服务…"), {
+      target: { value: "remote" },
+    });
+    expect(screen.queryByText("filesystem")).not.toBeInTheDocument();
+    const remoteToggle = screen.getByRole("checkbox", { name: "启用 remote" });
+    expect(remoteToggle.nextElementSibling?.tagName).toBe("I");
+    fireEvent.click(remoteToggle);
+    await waitFor(() =>
+      expect(setMcpServerEnabled).toHaveBeenCalledWith({ serverId: "remote", enabled: true }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "刷新 MCP 服务" }));
+    await waitFor(() => expect(refreshMcpServers).toHaveBeenCalled());
+  });
+
   it("shows the low-density auto-discovered Skill manager", async () => {
     const listSkills = vi.fn().mockResolvedValue({
       generation: 1,
       customRoots: [],
       diagnostics: [],
-      skills: [{
-        skillId: "skill_review",
-        name: "Review",
-        description: "Review a change before it ships.",
-        source: "user",
-        provider: "agents",
-        capabilities: ["filesystem.read"],
-        allowImplicitInvocation: true,
-        path: "C:\\skills\\review",
-        enabled: true,
-        valid: true,
-        resolution: "resolved",
-        managed: false,
-        canUninstall: false,
-        canUpdate: false,
-        canRollback: false,
-        diagnostics: [],
-      }],
+      skills: [
+        {
+          skillId: "skill_review",
+          name: "Review",
+          description: "Review a change before it ships.",
+          source: "user",
+          provider: "agents",
+          capabilities: ["filesystem.read"],
+          allowImplicitInvocation: true,
+          path: "C:\\skills\\review",
+          enabled: true,
+          valid: true,
+          resolution: "resolved",
+          managed: false,
+          canUninstall: false,
+          canUpdate: false,
+          canRollback: false,
+          diagnostics: [],
+        },
+      ],
     });
     render(
       <ConfigDialog

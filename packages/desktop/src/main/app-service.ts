@@ -2,7 +2,6 @@ import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { contextOptionsForModel } from "@dreamcode/context";
 import { findModelProviderPreset, listModelProviderPresets } from "@dreamcode/models";
-import { ProcessSupervisor } from "@dreamcode/tools";
 import type { DreamCodeConfig, DreamCodeLlmProfile } from "@dreamcode/store";
 import {
   createLlmProfile,
@@ -23,6 +22,7 @@ import {
   updateLlmProfile,
   upsertProject,
 } from "@dreamcode/store";
+import { ProcessSupervisor } from "@dreamcode/tools";
 import type {
   CreateProfileRequest,
   CredentialAction,
@@ -33,6 +33,7 @@ import type {
   TestProfileRequest,
   UpdateProfileRequest,
 } from "../shared/contracts";
+import type { DesktopMcpService } from "./mcp-service";
 import { createDesktopProvider } from "./provider";
 import { DesktopSkillService } from "./skill-service";
 
@@ -53,13 +54,27 @@ export function redactProfiles(config: DreamCodeConfig): DesktopBootstrap["profi
 
 export class DesktopAppService {
   readonly skills: DesktopSkillService;
+  readonly mcp?: DesktopMcpService;
 
   constructor(
     private readonly home?: string,
     skills?: DesktopSkillService,
     private readonly processSupervisor = new ProcessSupervisor(),
+    mcp?: DesktopMcpService,
   ) {
     this.skills = skills ?? new DesktopSkillService({ home });
+    this.mcp = mcp;
+  }
+
+  listMcpServers() {
+    return this.mcp?.list() ?? Promise.resolve({ generation: 0, servers: [] });
+  }
+  refreshMcpServers() {
+    return this.mcp?.refresh() ?? Promise.resolve({ generation: 0, servers: [] });
+  }
+  setMcpServerEnabled(request: { serverId: string; enabled: boolean }) {
+    if (!this.mcp) throw new Error("MCP Runtime is unavailable.");
+    return this.mcp.setEnabled(request);
   }
 
   listSkills(workspaceRoot?: string) {
@@ -82,7 +97,11 @@ export class DesktopAppService {
     return this.skills.install(request);
   }
 
-  updateSkill(request: { workspaceRoot?: string; skillId: string; confirmations?: SkillInstallRequest["confirmations"] }) {
+  updateSkill(request: {
+    workspaceRoot?: string;
+    skillId: string;
+    confirmations?: SkillInstallRequest["confirmations"];
+  }) {
     return this.skills.update(request);
   }
 

@@ -9,8 +9,8 @@ import type {
   ChangedFile,
   ChatMessage,
   FinalSummary,
-  ModelProvider,
   MediaAttachment,
+  ModelProvider,
   NormalizedToolCall,
   PermissionDecision,
   RunMode,
@@ -33,7 +33,11 @@ import {
   rebuildSessionIndex,
   replaySession,
 } from "@dreamcode/store";
-import { createDefaultToolRegistry, type ToolRegistry } from "@dreamcode/tools";
+import {
+  createDefaultToolRegistry,
+  type ToolRegistry,
+  type ToolRegistryView,
+} from "@dreamcode/tools";
 import { ToolResultAggregator } from "./tool-result-aggregator.js";
 import { buildToolCallWaves, mapWithConcurrency } from "./tool-scheduler.js";
 
@@ -228,9 +232,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
               "Repeated tool requests were detected. Do not call tools. Use the evidence already collected and give the final answer now.",
           }
         : undefined;
-      // Expose every registered tool to the model. PermissionEngine remains the
-      // execution-time gate for tools that require approval or are denied.
-      const toolSpecs = synthesizing ? [] : registry.toModelSpecs(mode);
+      // Freeze the mode-filtered tool view for this model request and its resulting calls.
+      const toolSnapshot = registry.snapshot();
+      const toolSpecs = synthesizing ? [] : toolSnapshot.toModelSpecs(mode);
       const context = await contextBuilder.build({
         mode,
         workspaceRoot: session.workspaceRoot,
@@ -365,7 +369,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       state.messages.push({ ...assistantMessage, id: assistantEvent.id });
 
       if (synthesizing) {
-        const fallback = "Stopped after repeated tool requests and returned the evidence already collected.";
+        const fallback =
+          "Stopped after repeated tool requests and returned the evidence already collected.";
         const summary = buildFinalSummary({
           status: "completed_partial",
           message: assistantText.trim() || fallback,
@@ -400,7 +405,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         skills,
       };
       const resultAggregator = new ToolResultAggregator();
-      const waves = buildToolCallWaves(registry, toolCalls, executionContext);
+      const waves = buildToolCallWaves(toolSnapshot, toolCalls, executionContext);
       yield await emit("tool.schedule.planned", {
         toolCallCount: toolCalls.length,
         actionCount: waves.reduce(
@@ -434,10 +439,12 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         for (const scheduled of wave.calls) {
           const { toolCall } = scheduled;
 
-          const preflightResult = await registry.get(toolCall.name)?.preflight?.(toolCall.input, {
-            ...executionContext,
-            toolCallId: toolCall.id,
-          });
+          const preflightResult = await toolSnapshot
+            .get(toolCall.name)
+            ?.preflight?.(toolCall.input, {
+              ...executionContext,
+              toolCallId: toolCall.id,
+            });
           if (preflightResult) {
             const validationDecision: PermissionDecision = {
               decision: "deny",
@@ -466,11 +473,13 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
             mode,
             workspaceRoot: session.workspaceRoot,
             toolCall,
+            tool: toolSnapshot.get(toolCall.name),
           });
           const undeclaredCapability = getUndeclaredSkillCapability(
             skillSnapshot,
             loadedSkillIds,
             toolCall.name,
+            toolSnapshot.get(toolCall.name),
           );
           if (undeclaredCapability) {
             yield await emit("skill.capability.undeclared", {
@@ -495,7 +504,9 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           const signature = `${workspaceRevision}:${makeToolCallSignature(toolCall)}`;
           const inspectionCount = (inspectionCounts.get(signature) ?? 0) + 1;
           inspectionCounts.set(signature, inspectionCount);
-          const cacheAllowed = !registry.processSupervisor.hasActiveProcess(session.workspaceRoot);
+          const cacheAllowed = !toolSnapshot.processSupervisor.hasActiveProcess(
+            session.workspaceRoot,
+          );
           prepared.push({
             toolCall,
             decision: finalDecision,
@@ -528,7 +539,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
             }
           }
           const execution = executeToolWithEvents({
-            registry,
+            registry: toolSnapshot,
             toolCall: item.toolCall,
             sessionId: session.id,
             sessionDir: session.sessionDir,
@@ -585,7 +596,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           if (
             !item.cacheHit &&
             item.decision.decision === "allow" &&
-            shouldInvalidateReadCache(registry, item.toolCall.name, result)
+            shouldInvalidateReadCache(toolSnapshot, item.toolCall.name, result)
           ) {
             workspaceRevision += 1;
             readOnlyCache.clear();
@@ -594,7 +605,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
             forceSynthesisForRepeatedTools = true;
           }
           throwIfInterrupted(input.signal);
-
         }
       }
     }
@@ -682,9 +692,10 @@ export function getUndeclaredSkillCapability(
   snapshot: SkillSnapshot,
   loadedSkillIds: ReadonlySet<string>,
   toolName: string,
+  tool?: import("@dreamcode/shared").Tool,
 ): import("@dreamcode/skills").SkillCapability | undefined {
   if (!loadedSkillIds.size || toolName.startsWith("skill.")) return undefined;
-  const capability = requiredSkillCapability(toolName);
+  const capability = requiredSkillCapability(toolName, tool);
   if (!capability) return undefined;
   const declared = new Set(
     [...loadedSkillIds].flatMap((skillId) => snapshot.get(skillId)?.metadata?.capabilities ?? []),
@@ -694,6 +705,7 @@ export function getUndeclaredSkillCapability(
 
 function requiredSkillCapability(
   toolName: string,
+  tool?: import("@dreamcode/shared").Tool,
 ): import("@dreamcode/skills").SkillCapability | undefined {
   if (
     toolName === "file.read" ||
@@ -711,7 +723,7 @@ function requiredSkillCapability(
   if (toolName === "job_output" || toolName === "job_list" || toolName === "job_kill")
     return "process.execute";
   if (toolName.startsWith("web.")) return "network.access";
-  if (toolName === "mcp.call") return "mcp.use";
+  if (tool?.source?.kind === "mcp") return "mcp.use";
   return undefined;
 }
 
@@ -737,13 +749,12 @@ function compactCacheHit(
 }
 
 function shouldInvalidateReadCache(
-  registry: ToolRegistry,
+  registry: ToolRegistryView,
   toolName: string,
   result: ToolResult,
 ): boolean {
   if (readOnlyTools.has(toolName)) return false;
   if (result.execution && !result.execution.started) return false;
-  if (toolName === "mcp.call") return true;
   const risk = registry.get(toolName)?.risk;
   return Boolean(risk?.writesFiles || risk?.runsCommands || risk?.externalSideEffects);
 }
@@ -791,7 +802,10 @@ function safeJson(value: unknown): string {
 
 function projectConversationMessages(events: AgentEvent[], sessionDir: string): ChatMessage[] {
   const revertedTurnIds = new Set(
-    events.filter((event) => event.type === "turn.reverted").map((event) => event.turnId).filter(Boolean),
+    events
+      .filter((event) => event.type === "turn.reverted")
+      .map((event) => event.turnId)
+      .filter(Boolean),
   );
   const messages: ChatMessage[] = [];
   let pendingText = "";
@@ -811,7 +825,8 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
   };
 
   for (const event of events) {
-    if (event.type !== "turn.reverted" && event.turnId && revertedTurnIds.has(event.turnId)) continue;
+    if (event.type !== "turn.reverted" && event.turnId && revertedTurnIds.has(event.turnId))
+      continue;
     if (event.type === "user.message") {
       flushPending();
       const payload = event.payload as { content?: string; attachments?: MediaAttachment[] };
@@ -920,42 +935,57 @@ async function materializeTurnAttachments(
   if (attachments.length) {
     const disk = await statfs(sessionDir);
     const requiredBytes =
-      attachments.reduce((total, attachment) => total + attachment.size * 2, 0) +
-      64 * 1024 * 1024;
+      attachments.reduce((total, attachment) => total + attachment.size * 2, 0) + 64 * 1024 * 1024;
     if (disk.bavail * disk.bsize < requiredBytes) {
       throw new Error("Insufficient disk space to save the attachment snapshot.");
     }
   }
-  return Promise.all(attachments.map(async (attachment) => {
-    if (!attachment.sourcePath || !attachment.originalSourcePath) {
-      throw new Error(`Attachment ${attachment.name} is no longer available.`);
-    }
-    const extension = extensionForMime(attachment.mimeType);
-    const relativePath = path.posix.join("attachments", attachment.id, `original.${extension}`);
-    const sendRelativePath = path.posix.join("attachments", attachment.id, `send.${extension}`);
-    const originalTarget = path.join(sessionDir, ...relativePath.split("/"));
-    const sendTarget = path.join(sessionDir, ...sendRelativePath.split("/"));
-    await mkdir(path.dirname(originalTarget), { recursive: true });
-    await copyFile(attachment.originalSourcePath, originalTarget);
-    await copyFile(attachment.sourcePath, sendTarget);
-    return { ...attachment, relativePath, sendRelativePath, sourcePath: sendTarget, originalSourcePath: undefined };
-  }));
+  return Promise.all(
+    attachments.map(async (attachment) => {
+      if (!attachment.sourcePath || !attachment.originalSourcePath) {
+        throw new Error(`Attachment ${attachment.name} is no longer available.`);
+      }
+      const extension = extensionForMime(attachment.mimeType);
+      const relativePath = path.posix.join("attachments", attachment.id, `original.${extension}`);
+      const sendRelativePath = path.posix.join("attachments", attachment.id, `send.${extension}`);
+      const originalTarget = path.join(sessionDir, ...relativePath.split("/"));
+      const sendTarget = path.join(sessionDir, ...sendRelativePath.split("/"));
+      await mkdir(path.dirname(originalTarget), { recursive: true });
+      await copyFile(attachment.originalSourcePath, originalTarget);
+      await copyFile(attachment.sourcePath, sendTarget);
+      return {
+        ...attachment,
+        relativePath,
+        sendRelativePath,
+        sourcePath: sendTarget,
+        originalSourcePath: undefined,
+      };
+    }),
+  );
 }
 
 function publicMediaAttachment(attachment: MediaAttachment): MediaAttachment {
-  const { sourcePath: _sourcePath, originalSourcePath: _originalSourcePath, ...persisted } = attachment;
+  const {
+    sourcePath: _sourcePath,
+    originalSourcePath: _originalSourcePath,
+    ...persisted
+  } = attachment;
   return persisted;
 }
 
 function extensionForMime(mimeType: string): string {
-  return ({
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/webp": "webp",
-    "image/gif": "gif",
-    "audio/mpeg": "mp3",
-    "video/mp4": "mp4",
-  } as Record<string, string>)[mimeType] ?? "bin";
+  return (
+    (
+      {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+        "image/gif": "gif",
+        "audio/mpeg": "mp3",
+        "video/mp4": "mp4",
+      } as Record<string, string>
+    )[mimeType] ?? "bin"
+  );
 }
 
 async function resolveApproval(input: {
@@ -992,7 +1022,7 @@ async function resolveApproval(input: {
 }
 
 async function executeToolWithEvents(input: {
-  registry: ToolRegistry;
+  registry: ToolRegistryView;
   toolCall: NormalizedToolCall;
   workspaceRoot: string;
   sessionDir: string;

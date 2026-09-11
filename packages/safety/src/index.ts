@@ -8,6 +8,7 @@ import type {
   PermissionDecisionKind,
   RiskTag,
   RunMode,
+  Tool,
 } from "@dreamcode/shared";
 
 export interface ResolvedWorkspacePath {
@@ -239,7 +240,7 @@ export const PermissionRuleCatalog = {
       summary: "Read or explicitly search sensitive local files.",
       examples: ["file.read .env"],
     },
-    { id: "mcp", summary: "Call configured external MCP tools.", examples: ["mcp.call"] },
+    { id: "mcp", summary: "Call configured external MCP tools.", examples: ["mcp__server__tool"] },
     {
       id: "destructive",
       summary: "Destructive deletion, history rewrite, or system commands.",
@@ -269,12 +270,12 @@ export function buildPermissionCapabilityContract(
       allow: [category("workspace_read"), category("external_read"), category("tests_checks")],
       ask: [
         category("network", "Web/network reads require approval in plan mode."),
-        category("mcp", "MCP tools require approval in plan mode."),
         category("sensitive_read"),
       ].filter(Boolean),
       deny: [
         category("workspace_write"),
         category("dependency_install"),
+        category("mcp", "MCP tools are unavailable in plan mode."),
         category("destructive"),
         category("other_command"),
       ],
@@ -346,6 +347,7 @@ export interface PermissionEngineInput {
   mode: RunMode;
   workspaceRoot: string;
   toolCall: NormalizedToolCall;
+  tool?: Tool;
 }
 
 export class PermissionEngine {
@@ -380,7 +382,10 @@ export class PermissionEngine {
       ]);
     }
 
-    if (toolName === "mcp.list" || toolName === "mcp.call") {
+    if (input.tool?.source?.kind === "mcp" || input.tool?.risk.tags.includes("mcp_tool")) {
+      if (mode === "plan") {
+        return deny("Plan mode does not allow MCP tools.", ["mcp_tool", "external_side_effect"]);
+      }
       if (mode === "full") {
         return allow("Full mode allows configured MCP tools.", [
           "mcp_tool",

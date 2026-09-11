@@ -24,6 +24,7 @@
     "@dreamcode/context": "workspace:*",
     "@dreamcode/core": "workspace:*",
     "@dreamcode/models": "workspace:*",
+    "@dreamcode/mcp": "workspace:*",
     "@dreamcode/shared": "workspace:*",
     "@dreamcode/skills": "workspace:*",
     "@dreamcode/store": "workspace:*",

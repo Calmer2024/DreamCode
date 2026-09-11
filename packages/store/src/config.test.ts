@@ -10,6 +10,7 @@ import {
   loadDreamCodeConfig,
   saveDreamCodeConfig,
   setCurrentLlmProfile,
+  setMcpServerEnabled,
   setSessionPinned,
   upsertLlmProfile,
   upsertProject,
@@ -20,7 +21,7 @@ describe("DreamCode config", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
 
     await expect(loadDreamCodeConfig(home)).resolves.toEqual({
-      version: 2,
+      version: 3,
       profiles: {},
     });
   });
@@ -73,7 +74,7 @@ describe("DreamCode config", () => {
     const second = await loadDreamCodeConfig(home);
     const profileId = Object.keys(first.profiles)[0];
 
-    expect(first.version).toBe(2);
+    expect(first.version).toBe(3);
     expect(profileId).toMatch(/^profile_legacy_/);
     expect(second.currentProfileId).toBe(profileId);
     expect(first.profiles[profileId!]).toMatchObject({
@@ -110,6 +111,59 @@ describe("DreamCode config", () => {
     await expect(loadDreamCodeConfig(home)).resolves.toMatchObject({
       projects: [{ workspaceRoot: path.resolve(workspaceRoot), name: "Workspace", pinned: true }],
       pinnedSessionIds: ["sess_1"],
+    });
+  });
+
+  it("migrates legacy MCP stdio entries disabled and keeps a v2 backup", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
+    const legacy = {
+      version: 2,
+      profiles: {},
+      mcpServers: {
+        local: { command: "node", args: ["server.js"], env: { TOKEN: "$" + "{TOKEN}" } },
+      },
+    };
+    await writeFile(getConfigPath(home), JSON.stringify(legacy), "utf8");
+
+    const migrated = await loadDreamCodeConfig(home);
+
+    expect(migrated).toMatchObject({
+      version: 3,
+      mcpServers: { local: { transport: "stdio", enabled: false, command: "node" } },
+    });
+    await expect(readFile(path.join(home, "config.v2.backup.json"), "utf8")).resolves.toBe(
+      JSON.stringify(legacy),
+    );
+  });
+
+  it("updates only the selected MCP enabled field from the latest config", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
+    await writeFile(
+      getConfigPath(home),
+      JSON.stringify(
+        {
+          version: 3,
+          profiles: {},
+          retained: { custom: true },
+          mcpServers: {
+            one: { enabled: false, transport: "stdio", command: "node", custom: "keep" },
+            two: { enabled: true, transport: "streamable-http", url: "https://example.com/mcp" },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await setMcpServerEnabled("one", true, home);
+    const raw = JSON.parse(await readFile(getConfigPath(home), "utf8")) as Record<string, unknown>;
+    expect(raw).toMatchObject({
+      retained: { custom: true },
+      mcpServers: {
+        one: { enabled: true, custom: "keep" },
+        two: { enabled: true },
+      },
     });
   });
 });

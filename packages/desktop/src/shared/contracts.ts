@@ -1,22 +1,28 @@
+import type { McpRuntimeSnapshot } from "@dreamcode/mcp";
 import type { AgentEvent, MediaAttachmentKind, RunMode } from "@dreamcode/shared";
 import type { ReplayedSessionState, SessionListItem } from "@dreamcode/store";
 import { z } from "zod";
 
 export const workspaceRootSchema = z.string().trim().min(1);
 
-const attachmentIdSchema = z.string().trim().regex(/^[A-Za-z0-9_-]+$/);
+const attachmentIdSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_-]+$/);
 
-export const startTurnRequestSchema = z.object({
-  prompt: z.string(),
-  workspaceRoot: workspaceRootSchema,
-  mode: z.enum(["plan", "guided", "yolo", "full"]),
-  profileId: z.string().trim().min(1).optional(),
-  model: z.string().trim().min(1).optional(),
-  sessionId: z.string().trim().min(1).optional(),
-  attachmentIds: z.array(attachmentIdSchema).max(10).optional(),
-}).refine((value) => value.prompt.trim().length > 0 || Boolean(value.attachmentIds?.length), {
-  message: "A prompt or at least one attachment is required.",
-});
+export const startTurnRequestSchema = z
+  .object({
+    prompt: z.string(),
+    workspaceRoot: workspaceRootSchema,
+    mode: z.enum(["plan", "guided", "yolo", "full"]),
+    profileId: z.string().trim().min(1).optional(),
+    model: z.string().trim().min(1).optional(),
+    sessionId: z.string().trim().min(1).optional(),
+    attachmentIds: z.array(attachmentIdSchema).max(10).optional(),
+  })
+  .refine((value) => value.prompt.trim().length > 0 || Boolean(value.attachmentIds?.length), {
+    message: "A prompt or at least one attachment is required.",
+  });
 
 export type StartTurnRequest = z.infer<typeof startTurnRequestSchema> & { mode: RunMode };
 
@@ -31,7 +37,13 @@ export interface DesktopAttachment {
 
 export interface DesktopAttachmentImportError {
   name: string;
-  code: "unsupported_type" | "file_too_large" | "total_too_large" | "invalid_media" | "disk_full" | "read_failed";
+  code:
+    | "unsupported_type"
+    | "file_too_large"
+    | "total_too_large"
+    | "invalid_media"
+    | "disk_full"
+    | "read_failed";
   message: string;
 }
 
@@ -41,18 +53,27 @@ export interface DesktopAttachmentImportResult {
 }
 
 export const stageAttachmentBytesSchema = z.object({
-  files: z.array(z.object({
-    name: z.string().trim().min(1).max(255),
-    bytes: z.custom<Uint8Array>((value) => value instanceof Uint8Array),
-  })).max(10),
-  existing: z.array(z.object({
-    id: attachmentIdSchema,
-    name: z.string(),
-    kind: z.enum(["image", "audio", "video"]),
-    mimeType: z.string(),
-    size: z.number().nonnegative(),
-    sha256: z.string(),
-  })).max(10).optional(),
+  files: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(255),
+        bytes: z.custom<Uint8Array>((value) => value instanceof Uint8Array),
+      }),
+    )
+    .max(10),
+  existing: z
+    .array(
+      z.object({
+        id: attachmentIdSchema,
+        name: z.string(),
+        kind: z.enum(["image", "audio", "video"]),
+        mimeType: z.string(),
+        size: z.number().nonnegative(),
+        sha256: z.string(),
+      }),
+    )
+    .max(10)
+    .optional(),
 });
 
 export const attachmentIdsRequestSchema = z.object({ ids: z.array(attachmentIdSchema).max(10) });
@@ -150,21 +171,43 @@ export const skillInstallRequestSchema = z.object({
   workspaceRoot: workspaceRootSchema.optional(),
   scope: z.enum(["user", "project"]),
   source: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("directory"), location: z.string().trim().min(1), subpath: z.string().trim().min(1).optional() }),
-    z.object({ type: z.literal("zip"), location: z.string().trim().min(1), subpath: z.string().trim().min(1).optional() }),
-    z.object({ type: z.literal("git"), location: z.string().trim().min(1), ref: z.string().trim().min(1).optional(), subpath: z.string().trim().min(1).optional() }),
+    z.object({
+      type: z.literal("directory"),
+      location: z.string().trim().min(1),
+      subpath: z.string().trim().min(1).optional(),
+    }),
+    z.object({
+      type: z.literal("zip"),
+      location: z.string().trim().min(1),
+      subpath: z.string().trim().min(1).optional(),
+    }),
+    z.object({
+      type: z.literal("git"),
+      location: z.string().trim().min(1),
+      ref: z.string().trim().min(1).optional(),
+      subpath: z.string().trim().min(1).optional(),
+    }),
   ]),
-  confirmations: z.object({
-    overwrite: z.boolean().optional(),
-    downgrade: z.boolean().optional(),
-    sourceChange: z.boolean().optional(),
-    localChanges: z.boolean().optional(),
-    sameVersionContentChange: z.boolean().optional(),
-  }).optional(),
+  confirmations: z
+    .object({
+      overwrite: z.boolean().optional(),
+      downgrade: z.boolean().optional(),
+      sourceChange: z.boolean().optional(),
+      localChanges: z.boolean().optional(),
+      sameVersionContentChange: z.boolean().optional(),
+    })
+    .optional(),
 });
 export const skillLifecycleRequestSchema = skillWorkspaceRequestSchema.extend({
   skillId: z.string().trim().min(1),
   confirmations: skillInstallRequestSchema.shape.confirmations,
+});
+export const mcpServerToggleSchema = z.object({
+  serverId: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{1,32}$/),
+  enabled: z.boolean(),
 });
 
 export interface DesktopRunEvent {
@@ -344,6 +387,7 @@ export interface DesktopSkillSnapshot {
   customRoots: string[];
   diagnostics: Array<{ code: string; message: string; path: string }>;
 }
+export type DesktopMcpSnapshot = McpRuntimeSnapshot;
 export type SkillInstallRequest = z.infer<typeof skillInstallRequestSchema>;
 export interface DesktopSessionDetail extends ReplayedSessionState {
   events?: AgentEvent[];
@@ -367,12 +411,32 @@ export interface DesktopApi {
   updateWebSearchCredential(request: WebSearchCredentialRequest): Promise<DesktopBootstrap>;
   listSkills(workspaceRoot?: string): Promise<DesktopSkillSnapshot>;
   rescanSkills(workspaceRoot?: string): Promise<DesktopSkillSnapshot>;
-  setSkillEnabled(request: { workspaceRoot?: string; skillId: string; enabled: boolean }): Promise<DesktopSkillSnapshot>;
-  setSkillRoots(request: { workspaceRoot?: string; roots: string[] }): Promise<DesktopSkillSnapshot>;
+  setSkillEnabled(request: {
+    workspaceRoot?: string;
+    skillId: string;
+    enabled: boolean;
+  }): Promise<DesktopSkillSnapshot>;
+  setSkillRoots(request: {
+    workspaceRoot?: string;
+    roots: string[];
+  }): Promise<DesktopSkillSnapshot>;
   installSkill(request: SkillInstallRequest): Promise<DesktopSkillSnapshot>;
-  updateSkill(request: { workspaceRoot?: string; skillId: string; confirmations?: SkillInstallRequest["confirmations"] }): Promise<DesktopSkillSnapshot>;
-  rollbackSkill(request: { workspaceRoot?: string; skillId: string }): Promise<DesktopSkillSnapshot>;
-  uninstallSkill(request: { workspaceRoot?: string; skillId: string }): Promise<DesktopSkillSnapshot>;
+  updateSkill(request: {
+    workspaceRoot?: string;
+    skillId: string;
+    confirmations?: SkillInstallRequest["confirmations"];
+  }): Promise<DesktopSkillSnapshot>;
+  rollbackSkill(request: {
+    workspaceRoot?: string;
+    skillId: string;
+  }): Promise<DesktopSkillSnapshot>;
+  uninstallSkill(request: {
+    workspaceRoot?: string;
+    skillId: string;
+  }): Promise<DesktopSkillSnapshot>;
+  listMcpServers(): Promise<DesktopMcpSnapshot>;
+  refreshMcpServers(): Promise<DesktopMcpSnapshot>;
+  setMcpServerEnabled(request: { serverId: string; enabled: boolean }): Promise<DesktopMcpSnapshot>;
   saveProject(request: {
     workspaceRoot: string;
     name: string;
@@ -403,4 +467,5 @@ export interface DesktopApi {
   onQuestionRequest(listener: (request: DesktopQuestionRequest) => void): () => void;
   onRunStatus(listener: (status: DesktopRunStatus) => void): () => void;
   onTerminalOutput(listener: (output: DesktopTerminalOutput) => void): () => void;
+  onMcpStatus(listener: (snapshot: DesktopMcpSnapshot) => void): () => void;
 }

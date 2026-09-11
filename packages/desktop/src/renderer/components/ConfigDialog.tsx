@@ -18,6 +18,7 @@ import type {
   CredentialAction,
   DesktopApi,
   DesktopBootstrap,
+  DesktopMcpSnapshot,
   DesktopSkillSnapshot,
   ProfileConnectionResult,
 } from "../../shared/contracts";
@@ -32,7 +33,7 @@ interface ConfigDialogProps {
   onSaved?: (bootstrap: DesktopBootstrap) => void;
   activeProfileId?: string;
   onApplyProfile?: (profileId: string) => void;
-  initialSection?: "general" | "model" | "skills";
+  initialSection?: "general" | "model" | "skills" | "mcp";
   workspaceRoot?: string;
 }
 
@@ -64,7 +65,7 @@ export function ConfigDialog({
     bootstrap.profiles.find((profile) => profile.id === activeProfileId)?.id ??
     bootstrap.currentProfileId ??
     bootstrap.profiles[0]?.id;
-  const [section, setSection] = useState<"general" | "model" | "skills">(initialSection);
+  const [section, setSection] = useState<"general" | "model" | "skills" | "mcp">(initialSection);
   const [selectedId, setSelectedId] = useState<string | undefined>(initialId);
   const selectedProfile = bootstrap.profiles.find((profile) => profile.id === selectedId);
   const [form, setForm] = useState<ProfileForm>(() => formForProfile(bootstrap, selectedProfile));
@@ -239,19 +240,37 @@ export function ConfigDialog({
           <Puzzle aria-hidden="true" />
           技能
         </button>
+        <button
+          type="button"
+          aria-current={section === "mcp" ? "page" : undefined}
+          onClick={() => leave(() => setSection("mcp"))}
+        >
+          <PlugZap aria-hidden="true" />
+          MCP
+        </button>
       </aside>
 
       <main className="settings-surface" aria-label="设置">
         <div className="settings-page-header" />
         <div className="settings-content">
           <header className="settings-content-header">
-            <h1>{section === "general" ? "常规" : section === "model" ? "模型" : "技能"}</h1>
+            <h1>
+              {section === "general"
+                ? "常规"
+                : section === "model"
+                  ? "模型"
+                  : section === "skills"
+                    ? "技能"
+                    : "MCP"}
+            </h1>
             <p>
               {section === "general"
                 ? "运行行为与本地安全设置"
                 : section === "model"
                   ? "配置 DreamCode 使用的模型服务"
-                  : "管理 DreamCode 自动发现的技能"}
+                  : section === "skills"
+                    ? "管理 DreamCode 自动发现的技能"
+                    : "管理 DreamCode 使用的 MCP 服务"}
             </p>
           </header>
           {section === "general" ? (
@@ -519,8 +538,10 @@ export function ConfigDialog({
                 </div>
               </div>
             </section>
-          ) : (
+          ) : section === "skills" ? (
             <SkillManager api={api} workspaceRoot={workspaceRoot} />
+          ) : (
+            <McpManager api={api} />
           )}
         </div>
       </main>
@@ -566,10 +587,149 @@ export function ConfigDialog({
   );
 }
 
+function McpManager({ api }: { api: DesktopApi }) {
+  const [snapshot, setSnapshot] = useState<DesktopMcpSnapshot>();
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState<string>();
+  const [message, setMessage] = useState<string>();
+
+  useEffect(() => {
+    let active = true;
+    void api
+      .listMcpServers()
+      .then((value) => {
+        if (active) setSnapshot(value);
+      })
+      .catch(() => {
+        if (active) setMessage("无法读取 MCP 状态。");
+      });
+    const unsubscribe = api.onMcpStatus((value) => {
+      if (!active) return;
+      setSnapshot((current) =>
+        !current || value.generation > current.generation ? value : current,
+      );
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [api]);
+
+  const run = async (key: string, action: () => Promise<DesktopMcpSnapshot>) => {
+    setBusy(key);
+    setMessage(undefined);
+    try {
+      setSnapshot(await action());
+    } catch {
+      setMessage("MCP 操作失败，请检查配置后重试。");
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const normalized = query.trim().toLocaleLowerCase();
+  const servers = (snapshot?.servers ?? []).filter(
+    (server) =>
+      !normalized ||
+      `${server.serverId} ${server.transport ?? ""} ${server.command ?? ""} ${server.url ?? ""}`
+        .toLocaleLowerCase()
+        .includes(normalized),
+  );
+
+  return (
+    <section className="settings-group skills-settings-group">
+      <div className="skill-page-actions">
+        <label className="skill-search">
+          <Search aria-hidden="true" />
+          <span className="sr-only">搜索 MCP 服务</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 MCP 服务…"
+          />
+        </label>
+        <button
+          type="button"
+          className="skill-action-button skill-icon-action"
+          aria-label="刷新 MCP 服务"
+          disabled={Boolean(busy)}
+          onClick={() => void run("refresh", () => api.refreshMcpServers())}
+        >
+          <RefreshCw aria-hidden="true" />
+        </button>
+      </div>
+      {message ? (
+        <p className="skill-message" role="alert">
+          {message}
+        </p>
+      ) : null}
+      <div className="skill-list" aria-busy={busy === "refresh"}>
+        {servers.map((server) => (
+          <article className="skill-list-item" key={server.serverId}>
+            <span className="skill-icon">
+              <PlugZap aria-hidden="true" />
+            </span>
+            <div className="skill-summary">
+              <div className="skill-title-line">
+                <strong>{server.serverId}</strong>
+                <span>
+                  {server.transport === "streamable-http" ? "HTTP" : (server.transport ?? "未知")}
+                </span>
+              </div>
+              <p>{mcpStatusLabel(server)}</p>
+            </div>
+            <label className="skill-switch">
+              <span className="sr-only">
+                {server.enabled ? `禁用 ${server.serverId}` : `启用 ${server.serverId}`}
+              </span>
+              <input
+                type="checkbox"
+                checked={server.enabled}
+                disabled={Boolean(busy) || (server.state === "invalid" && !server.enabled)}
+                onChange={(event) =>
+                  void run(server.serverId, () =>
+                    api.setMcpServerEnabled({
+                      serverId: server.serverId,
+                      enabled: event.target.checked,
+                    }),
+                  )
+                }
+              />
+              <i aria-hidden="true" />
+            </label>
+          </article>
+        ))}
+        {snapshot && servers.length === 0 ? (
+          <p className="skill-empty">
+            {snapshot.servers.length
+              ? "没有找到匹配的 MCP 服务。"
+              : "尚未配置 MCP 服务。请在 ~/.dreamcode/config.json 中添加配置，然后点击刷新。"}
+          </p>
+        ) : null}
+        {!snapshot && !message ? <p className="skill-empty">正在读取 MCP 服务…</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function mcpStatusLabel(server: DesktopMcpSnapshot["servers"][number]): string {
+  if (server.state === "connected")
+    return `已连接 · ${server.toolCount} 个工具${server.error ? " · 工具刷新失败，继续使用上一版本" : ""}`;
+  if (server.state === "reconnecting")
+    return `正在重连 · 第 ${server.reconnectAttempt ?? 0} 次 · 保留 ${server.toolCount} 个工具`;
+  if (server.state === "connecting") return "正在连接";
+  if (server.state === "disabled") return "已禁用";
+  if (server.state === "invalid") return server.error ? `配置无效 · ${server.error}` : "配置无效";
+  if (server.state === "failed") return server.error ? `连接失败 · ${server.error}` : "连接失败";
+  return "正在关闭";
+}
+
 function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?: string }) {
   const [snapshot, setSnapshot] = useState<DesktopSkillSnapshot>();
   const [query, setQuery] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<"all" | DesktopSkillSnapshot["skills"][number]["source"]>("all");
+  const [sourceFilter, setSourceFilter] = useState<
+    "all" | DesktopSkillSnapshot["skills"][number]["source"]
+  >("all");
   const [busy, setBusy] = useState<string>();
   const [message, setMessage] = useState<string>();
 
@@ -603,8 +763,13 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
 
   const visible = (snapshot?.skills ?? []).filter((skill) => {
     const normalized = query.trim().toLocaleLowerCase();
-    return (sourceFilter === "all" || skill.source === sourceFilter)
-      && (!normalized || `${skill.name} ${skill.description} ${skill.provider}`.toLocaleLowerCase().includes(normalized));
+    return (
+      (sourceFilter === "all" || skill.source === sourceFilter) &&
+      (!normalized ||
+        `${skill.name} ${skill.description} ${skill.provider}`
+          .toLocaleLowerCase()
+          .includes(normalized))
+    );
   });
 
   return (
@@ -619,7 +784,12 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <select className="skill-source-filter sr-only" aria-label="按来源筛选" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}>
+        <select
+          className="skill-source-filter sr-only"
+          aria-label="按来源筛选"
+          value={sourceFilter}
+          onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}
+        >
           <option value="all">全部来源</option>
           <option value="built_in">内置</option>
           <option value="system">系统</option>
@@ -639,17 +809,27 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
         </button>
       </div>
 
-      {message ? <p className="skill-message" role="alert">{message}</p> : null}
+      {message ? (
+        <p className="skill-message" role="alert">
+          {message}
+        </p>
+      ) : null}
       <div className="skill-list" aria-busy={busy === "rescan"}>
         {visible.map((skill) => (
           <article className="skill-list-item" key={skill.skillId}>
-            <span className="skill-icon"><Puzzle aria-hidden="true" /></span>
+            <span className="skill-icon">
+              <Puzzle aria-hidden="true" />
+            </span>
             <div className="skill-summary">
               <div className="skill-title-line">
                 <strong>{skill.name}</strong>
                 <span>{sourceLabel(skill.source)}</span>
                 <span>{skill.version ? `v${skill.version}` : "未声明版本"}</span>
-                {!skill.valid ? <em>无效</em> : skill.resolution !== "resolved" ? <em>已覆盖</em> : null}
+                {!skill.valid ? (
+                  <em>无效</em>
+                ) : skill.resolution !== "resolved" ? (
+                  <em>已覆盖</em>
+                ) : null}
               </div>
               <p>{skill.description}</p>
               {skill.capabilities.length ? (
@@ -668,46 +848,111 @@ function SkillManager({ api, workspaceRoot }: { api: DesktopApi; workspaceRoot?:
               {skill.diagnostics[0] ? <small>{skill.diagnostics[0]}</small> : null}
               {skill.managed ? (
                 <div className="skill-inline-actions">
-                  {skill.canUpdate ? <button type="button" disabled={Boolean(busy)} onClick={() => void run(skill.skillId, () => retryLifecycleConflict("更新会覆盖本地修改、变更来源或降级版本。确认继续？", (confirmations) => api.updateSkill({ workspaceRoot, skillId: skill.skillId, confirmations })))}>更新</button> : null}
-                  {skill.canRollback ? <button type="button" disabled={Boolean(busy)} onClick={() => void run(skill.skillId, () => api.rollbackSkill({ workspaceRoot, skillId: skill.skillId }))}><RotateCcw aria-hidden="true" />恢复上一版</button> : null}
-                  {skill.canUninstall ? <button type="button" className="danger-link" disabled={Boolean(busy)} onClick={() => {
-                    if (window.confirm(`卸载 ${skill.name}？`)) void run(skill.skillId, () => api.uninstallSkill({ workspaceRoot, skillId: skill.skillId }));
-                  }}>卸载</button> : null}
+                  {skill.canUpdate ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(busy)}
+                      onClick={() =>
+                        void run(skill.skillId, () =>
+                          retryLifecycleConflict(
+                            "更新会覆盖本地修改、变更来源或降级版本。确认继续？",
+                            (confirmations) =>
+                              api.updateSkill({
+                                workspaceRoot,
+                                skillId: skill.skillId,
+                                confirmations,
+                              }),
+                          ),
+                        )
+                      }
+                    >
+                      更新
+                    </button>
+                  ) : null}
+                  {skill.canRollback ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(busy)}
+                      onClick={() =>
+                        void run(skill.skillId, () =>
+                          api.rollbackSkill({ workspaceRoot, skillId: skill.skillId }),
+                        )
+                      }
+                    >
+                      <RotateCcw aria-hidden="true" />
+                      恢复上一版
+                    </button>
+                  ) : null}
+                  {skill.canUninstall ? (
+                    <button
+                      type="button"
+                      className="danger-link"
+                      disabled={Boolean(busy)}
+                      onClick={() => {
+                        if (window.confirm(`卸载 ${skill.name}？`))
+                          void run(skill.skillId, () =>
+                            api.uninstallSkill({ workspaceRoot, skillId: skill.skillId }),
+                          );
+                      }}
+                    >
+                      卸载
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
-            <label className="skill-switch" data-tooltip={skill.source === "project" ? "仅在当前项目生效" : "在所有项目生效"}>
-              <span className="sr-only">{skill.enabled ? `禁用 ${skill.name}` : `启用 ${skill.name}`}</span>
+            <label
+              className="skill-switch"
+              data-tooltip={skill.source === "project" ? "仅在当前项目生效" : "在所有项目生效"}
+            >
+              <span className="sr-only">
+                {skill.enabled ? `禁用 ${skill.name}` : `启用 ${skill.name}`}
+              </span>
               <input
                 type="checkbox"
                 checked={skill.enabled}
                 disabled={Boolean(busy)}
-                onChange={(event) => void run(skill.skillId, () => api.setSkillEnabled({ workspaceRoot, skillId: skill.skillId, enabled: event.target.checked }))}
+                onChange={(event) =>
+                  void run(skill.skillId, () =>
+                    api.setSkillEnabled({
+                      workspaceRoot,
+                      skillId: skill.skillId,
+                      enabled: event.target.checked,
+                    }),
+                  )
+                }
               />
               <i aria-hidden="true" />
             </label>
           </article>
         ))}
-        {snapshot && visible.length === 0 ? <p className="skill-empty">没有找到匹配的技能。</p> : null}
+        {snapshot && visible.length === 0 ? (
+          <p className="skill-empty">没有找到匹配的技能。</p>
+        ) : null}
         {!snapshot && !message ? <p className="skill-empty">正在扫描技能…</p> : null}
       </div>
-
     </section>
   );
 }
 
 function sourceLabel(source: DesktopSkillSnapshot["skills"][number]["source"]): string {
-  return ({ built_in: "内置", system: "系统", user: "个人", project: "项目", plugin: "插件" } as const)[source];
+  return (
+    { built_in: "内置", system: "系统", user: "个人", project: "项目", plugin: "插件" } as const
+  )[source];
 }
 
-function capabilityLabel(capability: DesktopSkillSnapshot["skills"][number]["capabilities"][number]): string {
-  return ({
-    "filesystem.read": "读取文件",
-    "filesystem.write": "修改文件",
-    "process.execute": "运行命令",
-    "network.access": "访问网络",
-    "mcp.use": "使用 MCP",
-  } as const)[capability];
+function capabilityLabel(
+  capability: DesktopSkillSnapshot["skills"][number]["capabilities"][number],
+): string {
+  return (
+    {
+      "filesystem.read": "读取文件",
+      "filesystem.write": "修改文件",
+      "process.execute": "运行命令",
+      "network.access": "访问网络",
+      "mcp.use": "使用 MCP",
+    } as const
+  )[capability];
 }
 
 const allLifecycleConfirmations = {
@@ -725,7 +970,8 @@ async function retryLifecycleConflict<T>(
   try {
     return await action();
   } catch (error) {
-    if (readErrorCode(error) !== "install_conflict" || !window.confirm(confirmationMessage)) throw error;
+    if (readErrorCode(error) !== "install_conflict" || !window.confirm(confirmationMessage))
+      throw error;
     return action(allLifecycleConfirmations);
   }
 }
@@ -737,7 +983,10 @@ function readErrorCode(error: unknown): string | undefined {
 }
 
 function readSkillActionError(error: unknown): string {
-  return error && typeof error === "object" && "message" in error && typeof error.message === "string"
+  return error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
     ? error.message
     : "技能操作失败。请重试。";
 }

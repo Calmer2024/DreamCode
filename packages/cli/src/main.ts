@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { type ApprovalRequest, runTurn } from "@dreamcode/core";
+import { McpRuntime, type McpRuntimeSnapshot, parseMcpServerConfigs } from "@dreamcode/mcp";
 import {
   createDefaultFakeProvider,
   createModelProvider,
@@ -23,17 +24,17 @@ import {
   type DreamCodeLlmProfile,
   getActiveLlmProfile,
   getConfigPath,
-  getDreamCodeHome,
   getIndexPath,
   listSessions,
   loadDreamCodeConfig,
+  PersistedSkillState,
   readReplayedSession,
   rebuildSessionIndex,
   rollbackSession,
-  PersistedSkillState,
   saveDreamCodeConfig,
   upsertLlmProfile,
 } from "@dreamcode/store";
+import type { ToolRegistry } from "@dreamcode/tools";
 import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
 import { Command } from "commander";
 import { runInkTui } from "./tui.js";
@@ -67,6 +68,8 @@ interface ReplState {
   home?: string;
   conversation: ConversationEntry[];
   processSupervisor: ProcessSupervisor;
+  registry: ToolRegistry;
+  mcpRuntime: McpRuntime;
 }
 
 interface ConversationEntry {
@@ -226,7 +229,15 @@ export async function main(argv = process.argv): Promise<void> {
       .action(async (options: { home?: string }) => {
         handledSubcommand = true;
         const config = await loadDreamCodeConfig(options.home);
-        await runToolCommand("mcp.list", {}, { home: options.home, cwd: process.cwd(), config });
+        const processSupervisor = new ProcessSupervisor();
+        const host = await createCliToolHost(config, processSupervisor);
+        try {
+          await waitForMcpSnapshot(host.mcpRuntime);
+          printMcpSnapshot(host.mcpRuntime.current());
+        } finally {
+          await host.mcpRuntime.dispose();
+          await processSupervisor.dispose();
+        }
       });
   }
 
@@ -266,6 +277,7 @@ export async function main(argv = process.argv): Promise<void> {
   const { provider, model } = createCliProvider(prompt, options, config);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const processSupervisor = new ProcessSupervisor();
+  const host = await createCliToolHost(config, processSupervisor);
 
   try {
     for await (const event of runTurn({
@@ -275,7 +287,7 @@ export async function main(argv = process.argv): Promise<void> {
       model,
       mode,
       home: options.home,
-      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers, processSupervisor }),
+      registry: host.registry,
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -284,6 +296,7 @@ export async function main(argv = process.argv): Promise<void> {
     }
   } finally {
     rl.close();
+    await host.mcpRuntime.dispose();
     await processSupervisor.dispose();
   }
 }
@@ -293,6 +306,8 @@ async function runInteractiveShell(input: {
   config: DreamCodeConfig;
   mode: RunMode;
 }): Promise<void> {
+  const processSupervisor = new ProcessSupervisor();
+  const host = await createCliToolHost(input.config, processSupervisor);
   const state: ReplState = {
     config: input.config,
     transientProfile: createTransientProfile(input.options, input.config),
@@ -300,7 +315,9 @@ async function runInteractiveShell(input: {
     mode: input.mode,
     home: input.options.home,
     conversation: [],
-    processSupervisor: new ProcessSupervisor(),
+    processSupervisor,
+    registry: host.registry,
+    mcpRuntime: host.mcpRuntime,
   };
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -329,6 +346,7 @@ async function runInteractiveShell(input: {
     }
   } finally {
     rl.close();
+    await state.mcpRuntime.dispose();
     await state.processSupervisor.dispose();
   }
 }
@@ -350,10 +368,7 @@ async function runInteractiveTurn(
       mode: state.mode,
       conversationSummary: buildConversationSummary(state.conversation),
       home: state.home,
-      registry: createDefaultToolRegistry({
-        mcpServers: state.config.mcpServers,
-        processSupervisor: state.processSupervisor,
-      }),
+      registry: state.registry,
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -431,11 +446,10 @@ async function handleSlashCommand(
       await printSkills({ home: state.home, cwd: state.workspaceRoot });
       return true;
     case "mcp":
-      await runToolCommand(
-        "mcp.list",
-        {},
-        { home: state.home, cwd: state.workspaceRoot, config: state.config },
-      );
+      state.config = await loadDreamCodeConfig(state.home);
+      await state.mcpRuntime.reconcile(parseMcpServerConfigs(state.config.mcpServers));
+      await waitForMcpSnapshot(state.mcpRuntime);
+      printMcpSnapshot(state.mcpRuntime.current());
       return true;
     default:
       console.log(`未知命令: /${command || ""}。输入 /help 查看可用命令。`);
@@ -885,6 +899,7 @@ async function resumeSessionCommand(
   const { provider, model } = createCliProvider(prompt, effectiveOptions, config);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const processSupervisor = new ProcessSupervisor();
+  const host = await createCliToolHost(config, processSupervisor);
   try {
     for await (const event of runTurn({
       sessionId: resolvedSessionId,
@@ -894,7 +909,7 @@ async function resumeSessionCommand(
       model,
       mode,
       home: effectiveOptions.home,
-      registry: createDefaultToolRegistry({ mcpServers: config.mcpServers, processSupervisor }),
+      registry: host.registry,
       approvalHandler: (request: ApprovalRequest) => askApproval(rl, request),
       questionHandler: async (question: string) =>
         (await questionOrUndefined(rl, `\n? ${question}\n> `)) ?? "",
@@ -903,6 +918,7 @@ async function resumeSessionCommand(
     }
   } finally {
     rl.close();
+    await host.mcpRuntime.dispose();
     await processSupervisor.dispose();
   }
 }
@@ -990,32 +1006,63 @@ async function printSessionDiff(
   }
 }
 
-async function runToolCommand(
-  toolName: string,
-  input: unknown,
-  options: { home?: string; cwd: string; config?: DreamCodeConfig },
-): Promise<void> {
-  const config = options.config ?? (await loadDreamCodeConfig(options.home));
-  const registry = createDefaultToolRegistry({ mcpServers: config.mcpServers });
-  const tool = registry.get(toolName);
-  if (!tool) {
-    throw new Error(`工具不存在: ${toolName}`);
-  }
-  const home = options.home ?? getDreamCodeHome();
-  const result = await tool.execute(input, {
-    workspaceRoot: path.resolve(options.cwd),
-    sessionDir: path.join(home, "sessions", "_cli"),
-    sessionId: "_cli",
-    mode: "full",
-    toolCallId: `cli_${toolName.replace(/\W/g, "_")}`,
+async function createCliToolHost(
+  config: DreamCodeConfig,
+  processSupervisor: ProcessSupervisor,
+): Promise<{
+  registry: ToolRegistry;
+  mcpRuntime: McpRuntime;
+  processSupervisor: ProcessSupervisor;
+}> {
+  const registry = createDefaultToolRegistry({
+    webSearch: { exaApiKey: config.exaApiKey },
+    processSupervisor,
   });
-  console.log(result.summary);
-  if (result.data !== undefined) {
-    console.log(JSON.stringify(result.data, null, 2));
+  const mcpRuntime = new McpRuntime({ registry });
+  await mcpRuntime.reconcile(parseMcpServerConfigs(config.mcpServers));
+  return { registry, mcpRuntime, processSupervisor };
+}
+
+async function waitForMcpSnapshot(runtime: McpRuntime, timeoutMs = 1_000): Promise<void> {
+  if (runtime.current().servers.every((server) => server.state !== "connecting")) return;
+  await new Promise<void>((resolve) => {
+    let unsubscribe: () => void = () => undefined;
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      resolve();
+    }, timeoutMs);
+    unsubscribe = runtime.subscribe((snapshot) => {
+      if (snapshot.servers.some((server) => server.state === "connecting")) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
+function printMcpSnapshot(snapshot: McpRuntimeSnapshot): void {
+  if (!snapshot.servers.length) {
+    console.log("没有配置 MCP Server。");
+    return;
+  }
+  for (const server of snapshot.servers) {
+    const tools =
+      server.state === "connected" || server.state === "reconnecting"
+        ? ` · ${server.toolCount} tool(s)`
+        : "";
+    const attempt =
+      server.state === "reconnecting" ? ` · retry ${server.reconnectAttempt ?? 0}` : "";
+    console.log(
+      `${server.serverId}  [${server.transport ?? "invalid"}]  ${server.state}${tools}${attempt}`,
+    );
+    if (server.error) console.log(`  ${server.error}`);
   }
 }
 
-async function openSkillRegistry(options: { home?: string; cwd: string }): Promise<{ registry: SkillRegistry; state: PersistedSkillState }> {
+async function openSkillRegistry(options: {
+  home?: string;
+  cwd: string;
+}): Promise<{ registry: SkillRegistry; state: PersistedSkillState }> {
   const workspaceRoot = path.resolve(options.cwd);
   const state = await PersistedSkillState.open({ home: options.home, workspaceRoot });
   const registry = new SkillRegistry({
@@ -1041,7 +1088,9 @@ async function printSkills(options: { home?: string; cwd: string }): Promise<voi
     for (const instance of snapshot.instances) {
       const name = instance.metadata?.name ?? instance.skillId;
       const description = instance.metadata?.description ?? "元数据无效";
-      console.log(`${name}  [${instance.locator.source}]  ${instance.enabled ? instance.resolution : "disabled"}`);
+      console.log(
+        `${name}  [${instance.locator.source}]  ${instance.enabled ? instance.resolution : "disabled"}`,
+      );
       console.log(`  ${description}`);
       if (instance.diagnostics.length) console.log(`  诊断: ${instance.diagnostics[0]?.message}`);
     }

@@ -7,6 +7,7 @@ import type {
   DesktopAttachmentImportResult,
   DesktopBootstrap,
   DesktopIpcResponse,
+  DesktopMcpSnapshot,
   DesktopRunStatus,
   DesktopSkillSnapshot,
   DesktopTerminalOutput,
@@ -33,8 +34,7 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
       invoke<DesktopAttachmentImportResult>(renderer, "desktop:choose-attachments", existing),
     stageAttachmentBytes: (request) =>
       invoke<DesktopAttachmentImportResult>(renderer, "desktop:stage-attachment-bytes", request),
-    discardAttachments: (ids) =>
-      invoke<void>(renderer, "desktop:discard-attachments", { ids }),
+    discardAttachments: (ids) => invoke<void>(renderer, "desktop:discard-attachments", { ids }),
     readAttachment: async (request) =>
       toUint8Array(await invoke<unknown>(renderer, "desktop:read-attachment", request)),
     openWorkspace: (workspaceRoot: string) =>
@@ -66,6 +66,10 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
       invoke<DesktopSkillSnapshot>(renderer, "desktop:rollback-skill", request),
     uninstallSkill: (request) =>
       invoke<DesktopSkillSnapshot>(renderer, "desktop:uninstall-skill", request),
+    listMcpServers: () => invoke<DesktopMcpSnapshot>(renderer, "desktop:list-mcp-servers"),
+    refreshMcpServers: () => invoke<DesktopMcpSnapshot>(renderer, "desktop:refresh-mcp-servers"),
+    setMcpServerEnabled: (request) =>
+      invoke<DesktopMcpSnapshot>(renderer, "desktop:set-mcp-server-enabled", request),
     saveProject: (request) => invoke<DesktopBootstrap>(renderer, "desktop:save-project", request),
     createProject: (request) => invoke(renderer, "desktop:create-project", request),
     deleteProject: (workspaceRoot) =>
@@ -100,16 +104,18 @@ export function createDesktopApi(renderer: IpcRendererLike): DesktopApi {
       subscribe<DesktopRunStatus>(renderer, "desktop:run-status", listener),
     onTerminalOutput: (listener) =>
       subscribe<DesktopTerminalOutput>(renderer, "desktop:terminal-output", listener),
+    onMcpStatus: (listener) =>
+      subscribe<DesktopMcpSnapshot>(renderer, "desktop:mcp-status", listener),
   } satisfies DesktopApi;
 }
-
 
 function toUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (value && typeof value === "object" && (value as { type?: unknown }).type === "Buffer") {
     const data = (value as { data?: unknown }).data;
-    if (Array.isArray(data) && data.every((item) => Number.isInteger(item))) return new Uint8Array(data);
+    if (Array.isArray(data) && data.every((item) => Number.isInteger(item)))
+      return new Uint8Array(data);
   }
   if (value && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)

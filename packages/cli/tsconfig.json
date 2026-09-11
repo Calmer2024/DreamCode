@@ -12,6 +12,7 @@
     { "path": "../store" },
     { "path": "../models" },
     { "path": "../tools" },
+    { "path": "../mcp" },
     { "path": "../core" }
   ]
 }

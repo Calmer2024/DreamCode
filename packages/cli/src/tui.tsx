@@ -2,18 +2,20 @@ import os from "node:os";
 import path from "node:path";
 import type { ApprovalRequest } from "@dreamcode/core";
 import { runTurn } from "@dreamcode/core";
-import { SkillRegistry } from "@dreamcode/skills";
+import { McpRuntime, parseMcpServerConfigs } from "@dreamcode/mcp";
 import type { ModelProvider, RunMode } from "@dreamcode/shared";
+import { SkillRegistry } from "@dreamcode/skills";
 import {
   type DreamCodeConfig,
   getDreamCodeHome,
   listSessions,
+  loadDreamCodeConfig,
   PersistedSkillState,
   readReplayedSession,
   readSessionEvents,
   rollbackSession,
 } from "@dreamcode/store";
-import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
+import { createDefaultToolRegistry, ProcessSupervisor, type ToolRegistry } from "@dreamcode/tools";
 import {
   Box,
   type Key,
@@ -55,6 +57,8 @@ export interface InkTuiInput {
   home?: string;
   createProvider: (prompt: string) => { provider: ModelProvider; model?: string };
   processSupervisor?: ProcessSupervisor;
+  registry?: ToolRegistry;
+  mcpRuntime?: McpRuntime;
 }
 
 interface PendingApproval {
@@ -137,14 +141,31 @@ const DREAMCODE_MASCOT_PIXELS = [
 
 export async function runInkTui(input: InkTuiInput): Promise<void> {
   const processSupervisor = input.processSupervisor ?? new ProcessSupervisor();
-  const app = render(React.createElement(DreamCodeTui, { ...input, processSupervisor }), {
-    exitOnCtrlC: false,
-    alternateScreen: true,
-    maxFps: 24,
-  });
+  const registry =
+    input.registry ??
+    createDefaultToolRegistry({
+      webSearch: { exaApiKey: input.config.exaApiKey },
+      processSupervisor,
+    });
+  const mcpRuntime = input.mcpRuntime ?? new McpRuntime({ registry });
+  await mcpRuntime.reconcile(parseMcpServerConfigs(input.config.mcpServers));
+  const app = render(
+    React.createElement(DreamCodeTui, {
+      ...input,
+      processSupervisor,
+      registry,
+      mcpRuntime,
+    }),
+    {
+      exitOnCtrlC: false,
+      alternateScreen: true,
+      maxFps: 24,
+    },
+  );
   try {
     await app.waitUntilExit();
   } finally {
+    if (!input.mcpRuntime) await mcpRuntime.dispose();
     await processSupervisor.dispose();
   }
 }
@@ -173,18 +194,40 @@ export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
   if (!processSupervisorRef.current) {
     processSupervisorRef.current = input.processSupervisor ?? new ProcessSupervisor();
   }
+  const toolHostRef = useRef<
+    { registry: ToolRegistry; runtime: McpRuntime; owned: boolean } | undefined
+  >(undefined);
+  if (!toolHostRef.current) {
+    const registry =
+      input.registry ??
+      createDefaultToolRegistry({
+        webSearch: { exaApiKey: input.config.exaApiKey },
+        processSupervisor: processSupervisorRef.current,
+      });
+    toolHostRef.current = {
+      registry,
+      runtime: input.mcpRuntime ?? new McpRuntime({ registry }),
+      owned: !input.mcpRuntime,
+    };
+  }
   const sessionIdRef = useRef<string | undefined>(undefined);
   const pendingApprovalRef = useRef<PendingApproval | undefined>(undefined);
   const pendingQuestionRef = useRef<PendingQuestion | undefined>(undefined);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | undefined>();
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const host = toolHostRef.current;
+    if (host?.owned) void host.runtime.reconcile(parseMcpServerConfigs(input.config.mcpServers));
+  }, [input.config.mcpServers]);
+
+  useEffect(() => {
+    const host = toolHostRef.current;
+    return () => {
+      if (host?.owned) void host.runtime.dispose();
       void processSupervisorRef.current?.dispose();
-    },
-    [],
-  );
+    };
+  }, []);
 
   const requestApproval = useCallback((request: ApprovalRequest): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -241,10 +284,7 @@ export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
           model,
           mode: runMode,
           home: input.home,
-          registry: createDefaultToolRegistry({
-            mcpServers: input.config.mcpServers,
-            processSupervisor: processSupervisorRef.current,
-          }),
+          registry: toolHostRef.current?.registry,
           signal: abortController.signal,
           approvalHandler: requestApproval,
           questionHandler: requestQuestion,
@@ -390,6 +430,7 @@ export function DreamCodeTui(input: InkTuiInput): React.JSX.Element {
         home: input.home,
         workspaceRoot: input.workspaceRoot,
         config: input.config,
+        mcpRuntime: toolHostRef.current!.runtime,
         mode: runMode,
         sessionIdRef,
       });
@@ -1397,6 +1438,7 @@ async function handleSlashCommand(input: {
   home?: string;
   workspaceRoot: string;
   config: DreamCodeConfig;
+  mcpRuntime: McpRuntime;
   mode: RunMode;
   sessionIdRef: React.MutableRefObject<string | undefined>;
 }): Promise<void> {
@@ -1471,7 +1513,7 @@ async function handleSlashCommand(input: {
       await showSkills(input);
       return;
     case "mcp":
-      await showToolResult(input, "mcp.list", {});
+      await showMcpServers(input);
       return;
     case "status":
       input.setState((current) =>
@@ -1688,45 +1730,46 @@ async function runRollback(
   );
 }
 
-async function showToolResult(
-  input: {
-    setState: React.Dispatch<React.SetStateAction<TuiState>>;
-    home?: string;
-    workspaceRoot: string;
-    config: DreamCodeConfig;
-    mode: RunMode;
-  },
-  toolName: string,
-  toolInput: unknown,
-): Promise<void> {
-  const registry = createDefaultToolRegistry({ mcpServers: input.config.mcpServers });
-  const tool = registry.get(toolName);
-  if (!tool) {
+async function showMcpServers(input: {
+  setState: React.Dispatch<React.SetStateAction<TuiState>>;
+  home?: string;
+  mcpRuntime: McpRuntime;
+}): Promise<void> {
+  try {
+    const config = await loadDreamCodeConfig(input.home);
+    const snapshot = await input.mcpRuntime.reconcile(parseMcpServerConfigs(config.mcpServers));
+    const body = snapshot.servers.length
+      ? snapshot.servers
+          .map((server) => {
+            const transport = server.transport ?? "invalid";
+            const tools = server.state === "connected" ? ` · ${server.toolCount} tool(s)` : "";
+            const retry =
+              server.state === "reconnecting" ? ` · retry ${server.reconnectAttempt ?? 0}` : "";
+            const status = `${server.serverId}  [${transport}]  ${server.state}${tools}${retry}`;
+            return server.error ? `${status}\n  ${server.error}` : status;
+          })
+          .join("\n")
+      : "No MCP servers are configured.";
+    input.setState((current) =>
+      setTuiDetail(current, {
+        title: "MCP servers",
+        body,
+        tone: snapshot.servers.some(
+          (server) => server.state === "failed" || server.state === "invalid",
+        )
+          ? "warning"
+          : "info",
+      }),
+    );
+  } catch (error) {
     input.setState((current) =>
       addTuiNotice(current, {
-        title: `Tool not found: ${toolName}`,
+        title: "MCP refresh failed",
+        body: error instanceof Error ? error.message : String(error),
         tone: "danger",
       }),
     );
-    return;
   }
-  const home = input.home ?? getDreamCodeHome();
-  const result = await tool.execute(toolInput, {
-    workspaceRoot: input.workspaceRoot,
-    sessionDir: path.join(home, "sessions", "_tui"),
-    mode: input.mode,
-    toolCallId: `tui_${toolName.replace(/\W/g, "_")}`,
-  });
-  input.setState((current) =>
-    setTuiDetail(current, {
-      title: toolName,
-      body:
-        result.data === undefined
-          ? result.summary
-          : `${result.summary}\n\n${JSON.stringify(result.data, null, 2)}`,
-      tone: result.status === "success" ? "success" : "warning",
-    }),
-  );
 }
 
 async function showSkills(input: {
@@ -1750,7 +1793,10 @@ async function showSkills(input: {
     const snapshot = await registry.initialize();
     const body = snapshot.instances.length
       ? snapshot.instances
-          .map((instance) => `${instance.metadata?.name ?? instance.skillId} [${instance.locator.source}]\n  ${instance.metadata?.description ?? "Invalid metadata"}`)
+          .map(
+            (instance) =>
+              `${instance.metadata?.name ?? instance.skillId} [${instance.locator.source}]\n  ${instance.metadata?.description ?? "Invalid metadata"}`,
+          )
           .join("\n\n")
       : "No available Skills.";
     input.setState((current) => setTuiDetail(current, { title: "Skills", body, tone: "info" }));

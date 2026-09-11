@@ -5,11 +5,15 @@ import type { SkillRegistry } from "@dreamcode/skills";
 import {
   type DreamCodeConfig,
   type DreamCodeLlmProfile,
-  loadDreamCodeConfig,
   deleteSession,
+  loadDreamCodeConfig,
 } from "@dreamcode/store";
-import type { DesktopAttachmentService } from "./attachment-service";
-import { createDefaultToolRegistry, ProcessSupervisor } from "@dreamcode/tools";
+import {
+  createBuiltinTools,
+  createDefaultToolRegistry,
+  ProcessSupervisor,
+  type ToolRegistry,
+} from "@dreamcode/tools";
 import type {
   ApprovalResponse,
   DesktopApprovalRequest,
@@ -20,6 +24,7 @@ import type {
   QuestionResponse,
   StartTurnRequest,
 } from "../shared/contracts";
+import type { DesktopAttachmentService } from "./attachment-service";
 import { createDesktopProvider } from "./provider";
 
 const minimumSubstringRedactionLength = 8;
@@ -48,6 +53,7 @@ export interface DesktopRunManagerOptions {
     profile: DreamCodeLlmProfile,
   ) => { provider: ModelProvider; model?: string };
   createRegistry?: typeof createDefaultToolRegistry;
+  registry?: ToolRegistry;
   processSupervisor?: ProcessSupervisor;
   getSkillRegistry?: (workspaceRoot: string) => Promise<SkillRegistry>;
   attachmentService?: Pick<DesktopAttachmentService, "resolve" | "discard">;
@@ -62,6 +68,7 @@ export class DesktopRunManager {
   readonly #loadConfig: NonNullable<DesktopRunManagerOptions["loadConfig"]>;
   readonly #createProvider: NonNullable<DesktopRunManagerOptions["createProvider"]>;
   readonly #createRegistry: NonNullable<DesktopRunManagerOptions["createRegistry"]>;
+  readonly #registry?: ToolRegistry;
   readonly #processSupervisor: ProcessSupervisor;
   readonly #getSkillRegistry?: DesktopRunManagerOptions["getSkillRegistry"];
   readonly #attachmentService?: DesktopRunManagerOptions["attachmentService"];
@@ -76,6 +83,7 @@ export class DesktopRunManager {
     this.#loadConfig = options.loadConfig ?? loadDreamCodeConfig;
     this.#createProvider = options.createProvider ?? createDesktopProvider;
     this.#createRegistry = options.createRegistry ?? createDefaultToolRegistry;
+    this.#registry = options.registry;
     this.#processSupervisor = options.processSupervisor ?? new ProcessSupervisor();
     this.#getSkillRegistry = options.getSkillRegistry;
     this.#attachmentService = options.attachmentService;
@@ -95,7 +103,10 @@ export class DesktopRunManager {
     }
 
     const attachments: MediaAttachment[] = request.attachmentIds?.length
-      ? this.#attachmentService?.resolve(request.attachmentIds) ?? (() => { throw new Error("Attachment service is unavailable."); })()
+      ? (this.#attachmentService?.resolve(request.attachmentIds) ??
+        (() => {
+          throw new Error("Attachment service is unavailable.");
+        })())
       : [];
     const run: ActiveRun = {
       runId: createId("run"),
@@ -173,6 +184,17 @@ export class DesktopRunManager {
       }
       const { model } = providerResult;
       const provider = redactProviderErrors(providerResult.provider, sensitiveValues);
+      const registry =
+        this.#registry ?? this.#createRegistry({ processSupervisor: this.#processSupervisor });
+      if (this.#registry) {
+        registry.replaceNamespace(
+          "dreamcode:builtins",
+          createBuiltinTools({
+            webSearch: { exaApiKey: config.exaApiKey },
+            processSupervisor: this.#processSupervisor,
+          }),
+        );
+      }
       for await (const event of runTurn({
         prompt: request.prompt,
         attachments: run.attachments,
@@ -182,11 +204,7 @@ export class DesktopRunManager {
         home: this.#home,
         provider,
         model,
-        registry: this.#createRegistry({
-          mcpServers: config.mcpServers,
-          webSearch: { exaApiKey: config.exaApiKey },
-          processSupervisor: this.#processSupervisor,
-        }),
+        registry,
         skillRegistry: await this.#getSkillRegistry?.(request.workspaceRoot),
         signal: run.abortController.signal,
         approvalHandler: (approval) => this.#requestApproval(run, approval),
@@ -213,9 +231,7 @@ export class DesktopRunManager {
         status: interrupted ? "interrupted" : "failed",
         ...(observedSessionId ? { sessionId: observedSessionId } : {}),
         ...(!interrupted && !modelActivity ? { draftRestored: true } : {}),
-        ...(interrupted
-          ? {}
-          : { error: toDesktopError(error, "run_failed", sensitiveValues) }),
+        ...(interrupted ? {} : { error: toDesktopError(error, "run_failed", sensitiveValues) }),
       };
     } finally {
       if (request.attachmentIds?.length && !finalStatus.draftRestored) {

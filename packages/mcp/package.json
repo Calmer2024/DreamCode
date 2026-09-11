@@ -1,0 +1,23 @@
+{
+  "name": "@dreamcode/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dreamcode/shared": "workspace:*",
+    "@dreamcode/tools": "workspace:*",
+    "@modelcontextprotocol/client": "2.0.0",
+    "ajv": "8.20.0",
+    "zod": "3.25.76"
+  }
+}

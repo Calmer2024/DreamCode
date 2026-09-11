@@ -26,7 +26,7 @@ DreamCode v0.1 采用:
 | 模型 SDK | OpenAI SDK + 自研 OpenAI-compatible provider adapter | 不直接绑定单一模型, 优先通过 provider preset 支持国产模型厂商 |
 | Schema | Zod | 工具参数、配置、事件、模型输出统一校验 |
 | 工具系统 | 自研工具注册表 | 每个工具有 schema、风险标签、权限元数据 |
-| MCP | `@modelcontextprotocol/sdk` | 作为 P1 扩展入口, 架构预留 |
+| MCP | `@modelcontextprotocol/client` | stdio 与 Streamable HTTP 客户端 Runtime |
 | 文件搜索 | `ripgrep` 子进程 + JS fallback | 真实项目搜索性能优先 |
 | 文件搜索 | 打包的 `ripgrep` | 跨平台文件发现与内容定位 |
 | Shell 执行 | `child_process.spawn` / `execa`; 后续 `node-pty` | MVP 先做非交互命令, 后续支持交互终端 |
@@ -172,7 +172,8 @@ DreamCode/
 | `packages/cli` | CLI 参数、TUI、REPL、用户交互、审批 UI |
 | `packages/core` | Agent 主循环、session/turn、事件总线、运行时编排 |
 | `packages/models` | 模型 provider preset、OpenAI-compatible 客户端、流式输出、工具调用归一化、成本统计 |
-| `packages/tools` | 工具注册表、内置工具、MCP adapter、工具执行 |
+| `packages/tools` | 动态工具注册表、内置工具、工具执行 |
+| `packages/mcp` | MCP 配置解析、stdio/Streamable HTTP 长连接、原生 Tool adapter |
 | `packages/context` | 工作区索引、记忆、上下文选择、压缩 |
 | `packages/safety` | 权限引擎、风险分类、secret 检测、Safe YOLO 规则 |
 | `packages/store` | JSONL 事件日志、SQLite 索引、缓存、快照 |
@@ -477,10 +478,11 @@ export interface Tool<TInput, TOutput> {
 Tool Registry 负责:
 
 - 注册内置工具。
-- 注册 MCP 工具。
+- 以 namespace 原子注册、替换和注销动态 MCP 工具。
 - 按运行模式过滤工具。
 - 输出模型可见 tool specs。
 - 根据 tool name 分发执行。
+- 在每次模型请求开始时生成稳定快照，避免刷新期间 tool list 与执行视图错位。
 
 工具注册示例:
 
@@ -516,7 +518,6 @@ P1:
 
 - `git.stage`。
 - `git.commit`。
-- `mcp.call`。
 - `skill`。
 - `agent.run`。
 - `lsp.diagnostics`。
@@ -1115,13 +1116,18 @@ LSP 是 coding agent 效果的重要增强, 但不是第一阶段主循环的前
 
 ### 15.1 MCP
 
-架构预留:
+MCP 与 LLM 解耦，由桌面 Host/CLI Host 持有长期 `McpRuntime`：
 
-- `packages/tools/src/mcp/`。
-- MCP tools 统一转为 DreamCode Tool。
-- MCP tool metadata 进入 permission engine。
-
-实现优先级: P1。
+- 全局 `config.json` 中的每个 MCP Server 配置是一个启用单元，对所有项目生效。
+- 启用 Server 即启动并维持连接；禁用时关闭连接并原子注销该 Server 的全部工具。
+- 支持 stdio 与 Streamable HTTP，不支持旧式 SSE 或 OAuth。远程 HTTP 要求 HTTPS，loopback 可使用 HTTP。
+- Server 的 `tools/list` 结果转换成正式 DreamCode Tool，名称为 `mcp__<server>__<tool>`；冲突或超长名称使用确定性 hash。
+- `mcp.list` / `mcp.call` 不存在于模型工具面。模型无需判断 MCP 服务是否存在，只看到当前 Registry 中可用的正式工具。
+- 工具携带结构化 `source: { kind: "mcp", serverId, rawToolName }`，权限系统不依赖名称字符串判断来源。
+- plan 不暴露 MCP 工具，guided/yolo 每次调用询问，full 自动允许。
+- Runtime 处理 schema 校验、调用超时、同 Server 串行调用、心跳、指数退避重连与 `tools/list_changed`。
+- 桌面设置页只提供已有 Server 的列表、搜索、启用开关和手动刷新；配置编辑仍通过全局配置文件完成。
+- v2 中旧的 command/args MCP 配置迁移为 v3 stdio 配置并默认禁用，迁移前保留 `config.v2.backup.json`。
 
 ### 15.2 技能
 

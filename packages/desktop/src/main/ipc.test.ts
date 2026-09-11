@@ -39,6 +39,9 @@ describe("registerDesktopIpc", () => {
       updateSkill: vi.fn(),
       rollbackSkill: vi.fn(),
       uninstallSkill: vi.fn(),
+      listMcpServers: vi.fn(),
+      refreshMcpServers: vi.fn(),
+      setMcpServerEnabled: vi.fn(),
     };
     const runManager = {
       start: vi.fn(),
@@ -92,6 +95,9 @@ describe("registerDesktopIpc", () => {
       "desktop:discard-attachments",
       "desktop:read-attachment",
       "desktop:uninstall-skill",
+      "desktop:list-mcp-servers",
+      "desktop:refresh-mcp-servers",
+      "desktop:set-mcp-server-enabled",
       "desktop:save-project",
       "desktop:create-project",
       "desktop:delete-project",
@@ -113,7 +119,7 @@ describe("registerDesktopIpc", () => {
 
     dispose();
 
-    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(38);
+    expect(ipcMain.removeHandler).toHaveBeenCalledTimes(41);
   });
 
   it("serializes invalid object requests before calling a service", async () => {
@@ -258,8 +264,10 @@ describe("createDesktopApi", () => {
       "deleteSession",
       "discardAttachments",
       "installSkill",
+      "listMcpServers",
       "listSkills",
       "onApprovalRequest",
+      "onMcpStatus",
       "onQuestionRequest",
       "onRunEvent",
       "onRunStatus",
@@ -268,6 +276,7 @@ describe("createDesktopApi", () => {
       "readAttachment",
       "readDiff",
       "readSession",
+      "refreshMcpServers",
       "renameSession",
       "rescanSkills",
       "resizeTerminal",
@@ -277,6 +286,7 @@ describe("createDesktopApi", () => {
       "rollbackSkill",
       "saveProject",
       "setDefaultProfile",
+      "setMcpServerEnabled",
       "setSessionPinned",
       "setSkillEnabled",
       "setSkillRoots",

@@ -3,11 +3,33 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createDefaultToolRegistry, validateShellCommand } from "./index";
+import { createDefaultToolRegistry, ToolRegistry, validateShellCommand } from "./index";
 
 describe("builtin tools", () => {
   const shellToolName = process.platform === "win32" ? "pwsh" : "bash";
   const shellCommand = (command: string) => ({ command, description: "test command" });
+
+  it("atomically replaces dynamic namespaces while existing snapshots stay stable", () => {
+    const registry = new ToolRegistry();
+    const tool = (name: string) => ({
+      name,
+      description: name,
+      inputSchema: { type: "object" },
+      risk: { tags: [] },
+      execute: async () => ({ toolCallId: "test", status: "success" as const, summary: name }),
+    });
+    registry.replaceNamespace("mcp:one", [tool("mcp__one__old")]);
+    const snapshot = registry.snapshot();
+
+    registry.replaceNamespace("mcp:one", [tool("mcp__one__new")]);
+    expect(registry.get("mcp__one__old")).toBeUndefined();
+    expect(registry.get("mcp__one__new")).toBeDefined();
+    expect(snapshot.get("mcp__one__old")).toBeDefined();
+    expect(snapshot.get("mcp__one__new")).toBeUndefined();
+
+    expect(() => registry.replaceNamespace("mcp:two", [tool("mcp__one__new")])).toThrow();
+    expect(registry.get("mcp__one__new")).toBeDefined();
+  });
 
   it("emits OpenAI-compatible object schemas for model tools", () => {
     const specs = createDefaultToolRegistry().toModelSpecs();
@@ -648,55 +670,5 @@ describe("builtin tools", () => {
     expect((loaded.data as { content: string }).content).toContain("Demo Skill");
     expect(registry.get("skill.load")).toBeUndefined();
     expect(registry.get("skill.read_resource")).toBeUndefined();
-  });
-
-  it("calls a configured fake MCP stdio tool", async () => {
-    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-mcp-"));
-    const serverPath = path.join(workspaceRoot, "fake-mcp-server.cjs");
-    await writeFile(
-      serverPath,
-      `
-let buffer = "";
-process.stdin.on("data", (chunk) => {
-  buffer += chunk.toString();
-  const lines = buffer.split(/\\r?\\n/);
-  buffer = lines.pop() || "";
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const message = JSON.parse(line);
-    if (!message.id) continue;
-    if (message.method === "initialize") {
-      respond(message.id, { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake" } });
-    }
-    if (message.method === "tools/list") {
-      respond(message.id, { tools: [{ name: "echo", description: "Echo input", inputSchema: { type: "object" } }] });
-    }
-    if (message.method === "tools/call") {
-      respond(message.id, { content: [{ type: "text", text: "echo:" + message.params.arguments.text }] });
-    }
-  }
-});
-function respond(id, result) {
-  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
-}
-`,
-      "utf8",
-    );
-    const registry = createDefaultToolRegistry({
-      mcpServers: { fake: { command: process.execPath, args: [serverPath] } },
-    });
-    const context = {
-      workspaceRoot,
-      sessionDir: workspaceRoot,
-      mode: "full" as const,
-      toolCallId: "call_mcp",
-    };
-
-    const list = await registry.get("mcp.list")!.execute({ server: "fake" }, context);
-    expect(JSON.stringify(list.data)).toContain("echo");
-    const called = await registry
-      .get("mcp.call")!
-      .execute({ server: "fake", tool: "echo", arguments: { text: "hello" } }, context);
-    expect(JSON.stringify(called.data)).toContain("echo:hello");
   });
 });

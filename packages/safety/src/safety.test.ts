@@ -60,13 +60,36 @@ describe("permission engine", () => {
       workspaceRoot: "/repo/project",
       toolCall: {
         id: "call_mcp",
-        name: "mcp.call",
-        input: { server: "fake", tool: "echo" },
+        name: "mcp__fake__echo",
+        input: { text: "hello" },
+      },
+      tool: {
+        name: "mcp__fake__echo",
+        description: "Echo",
+        inputSchema: { type: "object" },
+        source: { kind: "mcp", serverId: "fake", rawToolName: "echo" },
+        risk: { tags: ["mcp_tool"], externalSideEffects: true },
+        execute: async () => ({ toolCallId: "call_mcp", status: "success", summary: "ok" }),
       },
     });
 
     expect(web.decision).toBe("allow");
     expect(mcp.decision).toBe("ask");
+    expect(
+      engine.decide({
+        mode: "plan",
+        workspaceRoot: "/repo/project",
+        toolCall: { id: "call_plan_mcp", name: "mcp__fake__echo", input: {} },
+        tool: {
+          name: "mcp__fake__echo",
+          description: "Echo",
+          inputSchema: { type: "object" },
+          source: { kind: "mcp", serverId: "fake", rawToolName: "echo" },
+          risk: { tags: ["mcp_tool"] },
+          execute: async () => ({ toolCallId: "call_plan_mcp", status: "success", summary: "ok" }),
+        },
+      }).decision,
+    ).toBe("deny");
   });
 
   it("denies external writes and asks before sensitive reads", () => {

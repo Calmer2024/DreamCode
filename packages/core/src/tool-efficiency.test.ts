@@ -21,7 +21,7 @@ describe("tool exposure and turn cache", () => {
     );
     expect(coding).toEqual(expect.arrayContaining(["web.search", "web.fetch"]));
     expect(coding).toContain("skill");
-    expect(coding).toEqual(expect.arrayContaining(["mcp.list", "mcp.call"]));
+    expect(coding).not.toEqual(expect.arrayContaining(["mcp.list", "mcp.call"]));
 
     const plan = registry.toModelSpecs("plan").map((tool) => tool.name);
     expect(plan).not.toEqual(
