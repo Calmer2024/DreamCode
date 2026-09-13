@@ -10,12 +10,12 @@ import {
 describe("desktop IPC contracts", () => {
   it("rejects a start request without a workspace", () => {
     expect(() =>
-      startTurnRequestSchema.parse({ prompt: "Fix tests", workspaceRoot: "", mode: "yolo" }),
+      startTurnRequestSchema.parse({ prompt: "Fix tests", workspaceRoot: "", mode: "workspace-write" }),
     ).toThrow();
   });
 
-  it("accepts the four existing run modes", () => {
-    for (const mode of ["plan", "guided", "yolo", "full"] as const) {
+  it("accepts the three canonical run modes", () => {
+    for (const mode of ["read-only", "workspace-write", "danger-full-access"] as const) {
       expect(
         startTurnRequestSchema.parse({ prompt: "Fix tests", workspaceRoot: "D:/repo", mode }).mode,
       ).toBe(mode);
@@ -27,12 +27,12 @@ describe("desktop IPC contracts", () => {
       prompt: "",
       attachmentIds: ["attachment_1"],
       workspaceRoot: "D:/repo",
-      mode: "guided",
+      mode: "workspace-write",
     }).success).toBe(true);
     expect(startTurnRequestSchema.safeParse({
       prompt: "  ",
       workspaceRoot: "D:/repo",
-      mode: "guided",
+      mode: "workspace-write",
     }).success).toBe(false);
   });
 
@@ -41,7 +41,7 @@ describe("desktop IPC contracts", () => {
       startTurnRequestSchema.parse({
         prompt: "Fix tests",
         workspaceRoot: "D:/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         profileId: "work",
         model: "gpt-5.5",
       }).model,
@@ -50,7 +50,7 @@ describe("desktop IPC contracts", () => {
       startTurnRequestSchema.safeParse({
         prompt: "Fix tests",
         workspaceRoot: "D:/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         model: " ",
       }).success,
     ).toBe(false);

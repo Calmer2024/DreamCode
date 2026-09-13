@@ -158,7 +158,7 @@ describe("DreamCode desktop shell", () => {
     expect(startTurn).toHaveBeenCalledWith({
       prompt: "Fix tests",
       workspaceRoot: "D:\\Projects\\DreamCode",
-      mode: "guided",
+      mode: "workspace-write",
       profileId: "work",
       model: "gpt-5.6",
     });
@@ -423,22 +423,22 @@ describe("DreamCode desktop shell", () => {
     const sessionButton = screen.getByRole("button", { name: "Desktop shell" });
     fireEvent.click(sessionButton);
     await waitFor(() => expect(sessionButton).toHaveAttribute("data-accent", "purple"));
-    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "yolo" } });
+    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "workspace-write" } });
     expect(screen.getByRole("button", { name: "运行模式选项" }).parentElement).toHaveAttribute(
       "data-accent",
-      "yolo",
+      "workspace-write",
     );
-    expect(screen.getByTestId("run-mode-icon")).toHaveAttribute("data-lucide", "zap");
-    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "plan" } });
+    expect(screen.getByTestId("run-mode-icon")).toHaveAttribute("data-lucide", "shield-check");
+    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "read-only" } });
     expect(screen.getByRole("button", { name: "运行模式选项" }).parentElement).toHaveAttribute(
       "data-accent",
-      "plan",
+      "read-only",
     );
     expect(screen.getByTestId("run-mode-icon")).toHaveAttribute("data-lucide", "clipboard-list");
-    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "full" } });
+    fireEvent.change(screen.getByLabelText("运行模式"), { target: { value: "danger-full-access" } });
     expect(screen.getByRole("button", { name: "运行模式选项" }).parentElement).toHaveAttribute(
       "data-accent",
-      "full",
+      "danger-full-access",
     );
     expect(screen.getByTestId("run-mode-icon")).toHaveAttribute("data-lucide", "shield-alert");
   });

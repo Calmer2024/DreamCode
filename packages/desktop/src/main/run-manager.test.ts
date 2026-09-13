@@ -35,7 +35,7 @@ describe("DesktopRunManager", () => {
       prompt: "Inspect workspace",
       workspaceRoot,
       profileId: "fake",
-      mode: "yolo",
+      mode: "workspace-write",
     });
     await completion;
 
@@ -70,7 +70,7 @@ describe("DesktopRunManager", () => {
       workspaceRoot,
       profileId: "fake",
       model: "temporary-model",
-      mode: "yolo",
+      mode: "workspace-write",
     });
     await completion;
 
@@ -99,7 +99,7 @@ describe("DesktopRunManager", () => {
       prompt: "Inspect workspace",
       workspaceRoot,
       profileId: "fake",
-      mode: "yolo",
+      mode: "workspace-write",
     });
     await completion;
 
@@ -164,7 +164,7 @@ describe("DesktopRunManager", () => {
       emitApproval: (request) => approval.resolve(request),
       emitEvent: (event) => events.push(event),
     });
-    const { runId, completion } = await manager.start({ ...request, mode: "guided" });
+    const { runId, completion } = await manager.start({ ...request, mode: "workspace-write" });
     const pending = await approval.promise;
 
     expect(pending).toMatchObject({
@@ -222,7 +222,7 @@ describe("DesktopRunManager", () => {
       emitApproval: (request) => approval.resolve(request),
       emitEvent: (event) => events.push(event),
     });
-    const { completion } = await manager.start({ ...request, mode: "guided" });
+    const { completion } = await manager.start({ ...request, mode: "workspace-write" });
     const pending = await approval.promise;
 
     await manager.dispose();
@@ -248,7 +248,7 @@ describe("DesktopRunManager", () => {
     const { completion } = await manager.start({
       prompt: "Inspect workspace",
       workspaceRoot,
-      mode: "yolo",
+      mode: "workspace-write",
     });
     await completion;
 
@@ -271,7 +271,7 @@ describe("DesktopRunManager", () => {
         return emission.promise;
       },
     });
-    const { runId, completion } = await manager.start({ ...request, mode: "guided" });
+    const { runId, completion } = await manager.start({ ...request, mode: "workspace-write" });
     const pending = await approval.promise;
 
     await manager.respondApproval({ ...pending, approved: true });
@@ -318,7 +318,7 @@ describe("DesktopRunManager", () => {
       emitStatus: (status) => statuses.push(status),
     });
 
-    const { completion } = await manager.start({ ...request, mode: "guided" });
+    const { completion } = await manager.start({ ...request, mode: "workspace-write" });
     await expectSettlesPromptly(completion);
 
     expect(statuses.at(-1)).toMatchObject({
@@ -391,7 +391,7 @@ describe("DesktopRunManager", () => {
     const { completion } = await manager.start({
       prompt: "Inspect workspace",
       workspaceRoot,
-      mode: "yolo",
+      mode: "workspace-write",
     });
     await completion;
 
@@ -445,7 +445,7 @@ describe("DesktopRunManager", () => {
         prompt: "Inspect workspace",
         workspaceRoot,
         profileId: "secret",
-        mode: "yolo",
+        mode: "workspace-write",
       });
       await completion;
 
@@ -505,7 +505,7 @@ describe("DesktopRunManager", () => {
         prompt: "Inspect workspace",
         workspaceRoot,
         profileId: "blank",
-        mode: "yolo",
+        mode: "workspace-write",
       });
       await completion;
 
@@ -562,7 +562,7 @@ describe("DesktopRunManager", () => {
         prompt: "Inspect workspace",
         workspaceRoot,
         profileId: "short",
-        mode: "yolo",
+        mode: "workspace-write",
       });
       await completion;
 
@@ -613,7 +613,7 @@ async function createScriptedManager(
     prompt: "Run scripted provider",
     workspaceRoot,
     profileId: "fake",
-    mode: "yolo",
+    mode: "workspace-write",
   };
   return { manager, request };
 }
@@ -645,7 +645,11 @@ function approvalProvider(): ModelProvider {
           toolCall: {
             id: "tool-call-approval",
             name: process.platform === "win32" ? "pwsh" : "bash",
-            input: { command: "echo approval", description: "approval test command" },
+            input: {
+              command: "echo approval",
+              description: "approval test command",
+              sandbox_permissions: "require-escalated",
+            },
           },
         };
       } else {

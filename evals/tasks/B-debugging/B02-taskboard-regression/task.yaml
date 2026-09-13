@@ -1,7 +1,7 @@
 id: B02-taskboard-regression
 fixture: taskboard-service
 prompt: "修复 Taskboard service 的状态筛选回归问题，确保筛选不会修改任务对象，并运行完整测试确认。不要删除或放宽测试。"
-mode: yolo
+mode: workspace-write
 fakeScenario: taskboard-fix
 budgets: { referenceLatencyMs: 120000, referenceTokens: 16000, referenceToolCalls: 12 }
 assertions:

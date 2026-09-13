@@ -1,7 +1,7 @@
 id: S02-research-dependencies
 fixture: research-mini
 prompt: "根据本地迁移资料总结 CLI 依赖与兼容性建议，禁止联网和外部来源。"
-mode: yolo
+mode: workspace-write
 fakeScenario: web-report
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

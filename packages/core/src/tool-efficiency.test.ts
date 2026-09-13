@@ -9,7 +9,7 @@ import { runTurn } from "./index";
 describe("tool exposure and turn cache", () => {
   it("exposes only mode-available tool schemas to the model", () => {
     const registry = createDefaultToolRegistry();
-    const coding = registry.toModelSpecs("yolo").map((tool) => tool.name);
+    const coding = registry.toModelSpecs("workspace-write").map((tool) => tool.name);
     expect(coding.every((name) => !/^(runtime|process|shell)[._]/.test(name))).toBe(true);
     expect(coding).toEqual(
       expect.arrayContaining([
@@ -23,7 +23,7 @@ describe("tool exposure and turn cache", () => {
     expect(coding).toContain("skill");
     expect(coding).not.toEqual(expect.arrayContaining(["mcp.list", "mcp.call"]));
 
-    const plan = registry.toModelSpecs("plan").map((tool) => tool.name);
+    const plan = registry.toModelSpecs("read-only").map((tool) => tool.name);
     expect(plan).not.toEqual(
       expect.arrayContaining([
         "file.write",
@@ -54,7 +54,7 @@ describe("tool exposure and turn cache", () => {
       workspaceRoot,
       home,
       provider,
-      mode: "yolo",
+      mode: "workspace-write",
     })) {
       events.push(event);
     }

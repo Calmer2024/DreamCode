@@ -1283,19 +1283,15 @@ select:focus-visible {
   height: 14px;
   color: currentColor;
 }
-.select-menu-control[data-accent="plan"] .select-menu-trigger {
+.select-menu-control[data-accent="read-only"] .select-menu-trigger {
   --mode-hover-color: #4f46e5;
   --mode-active-background: #eef2ff;
 }
-.select-menu-control[data-accent="guided"] .select-menu-trigger {
+.select-menu-control[data-accent="workspace-write"] .select-menu-trigger {
   --mode-hover-color: #2474c5;
   --mode-active-background: #edf6ff;
 }
-.select-menu-control[data-accent="yolo"] .select-menu-trigger {
-  --mode-hover-color: #b86b00;
-  --mode-active-background: #fff7e6;
-}
-.select-menu-control[data-accent="full"] .select-menu-trigger {
+.select-menu-control[data-accent="danger-full-access"] .select-menu-trigger {
   --mode-hover-color: #d45113;
   --mode-active-background: #fff1e8;
 }
@@ -1374,23 +1370,18 @@ select:focus-visible {
 }
 
 .select-menu-popover > button { color: var(--text-primary); }
-.select-menu-popover > button[data-option-value="plan"]:hover,
-.select-menu-popover > button[data-option-value="plan"][aria-selected="true"] {
+.select-menu-popover > button[data-option-value="read-only"]:hover,
+.select-menu-popover > button[data-option-value="read-only"][aria-selected="true"] {
   color: #4f46e5;
   background: #eef2ff;
 }
-.select-menu-popover > button[data-option-value="guided"]:hover,
-.select-menu-popover > button[data-option-value="guided"][aria-selected="true"] {
+.select-menu-popover > button[data-option-value="workspace-write"]:hover,
+.select-menu-popover > button[data-option-value="workspace-write"][aria-selected="true"] {
   color: #2474c5;
   background: #edf6ff;
 }
-.select-menu-popover > button[data-option-value="yolo"]:hover,
-.select-menu-popover > button[data-option-value="yolo"][aria-selected="true"] {
-  color: #b86b00;
-  background: #fff7e6;
-}
-.select-menu-popover > button[data-option-value="full"]:hover,
-.select-menu-popover > button[data-option-value="full"][aria-selected="true"] {
+.select-menu-popover > button[data-option-value="danger-full-access"]:hover,
+.select-menu-popover > button[data-option-value="danger-full-access"][aria-selected="true"] {
   color: #d45113;
   background: #fff1e8;
 }

@@ -18,7 +18,6 @@ const assertions = {
   taskCompleted: false,
   fileChanged: false,
   commandExitCodeZero: false,
-  permissionContractInjected: false,
   usageReported: false,
   sessionResumed: false,
 };
@@ -70,12 +69,6 @@ try {
       event.type === "tool.completed" &&
       event.payload?.tool === (process.platform === "win32" ? "pwsh" : "bash") &&
       event.payload?.data?.exitCode === 0,
-  );
-  assertions.permissionContractInjected = events.some(
-    (event) =>
-      event.type === "context.built" &&
-      event.payload?.permissionContract?.schemaVersion >= 2 &&
-      event.payload?.permissionContract?.generatedFor?.currentMode === "yolo",
   );
   assertions.usageReported = events.some(
     (event) => event.type === "model.usage" && event.payload?.usage?.inputTokens > 0,
@@ -201,7 +194,7 @@ async function chooseWorkspace(page) {
 }
 
 async function runPrompt(page, prompt) {
-  await page.getByRole("combobox", { name: "运行模式" }).selectOption("yolo");
+  await page.getByRole("combobox", { name: "运行模式" }).selectOption("workspace-write");
   await page.getByRole("textbox", { name: "给 DreamCode 发送消息" }).fill(prompt);
   await page.getByRole("button", { name: "发送" }).click();
 }

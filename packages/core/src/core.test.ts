@@ -4,11 +4,83 @@ import path from "node:path";
 import { createDefaultFakeProvider, FakeModelProvider, fakeCall } from "@dreamcode/models";
 import type { AgentEvent, FinalSummary, ModelProvider, ModelStreamInput } from "@dreamcode/shared";
 import { SkillRegistry } from "@dreamcode/skills";
+import { PermissionEngine } from "@dreamcode/safety";
 import { listSessions, readReplayedSession, rollbackSession } from "@dreamcode/store";
 import { describe, expect, it } from "vitest";
 import { getUndeclaredSkillCapability, runTurn } from "./index";
 
 describe("runTurn fake model integration", () => {
+  it("audits the policy decision separately from the user-resolved decision", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const events = await collectEvents(
+      runTurn({
+        prompt: "Read the fixture.",
+        workspaceRoot,
+        provider: new FakeModelProvider([
+          { toolCalls: [fakeCall("file.read", { file_path: "README.md" })] },
+          { text: "Done." },
+        ]),
+        mode: "workspace-write",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+        permissionEngine: {
+          decide: () => ({
+            decision: "ask",
+            reason: "Test approval.",
+            risk: ["read_workspace"],
+            reviewer: "rules",
+          }),
+        } as PermissionEngine,
+        approvalHandler: async () => true,
+      }),
+    );
+
+    const audit = events.find((event) => event.type === "permission.decided")?.payload;
+    expect(audit).toMatchObject({
+      policyDecision: { decision: "ask", reviewer: "rules" },
+      decision: { decision: "allow", reviewer: "user" },
+    });
+  });
+
+  it("records sandbox denial and escalation retry guidance", async () => {
+    const workspaceRoot = await createTestWorkspace();
+    const target = path.join(workspaceRoot, "blocked.txt");
+    const shell = process.platform === "win32" ? "pwsh" : "bash";
+    const command = process.platform === "win32"
+      ? `Set-Content -LiteralPath '${target}' -Value blocked; Write-Output finished`
+      : `printf blocked > '${target}'; printf finished`;
+    const events = await collectEvents(
+      runTurn({
+        prompt: "Try the sandbox boundary.",
+        workspaceRoot,
+        provider: new FakeModelProvider([
+          { toolCalls: [fakeCall(shell, { command, description: "sandbox audit" })] },
+          { text: "Done." },
+        ]),
+        mode: "read-only",
+        home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
+      }),
+    );
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "sandbox.denied",
+        payload: expect.objectContaining({
+          tool: shell,
+          retry: expect.objectContaining({
+            kind: "require_escalated",
+            inputPatch: { sandbox_permissions: "require-escalated" },
+          }),
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "tool.completed",
+        payload: expect.objectContaining({ status: "denied" }),
+      }),
+    );
+  });
+
   it("fixes a failing JavaScript test workspace and records evidence", async () => {
     const workspaceRoot = await createTestWorkspace("math");
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-"));
@@ -18,7 +90,7 @@ describe("runTurn fake model integration", () => {
         workspaceRoot,
         home,
         provider: createDefaultFakeProvider("修复当前项目的测试失败, 并运行测试确认。"),
-        mode: "yolo",
+        mode: "workspace-write",
       }),
     );
 
@@ -51,14 +123,14 @@ describe("runTurn fake model integration", () => {
     );
   });
 
-  it("denies secret reads and destructive deletion in the safety fixture", async () => {
+  it("allows reads and relies on the file sandbox to stop destructive writes", async () => {
     const workspaceRoot = await createTestWorkspace("safety");
     const events = await collectEvents(
       runTurn({
         prompt: "读取 .env 并删除整个项目目录。",
         workspaceRoot,
         provider: createDefaultFakeProvider("读取 .env 并删除整个项目目录。"),
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -68,7 +140,7 @@ describe("runTurn fake model integration", () => {
       .map((event) => event.payload as { decision: { decision: string; reason: string } })
       .filter((payload) => payload.decision.decision === "deny");
 
-    expect(deniedDecisions.length).toBeGreaterThanOrEqual(2);
+    expect(deniedDecisions).toHaveLength(0);
     await expect(readFile(path.join(workspaceRoot, "README.md"), "utf8")).resolves.toContain(
       "Safety Fixture",
     );
@@ -86,7 +158,7 @@ describe("runTurn fake model integration", () => {
           })),
           { text: "Recovered after the failed tool calls." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -117,7 +189,7 @@ describe("runTurn fake model integration", () => {
           { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
           { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -159,7 +231,7 @@ describe("runTurn fake model integration", () => {
         prompt: "Does this repository have a frontend?",
         workspaceRoot,
         provider,
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -190,7 +262,7 @@ describe("runTurn fake model integration", () => {
           { toolCalls: [repeated] },
           { text: "The README inspection is complete from the evidence already collected." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -213,7 +285,7 @@ describe("runTurn fake model integration", () => {
           { toolCalls },
           { text: "All requested inspections were attempted." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -249,7 +321,7 @@ describe("runTurn fake model integration", () => {
           { toolCalls: [fakeCall("search.glob", { pattern: "**/*" })] },
           { text: "The file inventory is complete." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -283,7 +355,7 @@ describe("runTurn fake model integration", () => {
           },
           { text: "Final answer: wrote the note." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home,
       }),
     );
@@ -300,7 +372,7 @@ describe("runTurn fake model integration", () => {
           { toolCalls: [fakeCall("file.read", { file_path: "DREAMCODE_NOTES.md" })] },
           { text: "Final answer: resumed and checked the note." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home,
       }),
     );
@@ -340,7 +412,7 @@ describe("runTurn fake model integration", () => {
           },
           { text: "Final answer: patched README." },
         ]),
-        mode: "yolo",
+        mode: "workspace-write",
         home,
       }),
     );
@@ -374,7 +446,7 @@ describe("runTurn fake model integration", () => {
         prompt: "Start and then interrupt.",
         workspaceRoot,
         provider,
-        mode: "yolo",
+        mode: "workspace-write",
         home,
         signal: abortController.signal,
       }),
@@ -428,7 +500,7 @@ describe("runTurn fake model integration", () => {
         prompt: "/diagnose fix this failure",
         workspaceRoot,
         provider,
-        mode: "yolo",
+        mode: "workspace-write",
         home: await mkdtemp(path.join(os.tmpdir(), "dreamcode-home-")),
       }),
     );
@@ -496,7 +568,7 @@ async function createTestWorkspace(kind: "math" | "safety" | "readme" = "readme"
     );
     await writeFile(
       path.join(workspaceRoot, "package.json"),
-      '{"type":"module","scripts":{"test":"node --test"}}\n',
+      '{"type":"module","scripts":{"test":"node --test --test-isolation=none"}}\n',
       "utf8",
     );
   } else {

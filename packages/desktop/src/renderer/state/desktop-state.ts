@@ -458,17 +458,36 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       );
     }
     case "permission.decided": {
+      const policyDecision = asRecord(payload.policyDecision);
       const decision = asRecord(payload.decision);
+      const policyOutcome = stringValue(policyDecision.decision);
       const outcome = stringValue(decision.decision) ?? "decided";
+      const title =
+        policyOutcome && policyOutcome !== outcome
+          ? `Policy ${policyOutcome} → Permission ${outcome}`
+          : `Permission ${outcome}`;
       return appendTimeline(
         next,
         event,
         "event",
-        `Permission ${outcome}`,
-        formatPermissionDetail(stringValue(payload.tool), stringValue(decision.reason)),
+        title,
+        formatPermissionAuditDetail(
+          stringValue(payload.tool),
+          stringValue(policyDecision.reason),
+          stringValue(decision.reason),
+        ),
         outcome === "allow" ? "success" : outcome === "deny" ? "danger" : "warning",
       );
     }
+    case "sandbox.denied":
+      return appendTimeline(
+        next,
+        event,
+        "event",
+        "Sandbox denied resource access",
+        stringValue(payload.summary) ?? stringValue(asRecord(payload.error).message),
+        "danger",
+      );
     case "todo.updated": {
       const items = Array.isArray(payload.items) ? payload.items : [];
       const todoItems: TodoItem[] = items.flatMap((item) => {
@@ -936,6 +955,17 @@ function formatPermissionDetail(
 ): string | undefined {
   if (tool && reason) return `${tool}: ${reason}`;
   return tool ?? reason;
+}
+
+function formatPermissionAuditDetail(
+  tool: string | undefined,
+  policyReason: string | undefined,
+  finalReason: string | undefined,
+): string | undefined {
+  const reason = policyReason && policyReason !== finalReason
+    ? `Policy: ${policyReason} Final: ${finalReason ?? "resolved"}`
+    : finalReason ?? policyReason;
+  return formatPermissionDetail(tool, reason);
 }
 
 function readableEventTitle(type: AgentEvent["type"]): string {

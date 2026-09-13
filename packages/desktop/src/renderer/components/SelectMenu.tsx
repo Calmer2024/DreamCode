@@ -15,7 +15,7 @@ interface SelectMenuProps {
   value: string;
   options: SelectMenuOption[];
   disabled?: boolean;
-  accent?: "plan" | "guided" | "yolo" | "full";
+  accent?: "read-only" | "workspace-write" | "danger-full-access";
   icon?: ReactNode;
   className?: string;
   onChange: (value: string) => void;

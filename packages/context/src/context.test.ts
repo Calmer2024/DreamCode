@@ -17,7 +17,7 @@ describe("ContextBuilder structured history", () => {
 
     await expect(
       builder.build({
-        mode: "yolo",
+        mode: "workspace-write",
         workspaceRoot: process.cwd(),
         messages: [],
         todoItems: [],
@@ -52,7 +52,7 @@ describe("ContextBuilder structured history", () => {
     ] satisfies ChatMessage[];
 
     const result = await new ContextBuilder().build({
-      mode: "guided",
+      mode: "workspace-write",
       workspaceRoot: process.cwd(),
       messages: history,
       todoItems: [],
@@ -75,7 +75,7 @@ describe("ContextBuilder structured history", () => {
     expect(systemMessage?.content).toContain(
       "Respond in the same language as the user's latest message.",
     );
-    expect(systemMessage?.content).toContain("Current Policy Context:");
+    expect(systemMessage?.content).toContain("Current DreamCode file policy: workspace-write.");
     expect(systemMessage?.content).not.toContain("Workspace summary:");
     expect(systemMessage?.content).not.toContain("Keep code, commands, file paths, identifiers");
   });
@@ -95,7 +95,7 @@ describe("ContextBuilder structured history", () => {
     } as any);
 
     const result = await builder.build({
-      mode: "guided",
+      mode: "workspace-write",
       workspaceRoot: process.cwd(),
       messages,
       todoItems: [],
@@ -135,7 +135,7 @@ describe("ContextBuilder structured history", () => {
       maxContextTokens: 1_000,
       tokenCounter: { count: () => 321, exact: true },
     }).build({
-      mode: "guided",
+      mode: "workspace-write",
       workspaceRoot: process.cwd(),
       messages: [{ role: "user", content: "hello" }],
       todoItems: [],
@@ -146,7 +146,7 @@ describe("ContextBuilder structured history", () => {
   it("includes the actual tool schemas in provider-aware request estimates", async () => {
     const seenToolCounts: number[] = [];
     const result = await new ContextBuilder({ maxContextTokens: 1_000 }).build({
-      mode: "guided",
+      mode: "workspace-write",
       workspaceRoot: process.cwd(),
       messages: [{ role: "user", content: "hello" }],
       todoItems: [],

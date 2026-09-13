@@ -1,7 +1,15 @@
 import { z } from "zod";
 
-export const runModeSchema = z.enum(["plan", "guided", "yolo", "full"]);
+export const runModeSchema = z.enum(["read-only", "workspace-write", "danger-full-access"]);
 export type RunMode = z.infer<typeof runModeSchema>;
+
+export interface SandboxPolicy {
+  mode: RunMode;
+  readableRoots: "all";
+  writableRoots: string[];
+  networkAccess: true;
+  enforcement: "managed" | "disabled";
+}
 
 export type RiskTag =
   | "read_workspace"
@@ -87,6 +95,7 @@ export type ShellKind = "powershell" | "cmd" | "bash" | "sh";
 export type ExecutionOutcome =
   | "validation_failed"
   | "permission_denied"
+  | "sandbox_denied"
   | "unsupported_shell"
   | "program_not_found"
   | "spawn_failed"
@@ -124,6 +133,13 @@ export interface ToolUsage {
   stderrBytes?: number;
 }
 
+export interface ToolRetryGuidance {
+  kind: "require_escalated";
+  inputPatch: { sandbox_permissions: "require-escalated" };
+  requiresApproval: true;
+  reason: string;
+}
+
 export interface ToolResult<T = unknown> {
   toolCallId: string;
   status: "success" | "error" | "cancelled" | "denied";
@@ -140,6 +156,7 @@ export interface ToolResult<T = unknown> {
     stderr: ToolOutputStream;
   };
   warnings?: string[];
+  retry?: ToolRetryGuidance;
   cache?: ToolCacheInfo;
   usage?: ToolUsage;
 }
@@ -185,6 +202,7 @@ export interface ToolExecutionContext {
   sessionDir: string;
   sessionId?: string;
   mode: RunMode;
+  sandboxPolicy?: SandboxPolicy;
   toolCallId: string;
   signal?: AbortSignal;
   questionHandler?: (question: string) => Promise<string>;
@@ -309,33 +327,6 @@ export interface RequestTokenEstimateInput {
   providerId?: string;
 }
 
-export interface PermissionCapabilityCategory {
-  id: string;
-  summary: string;
-  examples?: string[];
-}
-
-export interface PermissionCapabilityContract {
-  schemaVersion: number;
-  rulesVersion: string;
-  generatedFor: { platform: string; currentMode: RunMode };
-  defaultDecision: PermissionDecisionKind;
-  modes: Record<
-    RunMode,
-    {
-      allow: PermissionCapabilityCategory[];
-      ask: PermissionCapabilityCategory[];
-      deny: PermissionCapabilityCategory[];
-    }
-  >;
-  currentModeSummary: {
-    allow: PermissionCapabilityCategory[];
-    ask: PermissionCapabilityCategory[];
-    deny: PermissionCapabilityCategory[];
-  };
-  shellRun: { allowPipelines: boolean; allowMultipleSteps: boolean; guidance: string };
-}
-
 export interface ModelStreamInput {
   messages: ChatMessage[];
   tools: ToolModelSpec[];
@@ -368,6 +359,7 @@ export type AgentEventType =
   | "assistant.message"
   | "model.usage"
   | "permission.decided"
+  | "sandbox.denied"
   | "approval.remembered"
   | "tool.schedule.planned"
   | "tool.started"

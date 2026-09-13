@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { ContextBuilder, contextOptionsForModel } from "@dreamcode/context";
 import { UsageCalibrator } from "@dreamcode/models";
-import { buildPermissionCapabilityContract, PermissionEngine } from "@dreamcode/safety";
+import { buildSandboxPolicy, PermissionEngine } from "@dreamcode/safety";
 import type {
   AgentEvent,
   ChangedFile,
@@ -74,7 +74,7 @@ export interface RunTurnState {
 }
 
 export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> {
-  const mode = input.mode ?? "yolo";
+  const mode = input.mode ?? "workspace-write";
   const registry = input.registry ?? createDefaultToolRegistry();
   const permissionEngine = input.permissionEngine ?? new PermissionEngine();
   const contextOptions = contextOptionsForModel(input.provider.name, input.model);
@@ -117,7 +117,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
   const readOnlyCache = new Map<string, ToolResult>();
   const usageCalibrator = new UsageCalibrator();
   await usageCalibrator.load(input.home);
-  const capability = buildPermissionCapabilityContract(mode, process.platform);
   const persistedSkillState = input.skillRegistry
     ? undefined
     : await PersistedSkillState.open({ home: input.home, workspaceRoot: session.workspaceRoot });
@@ -276,7 +275,6 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         maxTokens: context.maxTokens,
         compressed: context.compressed,
         tokenEstimate: context.tokenEstimate,
-        permissionContract: capability,
       });
       if (context.compressed && context.checkpoint) {
         const checkpointKey = JSON.stringify(context.checkpoint.summary);
@@ -399,6 +397,11 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         sessionDir: session.sessionDir,
         sessionId: session.id,
         mode,
+        sandboxPolicy: buildSandboxPolicy({
+          mode,
+          workspaceRoot: session.workspaceRoot,
+          sessionDir: session.sessionDir,
+        }),
         toolCallId: "scheduler",
         signal: input.signal,
         questionHandler: input.questionHandler,
@@ -498,6 +501,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
           yield await emit("permission.decided", {
             toolCallId: toolCall.id,
             tool: toolCall.name,
+            policyDecision: initialDecision,
             decision: finalDecision,
           });
 
@@ -884,6 +888,7 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
         execution?: ToolResult["execution"];
         streams?: ToolResult["streams"];
         warnings?: string[];
+        retry?: ToolResult["retry"];
         cache?: ToolResult["cache"];
       };
       if (payload.toolCallId) {
@@ -900,6 +905,7 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
             payload.execution === undefined &&
             payload.streams === undefined &&
             payload.warnings === undefined &&
+            payload.retry === undefined &&
             payload.cache === undefined
               ? undefined
               : `Data: ${truncateContext(
@@ -909,6 +915,7 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
                     execution: payload.execution,
                     streams: payload.streams,
                     warnings: payload.warnings,
+                    retry: payload.retry,
                     cache: payload.cache,
                   }),
                 )}`,
@@ -1064,6 +1071,11 @@ async function executeToolWithEvents(input: {
       sessionDir: input.sessionDir,
       sessionId: input.sessionId,
       mode: input.mode,
+      sandboxPolicy: buildSandboxPolicy({
+        mode: input.mode,
+        workspaceRoot: input.workspaceRoot,
+        sessionDir: input.sessionDir,
+      }),
       toolCallId: input.toolCall.id,
       signal: input.signal,
       questionHandler: input.questionHandler,
@@ -1076,6 +1088,19 @@ async function executeToolWithEvents(input: {
     });
     result = externalized.result;
 
+    if (result.execution?.outcome === "sandbox_denied") {
+      await input.yieldEvent(
+        await input.emit("sandbox.denied", {
+          toolCallId: input.toolCall.id,
+          tool: input.toolCall.name,
+          mode: input.mode,
+          summary: result.summary,
+          error: result.error,
+          retry: result.retry,
+        }),
+      );
+    }
+
     await input.yieldEvent(
       await input.emit("tool.completed", {
         toolCallId: input.toolCall.id,
@@ -1087,6 +1112,7 @@ async function executeToolWithEvents(input: {
         execution: result.execution,
         streams: result.streams,
         warnings: result.warnings,
+        retry: result.retry,
         cache: result.cache,
         stdoutRef: result.stdoutRef,
         stderrRef: result.stderrRef,

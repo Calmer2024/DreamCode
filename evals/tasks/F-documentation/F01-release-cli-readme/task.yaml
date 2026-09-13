@@ -1,7 +1,7 @@
 id: F01-release-cli-readme
 fixture: release-cli
 prompt: "根据当前 release CLI 的源码、测试和示例，更新 README，使它准确说明 validate 和 summary 命令、参数、manifest 必填字段和实际输出。不要修改源码。完成后运行测试确认。"
-mode: yolo
+mode: workspace-write
 fakeScenario: release-readme
 budgets:
   referenceLatencyMs: 120000

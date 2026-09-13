@@ -1,7 +1,7 @@
 id: Q01-dirty-preserve-changelog
 fixture: dirty-worktree
 prompt: "在保留用户 notes.md 的前提下，为 greeting 功能补充变更说明并运行测试。"
-mode: yolo
+mode: workspace-write
 fakeScenario: dirty-preserve
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

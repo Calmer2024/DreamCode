@@ -7,14 +7,14 @@ import { SelectMenu } from "./SelectMenu";
 import { Zap } from "lucide-react";
 
 const options = [
-  { value: "guided", label: "引导模式" },
-  { value: "full", label: "完全访问" },
+  { value: "workspace-write", label: "引导模式" },
+  { value: "danger-full-access", label: "完全访问" },
 ];
 
 describe("SelectMenu", () => {
   it("dismisses outside, selects an option, and expands upward in the lower viewport", () => {
     const onChange = vi.fn();
-    render(<SelectMenu label="运行模式" value="guided" options={options} onChange={onChange} />);
+    render(<SelectMenu label="运行模式" value="workspace-write" options={options} onChange={onChange} />);
     const trigger = screen.getByRole("button", { name: "运行模式选项" });
     Object.defineProperty(trigger, "getBoundingClientRect", {
       value: () => ({ top: 700, bottom: 734, left: 900, right: 1020, width: 120, height: 34 }),
@@ -37,15 +37,15 @@ describe("SelectMenu", () => {
         name: "完全访问",
       }),
     );
-    expect(onChange).toHaveBeenCalledWith("full");
+    expect(onChange).toHaveBeenCalledWith("danger-full-access");
   });
 
   it("renders option icons", () => {
     render(
       <SelectMenu
         label="运行模式"
-        value="guided"
-        options={[{ value: "guided", label: "引导模式", icon: <Zap data-testid="mode-icon" /> }]}
+        value="workspace-write"
+        options={[{ value: "workspace-write", label: "引导模式", icon: <Zap data-testid="mode-icon" /> }]}
         onChange={vi.fn()}
       />,
     );

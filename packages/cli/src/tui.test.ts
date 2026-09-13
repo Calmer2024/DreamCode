@@ -43,7 +43,7 @@ describe("DreamCode Ink TUI", () => {
         `${String.fromCharCode(27)}]12;#ffffff${String.fromCharCode(7)}`,
       );
       expect(stdout.output).toContain(`${String.fromCharCode(27)}[?25h`);
-      expect(stdout.output).toContain(">> yolo mode");
+      expect(stdout.output).toContain(">> workspace-write mode");
       expect(stdout.output).not.toContain("● idle");
       expect(stdout.output).not.toContain("API Usage Billing");
       expect(stdout.output).not.toContain("bypass permissions on");
@@ -62,7 +62,7 @@ describe("DreamCode Ink TUI", () => {
       ...createInitialTuiState({
         version: "0.1.0",
         workspaceRoot: "/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         provider: "fake",
         model: "default",
         home: "/tmp/dreamcode",
@@ -119,7 +119,7 @@ describe("DreamCode Ink TUI", () => {
     const state = createInitialTuiState({
       version: "0.1.0",
       workspaceRoot: "/repo",
-      mode: "yolo",
+      mode: "workspace-write",
       provider: "fake",
       model: "default",
       home: "/tmp/dreamcode",
@@ -140,7 +140,7 @@ describe("DreamCode Ink TUI", () => {
       ...createInitialTuiState({
         version: "0.1.0",
         workspaceRoot: "/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         provider: "fake",
         model: "default",
         home: "/tmp/dreamcode",
@@ -178,7 +178,7 @@ describe("DreamCode Ink TUI", () => {
       ...createInitialTuiState({
         version: "0.1.0",
         workspaceRoot: "/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         provider: "fake",
         model: "default",
         home: "/tmp/dreamcode",
@@ -253,7 +253,7 @@ describe("DreamCode Ink TUI", () => {
       ...createInitialTuiState({
         version: "0.1.0",
         workspaceRoot: "/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         provider: "fake",
         model: "default",
         home: "/tmp/dreamcode",
@@ -288,7 +288,7 @@ describe("DreamCode Ink TUI", () => {
       ...createInitialTuiState({
         version: "0.1.0",
         workspaceRoot: "/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         provider: "fake",
         model: "default",
         home: "/tmp/dreamcode",
@@ -331,7 +331,7 @@ describe("DreamCode Ink TUI", () => {
       ...createInitialTuiState({
         version: "0.1.0",
         workspaceRoot: "/repo",
-        mode: "yolo",
+        mode: "workspace-write",
         provider: "fake",
         model: "default",
         home: "/tmp/dreamcode",
@@ -424,7 +424,7 @@ function createTuiInput(): InkTuiInput {
     version: "0.1.0",
     config,
     workspaceRoot: "/repo",
-    mode: "yolo",
+    mode: "workspace-write",
     home: "/tmp/dreamcode",
     createProvider: () => {
       throw new Error("createProvider should not be called while typing.");

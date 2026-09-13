@@ -53,10 +53,9 @@ interface ComposerProps {
 }
 
 const modePresentations = {
-  plan: { label: "规划模式", Icon: ClipboardList, iconName: "clipboard-list" },
-  guided: { label: "引导模式", Icon: ShieldCheck, iconName: "shield-check" },
-  yolo: { label: "自动执行", Icon: Zap, iconName: "zap" },
-  full: { label: "完全访问", Icon: ShieldAlert, iconName: "shield-alert" },
+  "read-only": { label: "只读", Icon: ClipboardList, iconName: "clipboard-list" },
+  "workspace-write": { label: "工作区写入", Icon: ShieldCheck, iconName: "shield-check" },
+  "danger-full-access": { label: "完全访问", Icon: ShieldAlert, iconName: "shield-alert" },
 } satisfies Record<RunMode, { label: string; Icon: typeof ShieldCheck; iconName: string }>;
 
 export function Composer({

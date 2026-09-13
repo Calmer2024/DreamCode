@@ -27,7 +27,7 @@ const bootstrap: DesktopBootstrap = {
 const request: StartTurnRequest = {
   prompt: "Update the maths module",
   workspaceRoot: "/projects/alpha",
-  mode: "yolo",
+  mode: "workspace-write",
 };
 
 const toolStarted = agentEvent("tool.started", {
@@ -230,6 +230,30 @@ describe("desktop state reducer", () => {
       expect.objectContaining({ id: "call_queued", name: shellToolName, status: "queued" }),
     );
     expect(state.rawEvents).toHaveLength(9);
+  });
+
+  it("shows the policy ask, final user decision, and sandbox denial separately", () => {
+    let state = runningState("run_1");
+    for (const event of [
+      agentEvent("permission.decided", {
+        tool: shellToolName,
+        policyDecision: { decision: "ask", reason: "Elevation requested", reviewer: "rules" },
+        decision: { decision: "allow", reason: "User approved", reviewer: "user" },
+      }),
+      agentEvent("sandbox.denied", {
+        tool: shellToolName,
+        summary: "The read-only sandbox denied a resource operation.",
+      }),
+    ]) {
+      state = desktopReducer(state, { type: "run.event", message: { runId: "run_1", event } });
+    }
+
+    expect(selectTimeline(state)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Policy ask → Permission allow", tone: "success" }),
+        expect.objectContaining({ title: "Sandbox denied resource access", tone: "danger" }),
+      ]),
+    );
   });
 
   it("derives tool and terminal entries from completed tool events", () => {

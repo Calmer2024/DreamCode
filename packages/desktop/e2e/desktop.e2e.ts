@@ -159,13 +159,13 @@ test("launches, completes a Fake task, reviews inline changes, restarts, and res
 });
 
 for (const decision of ["允许", "拒绝"] as const) {
-  test(`handles a guided Fake Provider approval decision: ${decision}`, async () => {
+  test(`handles a workspace-write Fake Provider approval decision: ${decision}`, async () => {
     const scenario = await prepareScenario("readme-update", "fake");
     const original = await readWorkspaceFile(scenario, "README.md");
     try {
       const desktop = await launchDesktop(scenario);
       await selectWorkspace(desktop.page);
-      await runPrompt(desktop.page, "Update README with usage instructions.", "guided");
+      await runPrompt(desktop.page, "Update README with usage instructions.", "workspace-write");
       const approval = desktop.page.getByRole("alertdialog", { name: "工具审批" });
       await expect(approval).toBeVisible();
       await approval.getByRole("button", { name: decision }).click();

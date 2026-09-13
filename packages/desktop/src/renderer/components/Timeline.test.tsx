@@ -40,7 +40,7 @@ describe("Timeline", () => {
       request: {
         prompt: "Fix the timeline",
         workspaceRoot: "D:\\Projects\\DreamCode",
-        mode: "guided",
+        mode: "workspace-write",
       },
       timeline: [
         entry("user", "User message", "Fix the timeline"),
@@ -104,7 +104,7 @@ describe("Timeline", () => {
     const request = {
       prompt: "Fix the timeline",
       workspaceRoot: "D:\\Projects\\DreamCode",
-      mode: "guided" as const,
+      mode: "workspace-write" as const,
     };
     let state = desktopReducer(
       { ...createDesktopState(), workspaceRoot: request.workspaceRoot },
@@ -156,7 +156,7 @@ describe("Timeline", () => {
       ...createDesktopState(),
       workspaceRoot: "D:\\Projects\\DreamCode",
       timeline: [
-        entry("turn", "Turn started", "guided"),
+        entry("turn", "Turn started", "workspace-write"),
         entry("event", "Model started", "openai / gpt-5"),
         { ...entry("assistant", "Assistant", "正在输出内容"), turnId: "turn_1" },
       ],
@@ -223,7 +223,7 @@ describe("Timeline", () => {
       workspaceRoot: "D:\\Projects\\DreamCode",
       timeline: [
         { ...entry("status", "Turn completed", "done"), turnId: "turn_1" },
-        { ...entry("turn", "Turn started", "guided"), id: "turn-2", turnId: "turn_2" },
+        { ...entry("turn", "Turn started", "workspace-write"), id: "turn-2", turnId: "turn_2" },
         { ...entry("assistant", "Assistant", "second turn"), id: "assistant-2", turnId: "turn_2" },
         { ...entry("status", "Turn completed", "done"), id: "status-2", turnId: "turn_2" },
       ],
@@ -251,7 +251,7 @@ describe("Timeline", () => {
         entry("tool", `Running ${process.platform === "win32" ? "pwsh" : "bash"}`, "pnpm test"),
         entry("file", "update src/app.ts", "diff --git"),
         entry("status", "Turn completed", "All tests passed"),
-        entry("turn", "Turn started", "guided"),
+        entry("turn", "Turn started", "workspace-write"),
         entry("session", "Session created", "sess_1"),
         entry("event", "Model started", "openai / gpt-5"),
       ],

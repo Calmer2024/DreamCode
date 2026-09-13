@@ -1,7 +1,7 @@
 id: J01-local-api-research
 fixture: research-mini
 prompt: "根据 references/ 下的本地资料，写一份 research.md，区分已观察事实和推荐方案，说明 release API 的字段校验和当前 CLI 依赖情况。不要联网，不要编造外部来源。"
-mode: yolo
+mode: workspace-write
 fakeScenario: web-report
 budgets: { referenceLatencyMs: 120000, referenceTokens: 16000, referenceToolCalls: 12 }
 assertions:

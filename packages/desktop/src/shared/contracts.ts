@@ -1,5 +1,5 @@
 import type { McpRuntimeSnapshot } from "@dreamcode/mcp";
-import type { AgentEvent, MediaAttachmentKind, RunMode } from "@dreamcode/shared";
+import { runModeSchema, type AgentEvent, type MediaAttachmentKind, type RunMode } from "@dreamcode/shared";
 import type { ReplayedSessionState, SessionListItem } from "@dreamcode/store";
 import { z } from "zod";
 
@@ -14,7 +14,7 @@ export const startTurnRequestSchema = z
   .object({
     prompt: z.string(),
     workspaceRoot: workspaceRootSchema,
-    mode: z.enum(["plan", "guided", "yolo", "full"]),
+    mode: runModeSchema,
     profileId: z.string().trim().min(1).optional(),
     model: z.string().trim().min(1).optional(),
     sessionId: z.string().trim().min(1).optional(),

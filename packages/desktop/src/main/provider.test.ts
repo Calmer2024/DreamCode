@@ -28,7 +28,7 @@ describe("desktop provider resolution", () => {
           messages: [],
           tools: [],
           model: "e2e-blocking",
-          mode: "yolo",
+          mode: "workspace-write",
           workspaceRoot: "D:/fixture",
           signal: controller.signal,
         })

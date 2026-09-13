@@ -1,7 +1,7 @@
 id: C01-release-cli-doc-command
 fixture: release-cli
 prompt: "根据 release CLI 的真实实现补全 README 中 validate 和 summary 的可执行用法、manifest 参数和输出示例。只修改 README，完成后运行测试。"
-mode: yolo
+mode: workspace-write
 fakeScenario: release-readme
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

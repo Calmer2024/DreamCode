@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { AgentEvent } from "@dreamcode/shared";
 import { describe, expect, it, vi } from "vitest";
 import "../../test/setup";
 import type { DesktopTerminalEntry } from "../state/desktop-state";
@@ -73,6 +74,36 @@ describe("DetailDrawer", () => {
       200 * 1024,
     );
     expect(output).not.toHaveTextContent("hidden-tail");
+  });
+
+  it("renders policy resolution and sandbox denials in the log tab", () => {
+    const auditEvents: AgentEvent[] = [
+      {
+        id: "permission_1",
+        sessionId: "sess_1",
+        turnId: "turn_1",
+        type: "permission.decided",
+        timestamp: "2026-08-10T00:00:00.000Z",
+        payload: {
+          tool: "pwsh",
+          policyDecision: { decision: "ask" },
+          decision: { decision: "allow" },
+        },
+      },
+      {
+        id: "sandbox_1",
+        sessionId: "sess_1",
+        turnId: "turn_1",
+        type: "sandbox.denied",
+        timestamp: "2026-08-10T00:00:01.000Z",
+        payload: { summary: "The read-only file sandbox denied a resource operation." },
+      },
+    ];
+    render(<DetailDrawer events={auditEvents} initialTab="logs" onClose={vi.fn()} />);
+
+    expect(screen.getByText("Policy ask → Permission allow")).toBeVisible();
+    expect(screen.getByText("沙箱拒绝")).toBeVisible();
+    expect(screen.getAllByText(/read-only file sandbox denied/)[0]).toBeVisible();
   });
 
   it("closes from the panel tab bar", () => {

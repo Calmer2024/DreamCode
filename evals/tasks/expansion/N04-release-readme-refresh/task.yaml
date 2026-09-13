@@ -1,7 +1,7 @@
 id: N04-release-readme-refresh
 fixture: release-cli
 prompt: "根据 CLI 源码更新 README 的命令示例并运行测试。"
-mode: yolo
+mode: workspace-write
 fakeScenario: release-readme
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

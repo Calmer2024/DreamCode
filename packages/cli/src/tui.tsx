@@ -1879,14 +1879,12 @@ function todoStatusHeight(todoCount: number): number {
 
 function nextRunMode(mode: RunMode): RunMode {
   switch (mode) {
-    case "plan":
-      return "guided";
-    case "guided":
-      return "yolo";
-    case "yolo":
-      return "full";
+    case "read-only":
+      return "workspace-write";
+    case "workspace-write":
+      return "danger-full-access";
     default:
-      return "plan";
+      return "read-only";
   }
 }
 

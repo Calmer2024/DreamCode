@@ -7,6 +7,9 @@ directories:
 files:
   - dist-main/**
   - dist-renderer/**
+extraFiles:
+  - from: ../../native/windows-sandbox/target/release/dreamcode-windows-sandbox.exe
+    to: dreamcode-windows-sandbox.exe
 asar: true
 asarUnpack:
   - dist-main/bin/**

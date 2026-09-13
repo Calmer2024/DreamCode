@@ -20,7 +20,9 @@ export default defineConfig([
     entry: { "preload/index": "src/preload/index.ts" },
     external: ["electron"],
     format: ["cjs"],
-    noExternal: ["zod"],
+    // Electron's sandboxed preload cannot resolve workspace packages at runtime.
+    // Bundle the shared contracts and their workspace dependencies into preload.
+    noExternal: ["zod", /^@dreamcode\//],
     outDir: "dist-main",
     outExtension: () => ({ js: ".cjs" }),
     platform: "node",

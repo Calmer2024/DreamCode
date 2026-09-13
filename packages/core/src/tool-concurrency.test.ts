@@ -51,7 +51,7 @@ describe("runTurn multi-tool scheduling", () => {
       home,
       provider,
       registry,
-      mode: "full",
+      mode: "danger-full-access",
     }))
       events.push(event);
 

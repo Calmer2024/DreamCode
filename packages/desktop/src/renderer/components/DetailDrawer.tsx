@@ -330,6 +330,16 @@ function numberPayload(value: object, key: string): number {
 }
 
 function eventPresentation(event: AgentEvent) {
+  if (event.type === "sandbox.denied") {
+    return { label: "沙箱拒绝", module: "sandbox", tone: "danger" } as const;
+  }
+  if (event.type === "tool.completed") {
+    const payload = event.payload as Record<string, unknown>;
+    const status = typeof payload.status === "string" ? payload.status : "completed";
+    return status === "denied" || status === "error"
+      ? { label: "工具执行受阻", module: "tool", tone: "danger" } as const
+      : { label: "工具执行完成", module: "tool", tone: "success" } as const;
+  }
   if (event.type.includes("failed") || event.type.includes("error")) {
     return {
       label: "执行失败",
@@ -390,6 +400,13 @@ function eventPreview(event: AgentEvent): string {
   if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload))
     return "";
   const payload = event.payload as Record<string, unknown>;
+  if (event.type === "permission.decided") {
+    const policy = payload.policyDecision as Record<string, unknown> | undefined;
+    const final = payload.decision as Record<string, unknown> | undefined;
+    const policyKind = typeof policy?.decision === "string" ? policy.decision : undefined;
+    const finalKind = typeof final?.decision === "string" ? final.decision : undefined;
+    if (policyKind && finalKind) return `Policy ${policyKind} → Permission ${finalKind}`;
+  }
   for (const key of [
     "summary",
     "content",

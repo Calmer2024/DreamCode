@@ -1,7 +1,7 @@
 id: O01-legacy-remove-dead-code
 fixture: legacy-mixed
 prompt: "删除 legacy-util 中重复或无用的姓名处理逻辑，保持 cleanName 和 consumer 行为不变，并补充测试。"
-mode: yolo
+mode: workspace-write
 fakeScenario: legacy-refactor
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

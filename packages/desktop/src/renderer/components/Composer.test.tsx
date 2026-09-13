@@ -10,7 +10,7 @@ describe("Composer context usage", () => {
     render(
       <Composer
         prompt=""
-        mode="guided"
+        mode="workspace-write"
         model="deepseek-chat"
         runStatus="completed"
         active={false}
@@ -49,7 +49,7 @@ describe("Composer attachments", () => {
           size: 1024,
           sha256: "abc",
         }]}
-        mode="guided"
+        mode="workspace-write"
         model="vision-model"
         runStatus=""
         active={false}
@@ -101,7 +101,7 @@ describe("Composer Skill invocation", () => {
           }),
         }}
         prompt="/re"
-        mode="guided"
+        mode="workspace-write"
         model="deepseek-chat"
         runStatus=""
         active={false}
@@ -137,7 +137,7 @@ describe("Composer Skill invocation", () => {
           }),
         }}
         prompt="Please $re"
-        mode="guided"
+        mode="workspace-write"
         model="deepseek-chat"
         runStatus=""
         active={false}
@@ -169,7 +169,7 @@ describe("Composer Skill invocation", () => {
       <Composer
         api={{ listSkills: vi.fn().mockResolvedValue({ generation: 1, customRoots: [], diagnostics: [], skills: [skill("review", "plugin")] }) }}
         prompt="/re"
-        mode="guided"
+        mode="workspace-write"
         model="deepseek-chat"
         runStatus=""
         active={false}
@@ -202,7 +202,7 @@ describe("Composer Skill invocation", () => {
           }),
         }}
         prompt="/"
-        mode="guided"
+        mode="workspace-write"
         model="deepseek-chat"
         runStatus=""
         active={false}

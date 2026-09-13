@@ -1,7 +1,7 @@
 id: O02-legacy-api-review
 fixture: legacy-mixed
 prompt: "审查 legacy-util 的公开 API 和 consumer 依赖，给出兼容性风险，不修改文件。"
-mode: yolo
+mode: workspace-write
 fakeScenario: inspect-only
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

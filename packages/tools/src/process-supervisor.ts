@@ -2,7 +2,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { toErrorMessage } from "@dreamcode/shared";
+import { type SandboxPolicy, toErrorMessage } from "@dreamcode/shared";
+import { prepareSandboxedSpawn } from "./sandbox.js";
 
 export type ManagedProcessState =
   | "starting"
@@ -25,6 +26,7 @@ export interface ProcessStartInput {
   env: NodeJS.ProcessEnv;
   label?: string;
   signal?: AbortSignal;
+  sandboxPolicy: SandboxPolicy;
 }
 
 export interface ManagedProcessInfo {
@@ -154,9 +156,16 @@ export class ProcessSupervisor {
     let child: ChildProcess;
     try {
       await mkdir(directory, { recursive: true });
-      child = spawn(input.program, input.args, {
+      const prepared = await prepareSandboxedSpawn({
+        program: input.program,
+        args: input.args,
         cwd: input.cwd,
         env: input.env,
+        policy: input.sandboxPolicy,
+      });
+      child = spawn(prepared.program, prepared.args, {
+        cwd: prepared.cwd,
+        env: prepared.env,
         shell: false,
         detached: process.platform !== "win32",
         windowsHide: true,

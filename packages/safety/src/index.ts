@@ -2,12 +2,10 @@ import { access, realpath } from "node:fs/promises";
 import path from "node:path";
 import type {
   NormalizedToolCall,
-  PermissionCapabilityCategory,
-  PermissionCapabilityContract,
   PermissionDecision,
-  PermissionDecisionKind,
   RiskTag,
   RunMode,
+  SandboxPolicy,
   Tool,
 } from "@dreamcode/shared";
 
@@ -18,21 +16,15 @@ export interface ResolvedWorkspacePath {
   isInside: boolean;
 }
 
-export function resolveWorkspacePath(
-  workspaceRoot: string,
-  inputPath: string,
-): ResolvedWorkspacePath {
+export function resolveWorkspacePath(workspaceRoot: string, inputPath: string): ResolvedWorkspacePath {
   const root = path.resolve(workspaceRoot);
   const absolutePath = path.resolve(root, inputPath);
   const relativePath = path.relative(root, absolutePath);
-  const isInside =
-    relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
-
   return {
     inputPath,
     absolutePath,
     relativePath: toPosixPath(relativePath === "" ? "." : relativePath),
-    isInside,
+    isInside: relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath)),
   };
 }
 
@@ -45,15 +37,65 @@ export async function resolveExistingWorkspacePath(
   await access(candidate);
   const absolutePath = await realpath(candidate);
   const relativePath = path.relative(root, absolutePath);
-  const isInside =
-    relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
-
   return {
     inputPath,
     absolutePath,
     relativePath: toPosixPath(relativePath === "" ? "." : relativePath),
-    isInside,
+    isInside: relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath)),
   };
+}
+
+/** Resolve a write target through its real parent so directory symlinks cannot escape the workspace. */
+export async function resolveWritableWorkspacePath(
+  workspaceRoot: string,
+  inputPath: string,
+): Promise<ResolvedWorkspacePath> {
+  const root = await realpath(path.resolve(workspaceRoot));
+  const lexicalTarget = path.resolve(root, inputPath);
+  let existingAncestor = lexicalTarget;
+  const missingSegments: string[] = [];
+  while (true) {
+    try {
+      existingAncestor = await realpath(existingAncestor);
+      break;
+    } catch {
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) throw new Error(`No existing ancestor for '${inputPath}'.`);
+      missingSegments.unshift(path.basename(existingAncestor));
+      existingAncestor = parent;
+    }
+  }
+  const absolutePath = path.join(existingAncestor, ...missingSegments);
+  const relativePath = path.relative(root, absolutePath);
+  return {
+    inputPath,
+    absolutePath,
+    relativePath: toPosixPath(relativePath === "" ? "." : relativePath),
+    isInside: relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath)),
+  };
+}
+
+export function buildSandboxPolicy(input: {
+  mode: RunMode;
+  workspaceRoot: string;
+  sessionDir: string;
+}): SandboxPolicy {
+  return {
+    mode: input.mode,
+    readableRoots: "all",
+    writableRoots:
+      input.mode === "danger-full-access"
+        ? []
+        : input.mode === "workspace-write"
+          ? [path.resolve(input.workspaceRoot), sandboxTempRoot(input.sessionDir)]
+          : [],
+    networkAccess: true,
+    enforcement: input.mode === "danger-full-access" ? "disabled" : "managed",
+  };
+}
+
+export function sandboxTempRoot(sessionDir: string): string {
+  return path.join(path.resolve(sessionDir), "sandbox-tmp");
 }
 
 function toPosixPath(inputPath: string): string {
@@ -61,286 +103,17 @@ function toPosixPath(inputPath: string): string {
 }
 
 const secretBasenames = new Set([
-  ".env",
-  ".env.local",
-  ".env.development",
-  ".env.production",
-  ".npmrc",
-  ".pypirc",
-  "id_rsa",
-  "id_dsa",
-  "id_ecdsa",
-  "id_ed25519",
-  "credentials",
-  "credentials.json",
-  ".ssh",
-  ".aws",
-  ".azure",
-  ".gnupg",
-  ".kube",
+  ".env", ".env.local", ".env.development", ".env.production", ".npmrc", ".pypirc",
+  "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "credentials.json",
+  ".ssh", ".aws", ".azure", ".gnupg", ".kube",
 ]);
-
 const secretNamePattern =
   /(^|[._-])(secret|secrets|token|tokens|credential|credentials|password|passwd|private[_-]?key|api[_-]?key)([._-]|$)|\.(pem|key|p12|pfx)$/i;
 
+/** Search hygiene only; never an authorization boundary. */
 export function isSecretPath(inputPath: string): boolean {
-  const components = inputPath
-    .split(/[\\/]+/)
-    .map((component) => component.toLowerCase())
-    .filter(Boolean);
-  return (
-    components.some((component) => secretBasenames.has(component)) ||
-    secretNamePattern.test(inputPath)
-  );
-}
-
-export interface CommandClassification {
-  decision: PermissionDecisionKind;
-  reason: string;
-  risk: RiskTag[];
-}
-
-const readonlyCommandPatterns = [
-  /^git\s+(status|diff|log|show|branch)(\s|$)/i,
-  /^node\s+--version$/i,
-  /^npm\s+--version$/i,
-  /^pnpm\s+--version$/i,
-  /^python\s+--version$/i,
-  /^rg(\s|$)/i,
-  /^ls(\s|$|$)/i,
-  /^dir(\s|$)/i,
-  /^pwd$/i,
-];
-
-const testCommandPatterns = [
-  /^(npm|pnpm|yarn)\s+(run\s+)?(test|vitest|typecheck|lint|build)(\s|$)/i,
-  /^npx\s+vitest(\s|$)/i,
-  /^vitest(\s|$)/i,
-  /^pytest(\s|$)/i,
-  /^python\s+-m\s+pytest(\s|$)/i,
-  /^go\s+test(\s|$)/i,
-  /^cargo\s+test(\s|$)/i,
-  /^dotnet\s+test(\s|$)/i,
-  /^node\s+--test(\s|$)/i,
-];
-
-const hardDenyCommandPatterns = [
-  /\brm\s+-[a-z]*r[a-z]*f?\s+(\/|\*|~|\.{1,2})(\s|$)/i,
-  /\brm\s+-[a-z]*f[a-z]*r[a-z]*\s+(\/|\*|~|\.{1,2})(\s|$)/i,
-  /\bRemove-Item\b.*\b-Recurse\b.*\b-Force\b/i,
-  /\brd\s+\/s\b/i,
-  /\brmdir\s+\/s\b/i,
-  /\bdel\s+\/[sq]\b/i,
-  /\bgit\s+push\b.*\b--force\b/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bgit\s+clean\s+-[a-z]*f[a-z]*d/i,
-  /\bchmod\s+-R\s+777\b/i,
-  /\bchown\s+-R\b/i,
-  /\b(format|diskpart|shutdown|reboot)\b/i,
-];
-
-const askCommandPatterns = [
-  /^(npm|pnpm|yarn)\s+(install|add|remove|update|upgrade)(\s|$)/i,
-  /^pip\s+install(\s|$)/i,
-  /^python\s+-m\s+pip\s+install(\s|$)/i,
-  /^curl(\s|$)/i,
-  /^wget(\s|$)/i,
-  /^git\s+push(\s|$)/i,
-  /^git\s+commit(\s|$)/i,
-  /^docker(\s|$)/i,
-];
-
-export function classifyCommand(command: string): CommandClassification {
-  const trimmed = command.trim();
-
-  if (hardDenyCommandPatterns.some((pattern) => pattern.test(trimmed))) {
-    return {
-      decision: "deny",
-      reason: "Command matches a hard-deny destructive pattern.",
-      risk: ["bulk_delete", "shell_mutating"],
-    };
-  }
-
-  if (testCommandPatterns.some((pattern) => pattern.test(trimmed))) {
-    return {
-      decision: "allow",
-      reason: "Command is a common test, lint, typecheck, or build command.",
-      risk: ["shell_readonly"],
-    };
-  }
-
-  if (readonlyCommandPatterns.some((pattern) => pattern.test(trimmed))) {
-    return {
-      decision: "allow",
-      reason: "Command is classified as read-only.",
-      risk: ["shell_readonly"],
-    };
-  }
-
-  if (askCommandPatterns.some((pattern) => pattern.test(trimmed))) {
-    const installRisk =
-      /^(npm|pnpm|yarn)\s+(install|add|remove|update|upgrade)(\s|$)|^pip\s+install(\s|$)|^python\s+-m\s+pip\s+install(\s|$)/i.test(
-        trimmed,
-      );
-    return {
-      decision: "ask",
-      reason: "Command may install dependencies, access network, or update external state.",
-      risk: installRisk
-        ? ["shell_mutating", "network_access", "install_dependency"]
-        : ["shell_mutating", "network_access"],
-    };
-  }
-
-  return {
-    decision: "ask",
-    reason: "Command is not in the Safe YOLO allowlist.",
-    risk: ["shell_mutating"],
-  };
-}
-
-export const PERMISSION_RULES_VERSION = "catalog-2";
-
-export const PermissionRuleCatalog = {
-  classify(command: string): CommandClassification {
-    return classifyCommand(command);
-  },
-  categories: [
-    {
-      id: "workspace_read",
-      summary: "Read local files and inspect repository state.",
-      examples: ["rg pattern .", "git status"],
-    },
-    {
-      id: "tests_checks",
-      summary: "Run tests, lint, typecheck, and builds.",
-      examples: ["pnpm test", "npm run typecheck"],
-    },
-    {
-      id: "dependency_install",
-      summary: "Install or update dependencies and package metadata.",
-      examples: ["pnpm install"],
-    },
-    {
-      id: "network",
-      summary: "Access public network resources.",
-      examples: ["curl https://example.com"],
-    },
-    {
-      id: "workspace_write",
-      summary: "Write or patch files inside the workspace.",
-      examples: ["file.write README.md"],
-    },
-    {
-      id: "external_read",
-      summary: "Read and search local paths outside the workspace.",
-      examples: ["file.read C:/temp/report.txt"],
-    },
-    {
-      id: "sensitive_read",
-      summary: "Read or explicitly search sensitive local files.",
-      examples: ["file.read .env"],
-    },
-    { id: "mcp", summary: "Call configured external MCP tools.", examples: ["mcp__server__tool"] },
-    {
-      id: "destructive",
-      summary: "Destructive deletion, history rewrite, or system commands.",
-      examples: ["rm -rf /", "Remove-Item -Recurse -Force"],
-    },
-    { id: "other_command", summary: "Commands not covered by the safe allowlist.", examples: [] },
-  ] as PermissionCapabilityCategory[],
-};
-
-export function buildPermissionCapabilityContract(
-  mode: RunMode,
-  platform = process.platform,
-): PermissionCapabilityContract {
-  const categories = PermissionRuleCatalog.categories.map((category) => ({
-    ...category,
-    examples: category.examples?.filter(
-      (example) => platform !== "win32" || !example.startsWith("rm "),
-    ),
-  }));
-  const byId = (id: string) => categories.find((category) => category.id === id)!;
-  const category = (id: string, summary?: string) => ({
-    ...byId(id),
-    ...(summary ? { summary } : {}),
-  });
-  const modes: PermissionCapabilityContract["modes"] = {
-    plan: {
-      allow: [category("workspace_read"), category("external_read"), category("tests_checks")],
-      ask: [
-        category("network", "Web/network reads require approval in plan mode."),
-        category("sensitive_read"),
-      ].filter(Boolean),
-      deny: [
-        category("workspace_write"),
-        category("dependency_install"),
-        category("mcp", "MCP tools are unavailable in plan mode."),
-        category("destructive"),
-        category("other_command"),
-      ],
-    },
-    guided: {
-      allow: [category("workspace_read"), category("external_read"), category("tests_checks")],
-      ask: [
-        category("workspace_write"),
-        category("dependency_install"),
-        category("network"),
-        category("mcp"),
-        category("sensitive_read"),
-        category("other_command"),
-      ].filter(Boolean),
-      deny: [category("destructive")],
-    },
-    yolo: {
-      allow: [
-        category("workspace_read"),
-        category("external_read"),
-        category("tests_checks"),
-        category("workspace_write"),
-      ],
-      ask: [
-        category("dependency_install"),
-        category("network"),
-        category("mcp"),
-        category("sensitive_read"),
-        category("other_command"),
-      ].filter(Boolean),
-      deny: [category("destructive")],
-    },
-    full: {
-      allow: [
-        category("workspace_read"),
-        category("tests_checks"),
-        category("workspace_write"),
-        category("dependency_install"),
-        category("network"),
-        category("mcp"),
-        category("external_read"),
-        category("sensitive_read"),
-        category("other_command"),
-      ].filter(Boolean),
-      ask: [],
-      deny: [category("destructive")],
-    },
-  };
-  const currentModeSummary = modes[mode];
-  return {
-    schemaVersion: 2,
-    rulesVersion: PERMISSION_RULES_VERSION,
-    generatedFor: { platform, currentMode: mode },
-    defaultDecision: "ask",
-    modes,
-    currentModeSummary,
-    shellRun: {
-      allowPipelines: true,
-      allowMultipleSteps: false,
-      guidance:
-        mode === "plan"
-          ? "Commands are not executed in plan mode."
-          : "Use one bounded command or a single pipeline; permission is checked for every call.",
-    },
-  };
+  const components = inputPath.split(/[\\/]+/).map((part) => part.toLowerCase()).filter(Boolean);
+  return components.some((part) => secretBasenames.has(part)) || secretNamePattern.test(inputPath);
 }
 
 export interface PermissionEngineInput {
@@ -350,226 +123,47 @@ export interface PermissionEngineInput {
   tool?: Tool;
 }
 
+/** Authorizes capabilities; it never infers effects from shell source text. */
 export class PermissionEngine {
   decide(input: PermissionEngineInput): PermissionDecision {
-    const { mode, workspaceRoot, toolCall } = input;
+    const { mode, toolCall, tool } = input;
     const toolName = toolCall.name;
-    const toolInput = readObject(toolCall.input);
-
-    if (toolName === "todo.write" || toolName === "question.ask") {
-      return allow("Planning and user-question tools are always safe.", []);
+    if (toolName === "todo.write" || toolName === "question.ask" || toolName === "skill") {
+      return allow("Runtime-local capability is allowed.", tool?.risk.tags ?? []);
     }
-
-    if (toolName === "skill") {
-      return allow("Loading validated Skill instructions is local read-only context.", [
-        "read_workspace",
-      ]);
+    if (tool?.source?.kind === "mcp" || tool?.risk.tags.includes("mcp_tool")) {
+      return mode === "danger-full-access"
+        ? allow("Danger-full-access allows configured MCP tools.", ["mcp_tool", "external_side_effect"])
+        : ask("MCP tools can cause external side effects and require approval.", ["mcp_tool", "external_side_effect"]);
     }
-
     if (toolName === "web.search" || toolName === "web.fetch") {
-      if (mode === "plan") {
-        return deny("Plan mode does not allow network access.", ["network_access", "web_fetch"]);
+      return allow("Public network reads are allowed.", ["network_access", "web_fetch"]);
+    }
+    const requestedEscalation = typeof toolCall.input === "object"
+      && toolCall.input !== null
+      && "sandbox_permissions" in toolCall.input
+      && toolCall.input.sandbox_permissions === "require-escalated";
+    if ((toolName === "pwsh" || toolName === "bash") && requestedEscalation) {
+      return mode === "danger-full-access"
+        ? allow("The current mode already has unrestricted process access.", ["shell_mutating"])
+        : ask("This process requested execution outside the managed file sandbox.", ["shell_mutating", "write_external_path"]);
+    }
+    if (toolName.startsWith("file.") && toolName !== "file.read") {
+      if (mode === "read-only") {
+        return deny("The read-only file sandbox does not permit persistent file writes.", ["write_workspace"]);
       }
-      if (mode === "guided") {
-        return ask("Guided mode requires approval before web access.", [
-          "network_access",
-          "web_fetch",
-        ]);
-      }
-      return allow("Public web read access is allowed in this mode.", [
-        "network_access",
-        "web_fetch",
-      ]);
+      return allow("File writes are constrained by the active file sandbox.", ["write_workspace"]);
     }
-
-    if (input.tool?.source?.kind === "mcp" || input.tool?.risk.tags.includes("mcp_tool")) {
-      if (mode === "plan") {
-        return deny("Plan mode does not allow MCP tools.", ["mcp_tool", "external_side_effect"]);
-      }
-      if (mode === "full") {
-        return allow("Full mode allows configured MCP tools.", [
-          "mcp_tool",
-          "external_side_effect",
-        ]);
-      }
-      return ask("MCP tools require approval because their side effects depend on the server.", [
-        "mcp_tool",
-        "external_side_effect",
-      ]);
-    }
-
-    if (toolName === "search.grep" || toolName === "search.glob") {
-      const target = stringField(toolInput, "path") ?? ".";
-      const resolved = resolveWorkspacePath(workspaceRoot, target);
-      const sensitiveSelector =
-        toolName === "search.glob"
-          ? stringField(toolInput, "pattern")
-          : stringField(toolInput, "include");
-      if (isSecretPath(target) || (sensitiveSelector && isSecretPath(sensitiveSelector))) {
-        return mode === "full"
-          ? allow("Full mode allows an explicit sensitive search.", [
-              "secret_access",
-              ...(resolved.isInside ? [] : ["read_external_path" as const]),
-            ])
-          : ask("Searching an explicitly sensitive path requires approval.", [
-              "secret_access",
-              ...(resolved.isInside ? [] : ["read_external_path" as const]),
-            ]);
-      }
-      return allow(
-        resolved.isInside ? "Local search is allowed." : "External local search is allowed.",
-        [resolved.isInside ? "read_workspace" : "read_external_path"],
-      );
-    }
-
-    if (toolName === "git.status" || toolName === "git.diff") {
-      return allow("Read-only git inspection is allowed.", ["shell_readonly"]);
-    }
-
-    if (toolName.startsWith("file.")) {
-      return this.decideFileTool({ mode, workspaceRoot, toolName, toolInput });
-    }
-
-    if (toolName === "job_output" || toolName === "job_list") {
-      return allow("Reading a session-owned managed process is allowed.", []);
-    }
-
-    if (toolName === "job_kill") {
-      return allow("Stopping a session-owned managed process is allowed.", ["long_running"]);
-    }
-
-    if (toolName === "bash" || toolName === "pwsh") {
-      const command = stringField(toolInput, "command");
-      if (!command) {
-        return deny(`${toolName} requires a command.`, ["shell_mutating"]);
-      }
-      const classified = PermissionRuleCatalog.classify(command);
-      const isBackground = toolInput.run_in_background === true;
-      let classifiedRisk = isBackground
-        ? [...new Set([...classified.risk, "long_running" as const])]
-        : classified.risk;
-      if (isBackground && mode === "plan")
-        return deny("Plan mode does not allow starting long-running processes.", classifiedRisk);
-      if (mode === "plan" && classified.risk.includes("shell_mutating")) {
-        return deny("Plan mode does not allow mutating shell commands.", classifiedRisk);
-      }
-      const cwd = stringField(toolInput, "cwd") ?? ".";
-      const externalCwd = !resolveWorkspacePath(workspaceRoot, cwd).isInside;
-      if (externalCwd) {
-        classifiedRisk = [...new Set([...classifiedRisk, "read_external_path" as const])];
-      }
-      if (isBackground && mode === "guided" && classified.decision !== "deny") {
-        return ask(
-          "Guided mode requires approval before starting a long-running process.",
-          classifiedRisk,
-        );
-      }
-      if (mode === "guided" && classified.decision === "allow") {
-        return allow(classified.reason, classifiedRisk);
-      }
-      if (mode === "full" && classified.decision !== "deny") {
-        return allow("Full mode allows this non-hard-denied shell command.", classifiedRisk);
-      }
-      return decision(classified.decision, classified.reason, classifiedRisk);
-    }
-
-    if (mode === "full") {
-      return allow("Full mode allows unknown non-hard-denied tools.", []);
-    }
-
-    return ask(`Unknown tool '${toolName}' requires approval.`, []);
-  }
-
-  private decideFileTool(input: {
-    mode: RunMode;
-    workspaceRoot: string;
-    toolName: string;
-    toolInput: Record<string, unknown>;
-  }): PermissionDecision {
-    const target =
-      stringField(input.toolInput, "file_path") ??
-      stringField(input.toolInput, "path") ??
-      stringField(input.toolInput, "dir") ??
-      ".";
-    const resolved = resolveWorkspacePath(input.workspaceRoot, target);
-    const isWrite = input.toolName === "file.write" || input.toolName === "file.patch";
-
-    if (isWrite && !resolved.isInside) {
-      return deny("Writing outside the workspace is denied.", ["write_external_path"]);
-    }
-
-    if (!isWrite && isSecretPath(target)) {
-      const risk = [
-        "secret_access" as const,
-        ...(resolved.isInside ? [] : ["read_external_path" as const]),
-      ];
-      return input.mode === "full"
-        ? allow("Full mode allows this sensitive file read.", risk)
-        : ask("Reading a sensitive file requires approval.", risk);
-    }
-
-    if (!isWrite && !resolved.isInside) {
-      return allow("External local file reads are allowed.", ["read_external_path"]);
-    }
-
-    if (isWrite && input.mode === "plan") {
-      return deny("Plan mode does not allow file writes.", ["write_workspace"]);
-    }
-
-    if (isWrite && isSecretPath(target) && input.mode !== "full") {
-      return ask("Writing secret-like files requires explicit approval.", [
-        "write_workspace",
-        "secret_access",
-      ]);
-    }
-
-    if (isWrite && input.mode === "guided") {
-      return ask("Guided mode requires approval before file writes.", ["write_workspace"]);
-    }
-
-    return allow(
-      isWrite
-        ? "Workspace file writes are allowed in Safe YOLO."
-        : "Workspace file reads are allowed.",
-      [isWrite ? "write_workspace" : "read_workspace"],
-    );
+    if (tool) return allow("The tool is registered and permitted for this invocation.", tool.risk.tags);
+    return mode === "danger-full-access"
+      ? allow("Danger-full-access allows this tool.", [])
+      : ask(`Unknown tool '${toolName}' requires approval.`, []);
   }
 }
 
-function readObject(input: unknown): Record<string, unknown> {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return {};
-  }
-  return input as Record<string, unknown>;
-}
-
-function stringField(input: Record<string, unknown>, field: string): string | undefined {
-  const value = input[field];
-  return typeof value === "string" ? value : undefined;
-}
-
-function allow(reason: string, risk: RiskTag[]): PermissionDecision {
-  return decision("allow", reason, risk);
-}
-
-function ask(reason: string, risk: RiskTag[]): PermissionDecision {
-  return decision("ask", reason, risk);
-}
-
-function deny(reason: string, risk: RiskTag[]): PermissionDecision {
-  return decision("deny", reason, risk);
-}
-
-function decision(
-  kind: PermissionDecisionKind,
-  reason: string,
-  risk: RiskTag[],
-): PermissionDecision {
-  return {
-    decision: kind,
-    reason,
-    risk,
-    reviewer: "rules",
-    canRemember: kind === "ask",
-  };
+function allow(reason: string, risk: RiskTag[]): PermissionDecision { return decision("allow", reason, risk); }
+function ask(reason: string, risk: RiskTag[]): PermissionDecision { return decision("ask", reason, risk); }
+function deny(reason: string, risk: RiskTag[]): PermissionDecision { return decision("deny", reason, risk); }
+function decision(kind: "allow" | "ask" | "deny", reason: string, risk: RiskTag[]): PermissionDecision {
+  return { decision: kind, reason, risk, reviewer: "rules", canRemember: kind === "ask" };
 }

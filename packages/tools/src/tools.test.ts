@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createDefaultToolRegistry, ToolRegistry, validateShellCommand } from "./index";
+import { createDefaultToolRegistry, ToolRegistry } from "./index";
 
 describe("builtin tools", () => {
   const shellToolName = process.platform === "win32" ? "pwsh" : "bash";
@@ -60,7 +60,7 @@ describe("builtin tools", () => {
         workspaceRoot,
         sessionDir: workspaceRoot,
         sessionId: "read_window",
-        mode: "yolo",
+        mode: "workspace-write",
         toolCallId: "read_window",
       },
     );
@@ -82,7 +82,7 @@ describe("builtin tools", () => {
     const context = {
       workspaceRoot,
       sessionDir: workspaceRoot,
-      mode: "yolo" as const,
+      mode: "workspace-write" as const,
     };
 
     const read = await registry
@@ -113,7 +113,7 @@ describe("builtin tools", () => {
     await writeFile(path.join(workspaceRoot, "visible.txt"), "needle", "utf8");
     await writeFile(path.join(workspaceRoot, ".env"), "TOKEN=needle", "utf8");
     const registry = createDefaultToolRegistry();
-    const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo" as const };
+    const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write" as const };
 
     const glob = await registry
       .get("search.glob")!
@@ -142,7 +142,7 @@ describe("builtin tools", () => {
       .get("search.glob")!
       .execute(
         { pattern: "*.ts" },
-        { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "glob" },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "glob" },
       );
     const paths = (result.data as { paths: string[] }).paths.map((item) =>
       item.replaceAll("\\", "/"),
@@ -160,7 +160,7 @@ describe("builtin tools", () => {
       .get("search.grep")!
       .execute(
         { pattern: "needle", include: "*.txt" },
-        { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "grep" },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "grep" },
       );
     expect(result.data).toEqual({
       matches: [{ path: "colon.txt", lineNumber: 1, line: "prefix:value:needle:suffix" }],
@@ -178,7 +178,7 @@ describe("builtin tools", () => {
       workspaceRoot,
       sessionDir: workspaceRoot,
       sessionId: "patch_observation",
-      mode: "yolo" as const,
+      mode: "workspace-write" as const,
     };
     await registry
       .get("file.read")!
@@ -210,7 +210,7 @@ describe("builtin tools", () => {
       workspaceRoot,
       sessionDir: workspaceRoot,
       sessionId: "stale_patch",
-      mode: "yolo" as const,
+      mode: "workspace-write" as const,
     };
     await registry
       .get("file.read")!
@@ -229,7 +229,7 @@ describe("builtin tools", () => {
   it("runs multiple verification commands through separate shell calls", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-shell-many-"));
     const tool = createDefaultToolRegistry().get(shellToolName)!;
-    const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo" as const };
+    const context = { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write" as const };
     const first = await tool.execute(
       shellCommand(process.platform === "win32" ? "Write-Output one" : "printf one"),
       { ...context, toolCallId: "shell_one" },
@@ -252,7 +252,7 @@ describe("builtin tools", () => {
       {
         workspaceRoot,
         sessionDir: workspaceRoot,
-        mode: "yolo",
+        mode: "workspace-write",
         toolCallId: "call_shell",
       },
     );
@@ -272,7 +272,7 @@ describe("builtin tools", () => {
       .get(shellToolName)!
       .execute(
         { ...shellCommand(command), env: { DREAMCODE_PROCESS_TEST: "structured" } },
-        { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "process" },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "process" },
       );
     expect(result.status).toBe("success");
     expect(result.execution).toMatchObject({ outcome: "exited_zero", started: true, exitCode: 0 });
@@ -285,7 +285,7 @@ describe("builtin tools", () => {
     const failed = await tool.execute(shellCommand("exit 7"), {
       workspaceRoot,
       sessionDir: workspaceRoot,
-      mode: "yolo",
+      mode: "workspace-write",
       toolCallId: "failed",
     });
     expect(failed.status).toBe("error");
@@ -301,7 +301,7 @@ describe("builtin tools", () => {
           ? 'Write-Host ("x" * 9000) -NoNewline'
           : "printf 'x%.0s' {1..9000}",
       ),
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "yolo", toolCallId: "large" },
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "large" },
     );
     expect(Buffer.byteLength(large.streams!.stdout.preview)).toBeLessThanOrEqual(4096);
     expect(large.streams?.stdout).toMatchObject({ bytes: 9000, truncated: true });
@@ -316,7 +316,7 @@ describe("builtin tools", () => {
       workspaceRoot,
       sessionDir,
       sessionId: "session_managed",
-      mode: "yolo" as const,
+      mode: "workspace-write" as const,
     };
 
     try {
@@ -401,7 +401,7 @@ describe("builtin tools", () => {
           workspaceRoot,
           sessionDir: path.join(workspaceRoot, "session-a"),
           sessionId: "session_a",
-          mode: "yolo",
+          mode: "workspace-write",
           toolCallId: "scope_start",
         },
       );
@@ -412,7 +412,7 @@ describe("builtin tools", () => {
           workspaceRoot,
           sessionDir: path.join(workspaceRoot, "session-b"),
           sessionId: "session_b",
-          mode: "yolo",
+          mode: "workspace-write",
           toolCallId: "scope_status",
         },
       );
@@ -432,7 +432,7 @@ describe("builtin tools", () => {
       workspaceRoot,
       sessionDir: path.join(workspaceRoot, "session"),
       sessionId: "session_exit",
-      mode: "yolo" as const,
+      mode: "workspace-write" as const,
     };
     try {
       const started = await registry.get(shellToolName)!.execute(
@@ -486,15 +486,74 @@ describe("builtin tools", () => {
     }
   });
 
-  it("rejects multi-step and stateful shell expressions but permits pipelines", () => {
-    expect(validateShellCommand("git status | findstr main", "cmd")).toEqual([]);
-    expect(validateShellCommand("git status && git diff", "cmd")[0]?.code).toBe(
-      "multiple_shell_steps",
+  it("executes compound and stateful shell expressions", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-compound-shell-"));
+    await mkdir(path.join(workspaceRoot, "nested"));
+    const separator = process.platform === "win32" ? ";" : "&&";
+    const command = `cd nested ${separator} node -e "console.log(process.cwd())"`;
+    const result = await createDefaultToolRegistry()
+      .get(shellToolName)!
+      .execute(shellCommand(command), {
+        workspaceRoot,
+        sessionDir: workspaceRoot,
+        sessionId: "compound_shell",
+        mode: "workspace-write",
+        toolCallId: "compound_shell",
+      });
+    expect(result.status).toBe("success");
+    expect((result.data as { stdout: string }).stdout).toContain("nested");
+  });
+
+  it("enforces file boundaries for compound shell expressions and read-only processes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-sandbox-boundary-"));
+    const inside = path.join(workspaceRoot, "inside.txt");
+    const outside = path.join(path.dirname(workspaceRoot), `${path.basename(workspaceRoot)}-outside.txt`);
+    await writeFile(inside, "before", "utf8");
+    await writeFile(outside, "outside", "utf8");
+    const registry = createDefaultToolRegistry();
+    const workspaceCommand = process.platform === "win32"
+      ? `Set-Content -LiteralPath '${inside}' -Value inside; Set-Content -LiteralPath '${outside}' -Value escaped; Write-Output finished`
+      : `printf inside > '${inside}'; printf escaped > '${outside}'; printf finished`;
+    const workspaceResult = await registry.get(shellToolName)!.execute(
+      shellCommand(workspaceCommand),
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "workspace_boundary" },
     );
-    expect(validateShellCommand("cd packages", "powershell")[0]?.code).toBe(
-      "stateful_shell_construct",
+    expect(workspaceResult).toMatchObject({
+      status: "denied",
+      execution: { outcome: "sandbox_denied", started: true },
+      error: { code: "sandbox_denied", category: "permission", retryable: true },
+      retry: {
+        kind: "require_escalated",
+        inputPatch: { sandbox_permissions: "require-escalated" },
+        requiresApproval: true,
+      },
+    });
+    await expect(readFile(inside, "utf8")).resolves.toContain("inside");
+    await expect(readFile(outside, "utf8")).resolves.toBe("outside");
+
+    const readOnlyCommand = process.platform === "win32"
+      ? `Set-Content -LiteralPath '${inside}' -Value changed`
+      : `printf changed > '${inside}'`;
+    const readOnlyResult = await registry.get(shellToolName)!.execute(
+      shellCommand(readOnlyCommand),
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "read-only", toolCallId: "read_only_boundary" },
     );
-    expect(validateShellCommand("node -e \"console.log('a;b')\"", "bash")).toEqual([]);
+    expect(readOnlyResult).toMatchObject({
+      status: "denied",
+      execution: { outcome: "sandbox_denied", started: true },
+      error: { code: "sandbox_denied", category: "permission", retryable: true },
+    });
+    await expect(readFile(inside, "utf8")).resolves.toContain("inside");
+
+    const unrestrictedCommand = process.platform === "win32"
+      ? `Set-Content -LiteralPath '${outside}' -Value unrestricted`
+      : `printf unrestricted > '${outside}'`;
+    const unrestrictedResult = await registry.get(shellToolName)!.execute(
+      shellCommand(unrestrictedCommand),
+      { workspaceRoot, sessionDir: workspaceRoot, mode: "danger-full-access", toolCallId: "unrestricted_boundary" },
+    );
+    expect(unrestrictedResult.status).toBe("success");
+    await expect(readFile(outside, "utf8")).resolves.toContain("unrestricted");
   });
 
   it("reads a bounded range from a session artifact reference", async () => {
@@ -510,7 +569,7 @@ describe("builtin tools", () => {
       {
         workspaceRoot,
         sessionDir,
-        mode: "yolo",
+        mode: "workspace-write",
         toolCallId: "call_artifact",
       },
     );
@@ -540,7 +599,7 @@ describe("builtin tools", () => {
         {
           workspaceRoot,
           sessionDir: workspaceRoot,
-          mode: "full",
+          mode: "danger-full-access",
           toolCallId: "call_web",
         },
       );
@@ -589,7 +648,7 @@ describe("builtin tools", () => {
     try {
       const result = await tool!.execute(
         { query: "coding agents", maxResults: 3, domains: ["example.com"] },
-        { workspaceRoot, sessionDir: workspaceRoot, mode: "full", toolCallId: "call_exa" },
+        { workspaceRoot, sessionDir: workspaceRoot, mode: "danger-full-access", toolCallId: "call_exa" },
       );
       expect(result.status).toBe("success");
       expect(received).toMatchObject({
@@ -624,7 +683,7 @@ describe("builtin tools", () => {
       {
         workspaceRoot: process.cwd(),
         sessionDir: process.cwd(),
-        mode: "full",
+        mode: "danger-full-access",
         toolCallId: "call_exa_missing",
       },
     );
@@ -642,7 +701,7 @@ describe("builtin tools", () => {
     const context = {
       workspaceRoot,
       sessionDir: workspaceRoot,
-      mode: "full" as const,
+      mode: "danger-full-access" as const,
       toolCallId: "call_skill",
       skills: {
         generation: 1,

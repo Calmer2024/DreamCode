@@ -54,8 +54,7 @@ pnpm --filter @dreamcode/desktop build:main
 pnpm desktop:dev
 
 # 终端 2
-$env:VITE_DEV_SERVER_URL="http://localhost:5173"
-pnpm --dir packages/desktop exec electron dist-main/main/index.js
+pnpm --filter @dreamcode/desktop dev:electron
 ```
 
 确定性验收使用普通 Fake Provider，不需要 API key：

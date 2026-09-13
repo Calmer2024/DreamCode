@@ -1,7 +1,7 @@
 id: U01-runtime-process
 fixture: workspace-ops
 prompt: "使用当前平台提供的命令工具确认 Node 版本；不要试错其他平台命令。"
-mode: yolo
+mode: workspace-write
 fakeScenario: runtime-process
 budgets: { referenceLatencyMs: 30000, referenceTokens: 6000, referenceToolCalls: 3 }
 evaluator: ../evaluate.ts

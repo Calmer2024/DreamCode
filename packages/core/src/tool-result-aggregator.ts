@@ -51,6 +51,7 @@ function modelView(result: ToolResult): Record<string, unknown> {
     execution: result.execution,
     streams: result.streams,
     warnings: result.warnings,
+    retry: result.retry,
     cache: result.cache,
   };
 }

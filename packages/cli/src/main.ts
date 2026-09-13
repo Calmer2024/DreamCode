@@ -94,7 +94,7 @@ export async function main(argv = process.argv): Promise<void> {
     .name("dreamcode")
     .description("DreamCode 本地 CLI Agent 运行时 MVP")
     .argument("[prompt...]", "任务提示词")
-    .option("--mode <mode>", "plan | guided | yolo | full", "yolo")
+    .option("--mode <mode>", "read-only | workspace-write | danger-full-access", "workspace-write")
     .option("--cwd <path>", "工作区根目录", process.cwd())
     .option("--model <model>", "模型名称")
     .option(
@@ -136,7 +136,7 @@ export async function main(argv = process.argv): Promise<void> {
       .description("恢复一个历史 session 并追加新 turn")
       .option("--last", "恢复最近一个 session")
       .option("--home <path>", "DreamCode 状态目录, 默认 ~/.dreamcode")
-      .option("--mode <mode>", "plan | guided | yolo | full", "yolo")
+      .option("--mode <mode>", "read-only | workspace-write | danger-full-access", "workspace-write")
       .option("--model <model>", "模型名称")
       .option("--provider <provider>", "模型 provider")
       .option("--api-key <key>", "直接传入模型 API key")
@@ -1265,7 +1265,7 @@ function printSlashHelp(): void {
   console.log("可用命令:");
   console.log("/llm       选择 provider/model 并配置 API key");
   console.log("/status    查看当前 cwd、mode、model 和配置文件路径");
-  console.log("/mode MODE 切换模式: plan | guided | yolo | full");
+  console.log("/mode MODE 切换模式: read-only | workspace-write | danger-full-access");
   console.log("/cwd PATH  切换工作区目录");
   console.log("/clear     清空当前 REPL 的对话摘要");
   console.log("/sessions  查看当前工作区历史 session");
@@ -1297,10 +1297,9 @@ async function updateMode(
         rl,
         "选择运行模式",
         [
-          { value: "plan", label: "plan", hint: "只规划, 不写文件" },
-          { value: "guided", label: "guided", hint: "低风险操作自动执行, 写入需确认" },
-          { value: "yolo", label: "yolo", hint: "默认模式, 安全边界内自动执行" },
-          { value: "full", label: "full", hint: "更少拦截, 适合受信任环境" },
+          { value: "read-only", label: "read-only", hint: "任意路径可读, 禁止持久写入" },
+          { value: "workspace-write", label: "workspace-write", hint: "仅工作区和临时目录可写" },
+          { value: "danger-full-access", label: "danger-full-access", hint: "绕过文件沙箱" },
         ],
         { defaultValue: state.mode },
       ),

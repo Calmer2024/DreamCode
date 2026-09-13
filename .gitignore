@@ -14,4 +14,6 @@ packages/desktop/release*/
 packages/desktop/dist-main/
 packages/desktop/dist-renderer/
 packages/desktop/test-results/
+packages/desktop/.dev-user-data/
+native/**/target/
 evals/runs/

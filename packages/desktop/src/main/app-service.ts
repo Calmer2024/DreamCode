@@ -276,7 +276,7 @@ export class DesktopAppService {
           messages: [{ role: "user", content: "Reply with OK." }],
           tools: [],
           model: model ?? request.model,
-          mode: "guided",
+          mode: "workspace-write",
           workspaceRoot: this.home ?? getDreamCodeHome(),
           signal: controller.signal,
         })) {

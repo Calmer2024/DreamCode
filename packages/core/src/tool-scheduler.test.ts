@@ -5,7 +5,7 @@ import { buildToolCallWaves, mapWithConcurrency } from "./tool-scheduler";
 const context = {
   workspaceRoot: process.cwd(),
   sessionDir: process.cwd(),
-  mode: "yolo" as const,
+  mode: "workspace-write" as const,
   toolCallId: "scheduler",
 };
 

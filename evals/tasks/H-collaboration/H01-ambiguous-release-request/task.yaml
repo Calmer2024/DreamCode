@@ -1,7 +1,7 @@
 id: H01-ambiguous-release-request
 fixture: release-cli
 prompt: "把 release CLI 改得更好用一些。这个需求可能有多种理解，请先指出关键歧义并提出需要我确认的问题，不要修改任何文件。"
-mode: yolo
+mode: workspace-write
 fakeScenario: clarify
 budgets: { referenceLatencyMs: 60000, referenceTokens: 10000, referenceToolCalls: 4 }
 assertions:

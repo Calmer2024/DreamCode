@@ -152,7 +152,7 @@ export async function saveFakeProfile(page: Page): Promise<void> {
   await page.getByRole("main", { name: "设置" }).waitFor({ state: "detached" });
 }
 
-export async function runPrompt(page: Page, prompt: string, mode = "yolo"): Promise<void> {
+export async function runPrompt(page: Page, prompt: string, mode = "workspace-write"): Promise<void> {
   await page.getByRole("combobox", { name: "运行模式" }).selectOption(mode);
   await page.getByRole("textbox", { name: "给 DreamCode 发送消息" }).fill(prompt);
   await page.getByRole("button", { name: "发送" }).click();

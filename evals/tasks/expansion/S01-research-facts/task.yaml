@@ -1,7 +1,7 @@
 id: S01-research-facts
 fixture: research-mini
 prompt: "只使用 references 下的本地资料，整理 API 已观察事实与推荐方案，不联网。"
-mode: yolo
+mode: workspace-write
 fakeScenario: web-report
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

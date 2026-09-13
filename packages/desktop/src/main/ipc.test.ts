@@ -136,7 +136,7 @@ describe("registerDesktopIpc", () => {
       ["desktop:open-workspace", ""],
       ["desktop:read-diff", { sessionId: "", filePath: "src/index.ts" }],
       ["desktop:rollback", { sessionId: "", filePath: "src/index.ts" }],
-      ["desktop:start-turn", { prompt: "", workspaceRoot: "D:/repo", mode: "yolo" }],
+      ["desktop:start-turn", { prompt: "", workspaceRoot: "D:/repo", mode: "workspace-write" }],
       ["desktop:approval-response", { runId: "", requestId: "request", approved: true }],
       ["desktop:question-response", { runId: "run", requestId: "", answer: "yes" }],
     ] as const;
@@ -317,12 +317,12 @@ describe("createDesktopApi", () => {
     ipcRenderer.invoke.mockResolvedValue({ ok: true, value: { runId: "run_1" } });
 
     await expect(
-      api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" }),
+      api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "workspace-write" }),
     ).resolves.toEqual({ runId: "run_1" });
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("desktop:start-turn", {
       prompt: "Inspect",
       workspaceRoot: "D:/repo",
-      mode: "yolo",
+      mode: "workspace-write",
     });
   });
 
@@ -371,7 +371,7 @@ describe("createDesktopApi", () => {
       api.deleteSession("sess_1"),
       api.renameSession({ sessionId: "sess_1", title: "Renamed conversation" }),
       api.setSessionPinned({ sessionId: "sess_1", pinned: true }),
-      api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "yolo" }),
+      api.startTurn({ prompt: "Inspect", workspaceRoot: "D:/repo", mode: "workspace-write" }),
       api.stopTurn("run_1"),
       api.readSession("sess_1"),
       api.readDiff({ sessionId: "sess_1", filePath: "src/index.ts" }),

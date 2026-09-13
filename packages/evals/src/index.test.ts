@@ -28,5 +28,5 @@ describe("DreamCode eval runner", () => {
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 });

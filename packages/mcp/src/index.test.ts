@@ -90,10 +90,10 @@ function respond(id, result) {
       expect(registry.get("mcp.call")).toBeUndefined();
       const tool = registry.get("mcp__fake__echo");
       expect(tool?.source).toEqual({ kind: "mcp", serverId: "fake", rawToolName: "echo" });
-      expect(registry.toModelSpecs("plan").map((item) => item.name)).not.toContain(
+      expect(registry.toModelSpecs("read-only").map((item) => item.name)).toContain(
         "mcp__fake__echo",
       );
-      expect(registry.toModelSpecs("yolo").map((item) => item.name)).toContain("mcp__fake__echo");
+      expect(registry.toModelSpecs("workspace-write").map((item) => item.name)).toContain("mcp__fake__echo");
 
       const result = await tool!.execute(
         { text: "hello" },
@@ -101,7 +101,7 @@ function respond(id, result) {
           workspaceRoot,
           sessionDir: workspaceRoot,
           sessionId: "mcp_test",
-          mode: "full",
+          mode: "danger-full-access",
           toolCallId: "call_mcp",
         },
       );
@@ -194,7 +194,7 @@ function respond(id, result) {
           workspaceRoot: process.cwd(),
           sessionDir: process.cwd(),
           sessionId: "http_test",
-          mode: "full",
+          mode: "danger-full-access",
           toolCallId: "http_call",
         },
       );

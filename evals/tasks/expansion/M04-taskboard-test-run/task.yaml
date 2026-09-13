@@ -1,7 +1,7 @@
 id: M04-taskboard-test-run
 fixture: taskboard-service
 prompt: "只运行 Taskboard 测试并报告结果，不修改文件。"
-mode: yolo
+mode: workspace-write
 fakeScenario: run-tests
 budgets: { referenceLatencyMs: 120000, referenceTokens: 18000, referenceToolCalls: 14 }
 assertions:

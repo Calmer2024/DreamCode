@@ -4,15 +4,17 @@ import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  buildSandboxPolicy,
   isSecretPath,
   resolveExistingWorkspacePath,
+  resolveWritableWorkspacePath,
   resolveWorkspacePath,
 } from "@dreamcode/safety";
 import type {
   ChangedFile,
   ExecutionOutcome,
   RunMode,
-  ShellKind,
+  SandboxPolicy,
   TodoItem,
   Tool,
   ToolExecutionContext,
@@ -24,6 +26,7 @@ import { createTwoFilesPatch } from "diff";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { type ProcessScope, ProcessSupervisor } from "./process-supervisor.js";
+import { prepareSandboxedSpawn } from "./sandbox.js";
 
 export {
   type ManagedProcessInfo,
@@ -156,14 +159,8 @@ export class ToolRegistrySnapshot implements ToolRegistryView {
 function isToolExposedInMode(tool: Tool, mode?: RunMode): boolean {
   if (!mode) return true;
   const toolName = tool.name;
-  if (mode === "plan") {
-    return (
-      !toolName.startsWith("file.write") &&
-      !toolName.startsWith("file.patch") &&
-      !toolName.startsWith("web.") &&
-      tool.source?.kind !== "mcp" &&
-      toolName !== "job_kill"
-    );
+  if (mode === "read-only") {
+    return !toolName.startsWith("file.write") && !toolName.startsWith("file.patch");
   }
   return true;
 }
@@ -230,6 +227,10 @@ const READ_LIMIT = 2_000;
 const READ_MAX_LINE_LENGTH = 2_000;
 const READ_MAX_BYTES = 50 * 1024;
 const READ_STREAM_MIN_SIZE = 10 * 1024 * 1024;
+
+function sandboxPolicyFor(context: ToolExecutionContext) {
+  return context.sandboxPolicy ?? buildSandboxPolicy(context);
+}
 
 const fileReadSchema = z.object({
   file_path: z.string().min(1),
@@ -370,7 +371,7 @@ const fileWriteTool: Tool<z.infer<typeof fileWriteSchema>> = {
   risk: { tags: ["write_workspace"], writesFiles: true },
   async execute(rawInput, context) {
     const input = fileWriteSchema.parse(rawInput);
-    const resolved = resolveWorkspacePath(context.workspaceRoot, input.path);
+    let resolved = await resolveWritableWorkspacePath(context.workspaceRoot, input.path);
     if (!resolved.isInside) {
       return denied(context.toolCallId, "Refused to write outside the workspace.");
     }
@@ -394,6 +395,10 @@ const fileWriteTool: Tool<z.infer<typeof fileWriteSchema>> = {
       return staleFileResult(context.toolCallId, resolved.relativePath);
     }
     await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+    resolved = await resolveWritableWorkspacePath(context.workspaceRoot, input.path);
+    if (!resolved.isInside) {
+      return denied(context.toolCallId, "Refused to write through a path outside the workspace.");
+    }
     try {
       await writeFile(
         resolved.absolutePath,
@@ -547,6 +552,7 @@ const searchGrepTool: Tool<z.infer<typeof searchGrepSchema>> = {
       searchRoot.absolutePath,
       context.signal,
       "grep",
+      sandboxPolicyFor(context),
     );
     if (!run.ok) return searchErrorResult(context.toolCallId, run);
     const matches = run.noMatches
@@ -612,6 +618,7 @@ const searchGlobTool: Tool<z.infer<typeof searchGlobSchema>> = {
       searchRoot.absolutePath,
       context.signal,
       "glob",
+      sandboxPolicyFor(context),
     );
     if (!run.ok) return searchErrorResult(context.toolCallId, run);
     const paths = run.noMatches
@@ -843,6 +850,7 @@ async function runPackagedRipgrep(
   cwd: string,
   signal: AbortSignal | undefined,
   toolName: "grep" | "glob",
+  sandboxPolicy: import("@dreamcode/shared").SandboxPolicy,
 ): Promise<SearchRun> {
   if (signal?.aborted) {
     return {
@@ -864,6 +872,7 @@ async function runPackagedRipgrep(
   }
   const result = await runProcess(executable, ["--no-config", ...args], {
     cwd,
+    sandboxPolicy,
     timeoutMs: 15_000,
     signal,
     maxStdoutBytes: SEARCH_RAW_OUTPUT_MAX_BYTES,
@@ -1102,12 +1111,58 @@ const platformShellSchema = z.object({
   env: commandEnvironmentSchema.optional(),
   timeoutMs: z.number().int().positive().max(MAX_COMMAND_TIMEOUT_MS).default(30000),
   run_in_background: z.boolean().default(false),
+  sandbox_permissions: z.enum(["use-default", "require-escalated"])
+    .default("use-default")
+    .describe("Request require-escalated only when the operation must write outside the active sandbox."),
 });
+
+const SHELL_ERROR_MARKER = "__DREAMCODE_SHELL_ERROR__:";
+
+function platformShellArgs(windows: boolean, command: string): string[] {
+  if (!windows) {
+    const wrapped = [
+      "__dreamcode_failure=0",
+      "trap '__dreamcode_status=$?; if [ \"$__dreamcode_failure\" -eq 0 ]; then __dreamcode_failure=$__dreamcode_status; fi' ERR",
+      "set -o pipefail",
+      command,
+      "__dreamcode_status=$?",
+      "if [ \"$__dreamcode_failure\" -ne 0 ]; then exit \"$__dreamcode_failure\"; fi",
+      "exit \"$__dreamcode_status\"",
+    ].join("\n");
+    return ["-c", wrapped];
+  }
+  const wrapped = [
+    "$__dreamcode_error_count = $Error.Count",
+    "$__dreamcode_caught = $null",
+    "try {",
+    "  & {",
+    command,
+    "  }",
+    "} catch {",
+    "  $__dreamcode_caught = $_",
+    "}",
+    "$__dreamcode_record = if ($null -ne $__dreamcode_caught) { $__dreamcode_caught } elseif ($Error.Count -gt $__dreamcode_error_count) { $Error[0] } else { $null }",
+    "if ($null -ne $__dreamcode_record) {",
+    "  $category = [string]$__dreamcode_record.CategoryInfo.Category",
+    "  $ErrorActionPreference = 'Continue'",
+    "  if ($null -ne $__dreamcode_caught) { Write-Error -Message ([string]$__dreamcode_record) -ErrorAction Continue }",
+    `  Write-Error -Message ("${SHELL_ERROR_MARKER}" + $category) -ErrorAction Continue`,
+    "  exit 1",
+    "}",
+  ].join("\n");
+  return [
+    "-NoProfile",
+    "-NonInteractive",
+    "-OutputFormat",
+    "Text",
+    "-EncodedCommand",
+    Buffer.from(wrapped, "utf16le").toString("base64"),
+  ];
+}
 
 function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
   const windows = process.platform === "win32";
   const name = windows ? "pwsh" : "bash";
-  const shell: ShellKind = windows ? "powershell" : "bash";
   const program = windows ? "pwsh" : "bash";
   const description = windows
     ? "Execute a PowerShell command (pwsh -Command). Each call runs in a fresh PowerShell process. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop it."
@@ -1122,19 +1177,17 @@ function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
       const parsed = platformShellSchema.safeParse(rawInput);
       if (!parsed.success)
         return commandInputValidationResult(context.toolCallId, parsed.error.issues);
-      const violations = validateShellCommand(parsed.data.command, shell);
-      return violations.length
-        ? commandValidationResult(context.toolCallId, violations)
-        : undefined;
+      return undefined;
     },
     async execute(rawInput, context) {
       const input = platformShellSchema.parse(rawInput);
-      const violations = validateShellCommand(input.command, shell);
-      if (violations.length) return commandValidationResult(context.toolCallId, violations);
+      const sandboxPolicy = input.sandbox_permissions === "require-escalated"
+        ? buildSandboxPolicy({ ...context, mode: "danger-full-access" })
+        : sandboxPolicyFor(context);
       const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
       const cwdError = await commandCwdError(context.toolCallId, cwd);
       if (cwdError) return cwdError;
-      const args = windows ? ["-NoProfile", "-Command", input.command] : ["-c", input.command];
+      const args = platformShellArgs(windows, input.command);
       if (input.run_in_background) {
         try {
           const info = await supervisor.start(managedProcessScope(context), {
@@ -1144,6 +1197,7 @@ function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
             env: mergeCommandEnvironment(input.env),
             label: input.description,
             signal: context.signal,
+            sandboxPolicy,
           });
           return {
             toolCallId: context.toolCallId,
@@ -1160,6 +1214,7 @@ function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
       const result = await runShellExpression(input.command, program, args, {
         cwd,
         env: mergeCommandEnvironment(input.env),
+        sandboxPolicy,
         timeoutMs: input.timeoutMs,
         signal: context.signal,
       });
@@ -1170,6 +1225,7 @@ function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
         started,
         prefix: `${name}-${context.toolCallId}`,
         data: { kind: "foreground", command: input.command, cwd },
+        sandboxPolicy,
       });
     },
   };
@@ -1223,6 +1279,7 @@ function createJobTools(supervisor: ProcessSupervisor): Tool[] {
           summary: `Read output for job ${input.job_id}.`,
           data: {
             text: [logs.stdout.text, logs.stderr.text].filter(Boolean).join("\n"),
+            alive: status.alive,
             job: {
               id: status.processId,
               status: status.state,
@@ -1293,6 +1350,7 @@ const gitStatusTool: Tool = {
   async execute(_rawInput, context) {
     const result = await runProcess("git", ["status", "--short", "--branch"], {
       cwd: context.workspaceRoot,
+      sandboxPolicy: sandboxPolicyFor(context),
       timeoutMs: 15000,
       signal: context.signal,
     });
@@ -1318,11 +1376,13 @@ const gitDiffTool: Tool = {
   async execute(_rawInput, context) {
     const statResult = await runProcess("git", ["diff", "--stat"], {
       cwd: context.workspaceRoot,
+      sandboxPolicy: sandboxPolicyFor(context),
       timeoutMs: 15000,
       signal: context.signal,
     });
     const fullResult = await runProcess("git", ["diff"], {
       cwd: context.workspaceRoot,
+      sandboxPolicy: sandboxPolicyFor(context),
       timeoutMs: 15000,
       signal: context.signal,
     });
@@ -1695,100 +1755,6 @@ function decodeHtml(text: string): string {
     .replace(/&#x2F;/g, "/");
 }
 
-export interface ShellCommandViolation {
-  code: "multiple_shell_steps" | "stateful_shell_construct" | "unterminated_quote";
-  message: string;
-  position?: number;
-}
-
-export function validateShellCommand(command: string, shell: ShellKind): ShellCommandViolation[] {
-  const violations: ShellCommandViolation[] = [];
-  const pipelineSegments: string[] = [];
-  let segmentStart = 0;
-  let quote: "single" | "double" | undefined;
-  let escaped = false;
-
-  for (let index = 0; index < command.length; index += 1) {
-    const character = command[index]!;
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    const escapeCharacter = shell === "powershell" ? "`" : shell === "cmd" ? "^" : "\\";
-    if (character === escapeCharacter && quote !== "single") {
-      escaped = true;
-      continue;
-    }
-    if (character === "'" && quote !== "double") {
-      quote = quote === "single" ? undefined : "single";
-      continue;
-    }
-    if (character === '"' && quote !== "single") {
-      quote = quote === "double" ? undefined : "double";
-      continue;
-    }
-    if (quote) continue;
-
-    const pair = command.slice(index, index + 2);
-    if (
-      character === ";" ||
-      character === "\n" ||
-      character === "\r" ||
-      pair === "&&" ||
-      pair === "||"
-    ) {
-      violations.push({
-        code: "multiple_shell_steps",
-        message:
-          "The shell tool accepts one expression or pipeline; run independent steps separately.",
-        position: index,
-      });
-      if (pair === "&&" || pair === "||") index += 1;
-      continue;
-    }
-    if (character === "|") {
-      pipelineSegments.push(command.slice(segmentStart, index));
-      segmentStart = index + 1;
-    }
-  }
-  pipelineSegments.push(command.slice(segmentStart));
-
-  if (quote) {
-    violations.push({
-      code: "unterminated_quote",
-      message: "The shell expression contains an unterminated quote.",
-      position: command.length - 1,
-    });
-  }
-
-  for (const segment of pipelineSegments) {
-    const trimmed = segment.trim();
-    const stateful =
-      /^(?:cd|chdir|set-location|pushd|popd)(?:\s|$)/i.test(trimmed) ||
-      /^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(trimmed) ||
-      /^\$[A-Za-z_][A-Za-z0-9_]*\s*=/.test(trimmed) ||
-      /^\$env:[A-Za-z_][A-Za-z0-9_]*\s*=/i.test(trimmed) ||
-      /^set\s+[A-Za-z_][A-Za-z0-9_]*\s*=/i.test(trimmed) ||
-      /^(?:export|set-variable)(?:\s|$)/i.test(trimmed);
-    if (stateful) {
-      violations.push({
-        code: "stateful_shell_construct",
-        message:
-          "Use the cwd or env field instead of shell state that cannot persist across calls.",
-        position: command.indexOf(segment),
-      });
-    }
-  }
-
-  return violations.filter(
-    (violation, index, all) =>
-      all.findIndex(
-        (candidate) =>
-          candidate.code === violation.code && candidate.position === violation.position,
-      ) === index,
-  );
-}
-
 function resolveCommandCwd(workspaceRoot: string, cwd: string | undefined): string {
   return path.resolve(workspaceRoot, cwd ?? ".");
 }
@@ -1813,22 +1779,6 @@ async function commandCwdError(toolCallId: string, cwd: string): Promise<ToolRes
 
 function mergeCommandEnvironment(overrides: Record<string, string> | undefined): NodeJS.ProcessEnv {
   return overrides ? { ...process.env, ...overrides } : process.env;
-}
-
-function commandValidationResult(
-  toolCallId: string,
-  violations: ShellCommandViolation[],
-): ToolResult {
-  return commandErrorResult({
-    toolCallId,
-    status: "error",
-    outcome: "validation_failed",
-    category: "validation",
-    reason: violations[0]?.code ?? "validation_failed",
-    message: violations[0]?.message ?? "Shell command validation failed.",
-    retryable: false,
-    details: { violations },
-  });
 }
 
 function commandInputValidationResult(toolCallId: string, issues: unknown): ToolResult {
@@ -1921,16 +1871,21 @@ async function runProcess(
   args: string[],
   options: {
     cwd: string;
+    sandboxPolicy: import("@dreamcode/shared").SandboxPolicy;
     env?: NodeJS.ProcessEnv;
     timeoutMs: number;
     signal?: AbortSignal;
     maxStdoutBytes?: number;
   },
 ): Promise<ProcessResult> {
+  const prepared = await prepareSandboxedSpawn({
+    program: command, args, cwd: options.cwd, env: options.env ?? process.env,
+    policy: options.sandboxPolicy,
+  });
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
+    const child = spawn(prepared.program, prepared.args, {
+      cwd: prepared.cwd,
+      env: prepared.env,
       shell: false,
       detached: process.platform !== "win32",
       windowsHide: true,
@@ -1947,15 +1902,20 @@ async function runShellExpression(
   args: string[],
   options: {
     cwd: string;
+    sandboxPolicy: import("@dreamcode/shared").SandboxPolicy;
     env?: NodeJS.ProcessEnv;
     timeoutMs: number;
     signal?: AbortSignal;
   },
 ): Promise<ProcessResult> {
+  const prepared = await prepareSandboxedSpawn({
+    program: shell, args, cwd: options.cwd, env: options.env ?? process.env,
+    policy: options.sandboxPolicy,
+  });
   return new Promise((resolve) => {
-    const child = spawn(shell, args, {
-      cwd: options.cwd,
-      env: options.env,
+    const child = spawn(prepared.program, prepared.args, {
+      cwd: prepared.cwd,
+      env: prepared.env,
       shell: false,
       detached: process.platform !== "win32",
       windowsHide: true,
@@ -2071,9 +2031,17 @@ async function makeCommandToolResult(input: {
   started: number;
   prefix: string;
   data: Record<string, unknown>;
+  sandboxPolicy: SandboxPolicy;
 }): Promise<ToolResult> {
-  const { result } = input;
-  const outcome: ExecutionOutcome = result.timedOut
+  const shellDiagnostic = extractShellDiagnostic(input.result.stderr);
+  const result = { ...input.result, stderr: shellDiagnostic.stderr };
+  const sandboxDenied =
+    input.sandboxPolicy.enforcement === "managed" &&
+    (shellDiagnostic.permissionDenied ||
+      (result.exitCode !== 0 && hasPermissionDeniedMessage(result.stderr)));
+  const outcome: ExecutionOutcome = sandboxDenied
+    ? "sandbox_denied"
+    : result.timedOut
     ? "timed_out"
     : result.aborted
       ? "aborted"
@@ -2085,7 +2053,9 @@ async function makeCommandToolResult(input: {
             ? "exited_zero"
             : "exited_nonzero";
   const status: ToolResult["status"] =
-    outcome === "timed_out" || outcome === "aborted"
+    outcome === "sandbox_denied"
+      ? "denied"
+      : outcome === "timed_out" || outcome === "aborted"
       ? "cancelled"
       : outcome === "exited_zero"
         ? "success"
@@ -2108,10 +2078,21 @@ async function makeCommandToolResult(input: {
   );
   const stdoutRef = artifactAbsolutePath(input.context, stdout.artifactRef);
   const stderrRef = artifactAbsolutePath(input.context, stderr.artifactRef);
-  const error =
-    status === "success" ? undefined : commandExecutionError(outcome, result.spawnErrorCode);
+  const error = sandboxDenied
+    ? {
+        code: "sandbox_denied",
+        category: "permission" as const,
+        reason: "sandbox_denied",
+        message: `The ${input.sandboxPolicy.mode} file sandbox denied a resource operation.`,
+        retryable: true,
+      }
+    : status === "success"
+      ? undefined
+      : commandExecutionError(outcome, result.spawnErrorCode);
   const summary =
-    outcome === "exited_zero"
+    outcome === "sandbox_denied"
+      ? `Command '${input.command}' was blocked by the ${input.sandboxPolicy.mode} file sandbox.`
+      : outcome === "exited_zero"
       ? `Command '${input.command}' completed successfully.`
       : outcome === "timed_out"
         ? `Command '${input.command}' timed out after execution began.`
@@ -2149,6 +2130,14 @@ async function makeCommandToolResult(input: {
       Boolean(ref),
     ),
     warnings: warnings.length ? warnings : undefined,
+    retry: sandboxDenied
+      ? {
+          kind: "require_escalated",
+          inputPatch: { sandbox_permissions: "require-escalated" },
+          requiresApproval: true,
+          reason: "Retry this command outside the active file sandbox only if the requested write is required.",
+        }
+      : undefined,
     error,
     usage: {
       durationMs: Date.now() - input.started,
@@ -2156,6 +2145,35 @@ async function makeCommandToolResult(input: {
       stderrBytes: stderr.bytes,
     },
   };
+}
+
+function extractShellDiagnostic(stderr: string): {
+  stderr: string;
+  permissionDenied: boolean;
+} {
+  let permissionDenied = false;
+  const cleaned = stderr
+    .split(/\r?\n/)
+    .filter((line) => {
+      const markerAt = line.indexOf(SHELL_ERROR_MARKER);
+      if (markerAt < 0) return true;
+      const [category = ""] = line
+        .slice(markerAt + SHELL_ERROR_MARKER.length)
+        .trim()
+        .split("|", 2);
+      permissionDenied = category.startsWith("PermissionDenied");
+      return !line.trimStart().startsWith(SHELL_ERROR_MARKER);
+    })
+    .join("\n")
+    .replaceAll(SHELL_ERROR_MARKER, "Sandbox category: ")
+    .trimEnd();
+  return { stderr: cleaned, permissionDenied };
+}
+
+function hasPermissionDeniedMessage(stderr: string): boolean {
+  return /permission denied|access(?: to .+)? is denied|read-only file system|operation not permitted/i.test(
+    stderr,
+  );
 }
 
 function commandExecutionError(

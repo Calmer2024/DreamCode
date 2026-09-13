@@ -166,7 +166,7 @@ export class ContextBuilder {
         "Respond in the same language as the user's latest message.",
         "Use the available platform shell tool for commands. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop unneeded background work.",
         "Prefer parallel tool calls for independent operations.",
-        `Current Policy Context: ${buildPolicyContext(input.mode)}`,
+        buildSandboxPolicyContext(input.mode, path.resolve(input.workspaceRoot)),
         `Project rules:\n${projectRules || "No DREAMCODE.md found."}`,
         input.skillCatalog
           ? [
@@ -404,16 +404,17 @@ async function readProjectRules(workspaceRoot: string): Promise<string> {
   return sections.length ? compressText(sections.join("\n\n"), 12_000).text : "";
 }
 
-function buildPolicyContext(mode: ContextBuildInput["mode"]): string {
+function buildSandboxPolicyContext(
+  mode: ContextBuildInput["mode"],
+  workspaceRoot: string,
+): string {
   switch (mode) {
-    case "plan":
-      return "Planning only: local read-only inspection is automatic at any path; sensitive reads require approval; file writes, shell mutations, network, and MCP are unavailable or denied.";
-    case "guided":
-      return "Local read/check operations are automatic at any path; sensitive reads, writes, network, MCP, and non-allowlisted commands require approval; destructive operations are denied.";
-    case "yolo":
-      return "Local reads at any path plus workspace checks and writes are automatic; sensitive reads, network, MCP, and non-allowlisted commands require approval; destructive operations are denied.";
-    case "full":
-      return "Non-destructive local filesystem, process, network, and MCP operations are allowed; destructive operations remain denied.";
+    case "read-only":
+      return "Current DreamCode file policy: read-only. Local reads are not limited to the current workspace. Any available operation enforced by the DreamCode file sandbox cannot persistently modify files in the current mode. Do not refuse a required modification from this policy alone: try an available tool normally and follow any denial and escalation guidance it returns.";
+    case "workspace-write":
+      return `Current DreamCode file policy: workspace-write. Local reads are not limited to the current workspace. Any available operation enforced by the DreamCode file sandbox can modify files only inside the workspace (${workspaceRoot}) and designated temporary directories. Do not refuse a required modification from this policy alone: try an available tool normally and follow any denial and escalation guidance it returns.`;
+    case "danger-full-access":
+      return "Current DreamCode file policy: danger-full-access. Local reads and writes are not restricted by the DreamCode file sandbox.";
   }
 }
 
