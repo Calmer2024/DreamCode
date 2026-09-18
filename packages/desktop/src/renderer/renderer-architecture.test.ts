@@ -64,6 +64,17 @@ describe("desktop renderer architecture", () => {
     expect(panelRule).not.toMatch(/filter\s*:/);
   });
 
+  it("keeps streaming rows compact and reserves the floating controls space", () => {
+    const css = readFileSync(path.join(desktopRoot, "src/renderer/app/app.css"), "utf8");
+
+    expect(css).toMatch(/\.timeline\s*\{[^}]*gap:\s*14px;/s);
+    expect(css).toMatch(/\.assistant-reasoning\s*\{[^}]*margin:\s*0;/s);
+    expect(css).toMatch(/\.tool-call-row\s*\{[^}]*margin-top:\s*0;/s);
+    expect(css).toMatch(/\.activity-group\s*\{[^}]*min-width:\s*0;/s);
+    expect(css).toMatch(/\.turn-history\s*\{[^}]*min-width:\s*0;/s);
+    expect(css).toContain("--timeline-bottom-padding");
+  });
+
   it("documents the production scrollbar and compact left-aligned dropdown menu", () => {
     const guide = readFileSync(
       path.resolve(desktopRoot, "../../docs/component-guidelines.html"),

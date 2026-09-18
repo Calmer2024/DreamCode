@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import OpenAI from "openai";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildDeepSeekProviderRequest,
   buildProviderRequest,
   buildProviderRequestWithMedia,
   createModelProvider,
+  DeepSeekModelProvider,
   detectConfiguredProvider,
   findModelProviderPreset,
   listModelProviderPresets,
@@ -47,7 +50,7 @@ describe("模型 provider preset", () => {
       provider: "deepseek",
       apiKey: "cli-key",
       baseURL: "https://example.com/v1",
-      model: "deepseek-custom",
+      model: "deepseek-v4-flash",
       env: {
         DEEPSEEK_API_KEY: "env-key",
         DEEPSEEK_MODEL: "env-model",
@@ -59,7 +62,7 @@ describe("模型 provider preset", () => {
     expect(config.apiKeySource).toBe("cli");
     expect(config.baseURL).toBe("https://example.com/v1");
     expect(config.baseURLSource).toBe("cli");
-    expect(config.model).toBe("deepseek-custom");
+    expect(config.model).toBe("deepseek-flash");
     expect(config.modelSource).toBe("cli");
   });
 
@@ -99,6 +102,17 @@ describe("模型 provider preset", () => {
     ).toEqual({ inputTokens: 1200, outputTokens: 80, totalTokens: 1280 });
   });
 
+  it("解析 DeepSeek reasoning token usage", () => {
+    expect(
+      normalizeOpenAIUsage({
+        prompt_tokens: 1200,
+        completion_tokens: 80,
+        total_tokens: 1280,
+        completion_tokens_details: { reasoning_tokens: 50 },
+      }),
+    ).toMatchObject({ reasoningTokens: 50 });
+  });
+
   it("保留缓存命中的输入 token，并区分未缓存输入", () => {
     expect(
       normalizeOpenAIUsage({
@@ -118,7 +132,7 @@ describe("模型 provider preset", () => {
   });
 
   it("为多模态消息估算传输开销且不暴露本机路径", () => {
-    const request = buildProviderRequest({
+    const request = buildDeepSeekProviderRequest({
       model: "vision-model",
       tools: [],
       messages: [{
@@ -173,5 +187,119 @@ describe("模型 provider preset", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("在 DeepSeek 工具调用历史中保留 reasoning_content", () => {
+    const request = buildDeepSeekProviderRequest({
+      model: "deepseek-flash",
+      tools: [],
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call_1", name: "file.read", input: { file_path: "README.md" } }],
+          reasoningContent: "先读取 README，再继续处理。",
+        } as any,
+      ],
+    });
+
+    expect(request.messages[0]).toMatchObject({
+      role: "assistant",
+      reasoning_content: "先读取 README，再继续处理。",
+    });
+  });
+
+  it("不为没有工具调用的 assistant 回传 reasoning_content", () => {
+    const request = buildProviderRequest({
+      model: "deepseek-flash",
+      tools: [],
+      messages: [
+        {
+          role: "assistant",
+          content: "完成了。",
+          reasoningContent: "内部推理不应随普通文本回传。",
+        } as any,
+      ],
+    });
+
+    expect(request.messages[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  it("发送 DeepSeek thinking 参数并解析 reasoning 与工具调用流", async () => {
+    const create = vi.fn().mockResolvedValue((async function* () {
+      yield { choices: [{ delta: { reasoning_content: "先检查 " } }] };
+      yield { choices: [{ delta: { reasoning_content: "工具结果。" } }] };
+      yield {
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_1",
+              function: { name: "file__read", arguments: '{"file_path":"README.md"}' },
+            }],
+          },
+        }],
+      };
+      yield { choices: [{ delta: { content: "完成。" } }] };
+      yield {
+        choices: [],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+          completion_tokens_details: { reasoning_tokens: 12 },
+        },
+      };
+    })());
+    const client = {
+      chat: { completions: { create } },
+    } as unknown as OpenAI;
+    const provider = new DeepSeekModelProvider({
+      apiKey: "test-key",
+      defaultModel: "deepseek-flash",
+      client,
+    });
+    const events = [];
+    for await (const event of provider.stream({
+      messages: [{ role: "user", content: "读取 README" }],
+      tools: [{ name: "file.read", description: "read", inputSchema: { type: "object" } }],
+      model: "deepseek-flash",
+      mode: "workspace-write",
+      workspaceRoot: "/repo",
+    })) {
+      events.push(event);
+    }
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "deepseek-flash",
+        extra_body: { thinking: { type: "enabled" } },
+      }),
+      undefined,
+    );
+    expect(events).toEqual(expect.arrayContaining([
+      { type: "reasoning_delta", text: "先检查 " },
+      { type: "reasoning_delta", text: "工具结果。" },
+      { type: "reasoning_done", content: "先检查 工具结果。" },
+      { type: "text_delta", text: "完成。" },
+      expect.objectContaining({
+        type: "tool_call",
+        toolCall: expect.objectContaining({
+          id: "call_1",
+          name: "file.read",
+          input: { file_path: "README.md" },
+          rawProvider: "deepseek",
+        }),
+      }),
+      expect.objectContaining({
+        type: "usage",
+        usage: expect.objectContaining({ reasoningTokens: 12 }),
+      }),
+    ]));
+  });
+
+  it("拒绝不在 DeepSeek 模型目录中的模型 ID", () => {
+    expect(() => resolveModelProviderConfig({ provider: "deepseek", model: "deepseek-custom" }))
+      .toThrow("deepseek-flash, deepseek-v4-pro");
   });
 });

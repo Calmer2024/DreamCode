@@ -76,6 +76,7 @@ describe("ContextBuilder structured history", () => {
       "Respond in the same language as the user's latest message.",
     );
     expect(systemMessage?.content).toContain("Current DreamCode file policy: workspace-write.");
+    expect(systemMessage?.content).toMatch(/Current DreamCode shell policy: (pwsh \(PowerShell\) on Windows|bash on (Linux|macOS|[a-z]+))\./);
     expect(systemMessage?.content).not.toContain("Workspace summary:");
     expect(systemMessage?.content).not.toContain("Keep code, commands, file paths, identifiers");
   });

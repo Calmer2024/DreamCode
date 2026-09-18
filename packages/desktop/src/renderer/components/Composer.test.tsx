@@ -34,6 +34,66 @@ describe("Composer context usage", () => {
   });
 });
 
+describe("Composer input sizing", () => {
+  it("disables browser grammar checking in the prompt editor", () => {
+    render(
+      <Composer
+        prompt=""
+        mode="workspace-write"
+        model="deepseek-chat"
+        runStatus=""
+        active={false}
+        starting={false}
+        canSubmit
+        onPromptChange={vi.fn()}
+        onModeChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "给 DreamCode 发送消息" })).toHaveAttribute(
+      "spellcheck",
+      "false",
+    );
+  });
+
+  it("grows with its content and only scrolls after reaching 240px", () => {
+    render(
+      <Composer
+        prompt=""
+        mode="workspace-write"
+        model="deepseek-chat"
+        runStatus=""
+        active={false}
+        starting={false}
+        canSubmit
+        onPromptChange={vi.fn()}
+        onModeChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    const textbox = screen.getByRole("textbox", {
+      name: "给 DreamCode 发送消息",
+    }) as HTMLTextAreaElement;
+    Object.defineProperty(textbox, "scrollHeight", {
+      configurable: true,
+      get: () => textbox.value.includes("\n") ? 320 : 80,
+    });
+
+    fireEvent.change(textbox, { target: { value: "short" } });
+    expect(Number.parseFloat(textbox.style.height)).toBeLessThan(240);
+    expect(textbox.style.overflowY).toBe("hidden");
+
+    fireEvent.change(textbox, { target: { value: "long\nmessage" } });
+    expect(textbox.style.height).toBe("240px");
+    expect(textbox.style.overflowY).toBe("auto");
+  });
+});
+
 describe("Composer attachments", () => {
   it("allows an attachment-only message and removes a draft attachment", async () => {
     const onSubmit = vi.fn().mockResolvedValue(true);

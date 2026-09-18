@@ -726,10 +726,22 @@ export function buildDreamCodeTranscriptLines(
   const assistantMessages = assistantMessagesForRender(state);
   const renderedAssistantMessageIds = new Set<string>();
   const pushAssistantMessage = (message: (typeof assistantMessages)[number]) => {
-    if (renderedAssistantMessageIds.has(message.id) || !message.text.trim()) {
+    if (renderedAssistantMessageIds.has(message.id)) {
       return;
     }
     renderedAssistantMessageIds.add(message.id);
+
+    if (message.reasoning?.trim()) {
+      push("", "muted", `${message.id}-think-gap`);
+      push("* Think", "muted", `${message.id}-think-title`, { color: MUTED });
+      for (const [index, line] of message.reasoning.split(/\r?\n/).entries()) {
+        push(`  ${line}`, "muted", `${message.id}-think-${index}`, { color: MUTED });
+      }
+    }
+
+    if (!message.text.trim()) {
+      return;
+    }
     push("", "muted", `${message.id}-gap`);
     for (const line of renderAssistantTranscriptLines(message.text, width)) {
       push(line.text, line.tone, `${message.id}-${line.key}`, {

@@ -211,6 +211,8 @@ describe("runTurn fake model integration", () => {
       async *stream(input) {
         inputs.push({ messages: input.messages as any[] });
         if (step++ === 0) {
+          yield { type: "reasoning_delta", text: "I should verify the README before answering." };
+          yield { type: "reasoning_done", content: "I should verify the README before answering." };
           yield { type: "text_delta", text: "The repository has a frontend; I will verify it." };
           yield {
             type: "tool_call",
@@ -218,6 +220,7 @@ describe("runTurn fake model integration", () => {
               id: "call_readme",
               name: "file.read",
               input: { path: "README.md" },
+              rawProvider: "deepseek",
             },
           };
           return;
@@ -242,6 +245,7 @@ describe("runTurn fake model integration", () => {
         expect.objectContaining({
           role: "assistant",
           content: expect.stringContaining("repository has a frontend"),
+          reasoningContent: "I should verify the README before answering.",
           toolCalls: [expect.objectContaining({ id: "call_readme" })],
         }),
         expect.objectContaining({ role: "tool", toolCallId: "call_readme" }),

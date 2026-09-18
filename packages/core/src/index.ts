@@ -204,6 +204,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       state.messages.push({
         role: "assistant",
         content: "",
+        reasoningContent: "",
         toolCalls: [{ id: toolCallId, name: "skill", input: { name: loaded.name } }],
       });
       state.messages.push({
@@ -299,6 +300,8 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       });
 
       let assistantText = "";
+      let assistantReasoning = "";
+      let reasoningCaptured = false;
       const toolCalls: NormalizedToolCall[] = [];
       let usageReported = false;
 
@@ -311,6 +314,18 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         signal: input.signal,
       })) {
         throwIfInterrupted(input.signal);
+        if (modelEvent.type === "reasoning_delta") {
+          modelProducedOutput = true;
+          reasoningCaptured = true;
+          assistantReasoning += modelEvent.text;
+          if (modelEvent.text) {
+            yield await emit("model.reasoning_delta", { text: modelEvent.text });
+          }
+        }
+        if (modelEvent.type === "reasoning_done") {
+          reasoningCaptured = true;
+          assistantReasoning = modelEvent.content;
+        }
         if (modelEvent.type === "text_delta") {
           modelProducedOutput = true;
           assistantText += modelEvent.text;
@@ -344,7 +359,11 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       if (!usageReported) {
         const inputTokens = context.estimatedTokens;
         const outputTokens = Math.ceil(
-          (assistantText.length + JSON.stringify(toolCalls.map(canonicalToolCall)).length) / 4,
+          (
+            assistantReasoning.length +
+            assistantText.length +
+            JSON.stringify(toolCalls.map(canonicalToolCall)).length
+          ) / 4,
         );
         yield await emit("model.usage", {
           usage: {
@@ -361,6 +380,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         role: "assistant",
         content: assistantText.trim(),
         toolCalls: toolCalls.map(canonicalToolCall),
+        ...(reasoningCaptured ? { reasoningContent: assistantReasoning } : {}),
       };
       const assistantEvent = await emit("assistant.message", { message: assistantMessage });
       yield assistantEvent;
@@ -813,17 +833,22 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
   );
   const messages: ChatMessage[] = [];
   let pendingText = "";
+  let pendingReasoning = "";
+  let pendingReasoningSeen = false;
   let pendingCalls: NormalizedToolCall[] = [];
   let pendingEventId: string | undefined;
   const flushPending = () => {
-    if (!pendingText && !pendingCalls.length) return;
+    if (!pendingText && !pendingReasoningSeen && !pendingCalls.length) return;
     messages.push({
       id: pendingEventId,
       role: "assistant",
       content: pendingText.trim(),
       toolCalls: pendingCalls,
+      ...(pendingReasoningSeen ? { reasoningContent: pendingReasoning } : {}),
     });
     pendingText = "";
+    pendingReasoning = "";
+    pendingReasoningSeen = false;
     pendingCalls = [];
     pendingEventId = undefined;
   };
@@ -857,6 +882,13 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
       pendingEventId ??= event.id;
       continue;
     }
+    if (event.type === "model.reasoning_delta") {
+      const payload = event.payload as { text?: string };
+      pendingReasoning += payload.text ?? "";
+      pendingReasoningSeen = true;
+      pendingEventId ??= event.id;
+      continue;
+    }
     if (event.type === "model.tool_call") {
       const payload = event.payload as { toolCall?: NormalizedToolCall };
       if (payload.toolCall) pendingCalls.push(canonicalToolCall(payload.toolCall));
@@ -865,6 +897,8 @@ function projectConversationMessages(events: AgentEvent[], sessionDir: string): 
     }
     if (event.type === "assistant.message") {
       pendingText = "";
+      pendingReasoning = "";
+      pendingReasoningSeen = false;
       pendingCalls = [];
       pendingEventId = undefined;
       const payload = event.payload as { message?: ChatMessage };

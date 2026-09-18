@@ -1,10 +1,12 @@
-import { CircleHelp, FilePenLine, Globe, ShieldAlert, SquareTerminal, Wrench } from "lucide-react";
+import { Check, CircleHelp, FilePenLine, Globe, ShieldAlert, SquareTerminal, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type {
   DesktopApi,
   DesktopApprovalRequest,
   DesktopQuestionRequest,
 } from "../../shared/contracts";
+import { MarkdownContent } from "./MarkdownContent";
+import { useAutoGrowingTextarea } from "./useAutoGrowingTextarea";
 
 interface ApprovalCardProps {
   api: DesktopApi;
@@ -53,11 +55,15 @@ export function ApprovalCard({ api, request, onResolved }: ApprovalCardProps) {
       <header className="approval-card-heading">
         <span className="approval-card-icon"> <presentation.Icon aria-hidden="true" /> </span>
         <div>
-          <p>需要审批</p>
-          <h2>{presentation.message}</h2>
+          <p className="request-card-kicker">需要审批</p>
+          <MarkdownContent className="request-markdown request-card-message approval-card-message" disableStrong>
+            {presentation.message}
+          </MarkdownContent>
         </div>
       </header>
-      <code className="approval-card-summary">{presentation.summary}</code>
+      <MarkdownContent className="request-markdown approval-card-summary" disableStrong>
+        {presentation.summary}
+      </MarkdownContent>
         {error ? (
           <p className="form-error approval-card-error" role="alert">
             {error}
@@ -114,6 +120,7 @@ export function QuestionDialog({ api, request, onResolved }: QuestionDialogProps
   const [answer, setAnswer] = useState("");
   const [responding, setResponding] = useState(false);
   const [error, setError] = useState<string>();
+  const answerRef = useAutoGrowingTextarea();
 
   const respond = async () => {
     const cleanAnswer = answer.trim();
@@ -141,16 +148,19 @@ export function QuestionDialog({ api, request, onResolved }: QuestionDialogProps
         role="dialog"
         aria-label="回答问题"
       >
-        <header className="dialog-header approval-heading">
-          <CircleHelp aria-hidden="true" />
+        <header className="dialog-header approval-heading approval-card-heading">
+          <span className="approval-card-icon"><CircleHelp aria-hidden="true" /></span>
           <div>
-            <p className="dialog-kicker">需要输入</p>
-            <h2>{request.question}</h2>
+            <p className="request-card-kicker">需要输入</p>
+            <MarkdownContent className="request-markdown request-card-message question-dialog-prompt" disableStrong>
+              {request.question}
+            </MarkdownContent>
           </div>
         </header>
         <label className="question-answer">
           回答
           <textarea
+            ref={answerRef}
             aria-label="回答"
             value={answer}
             onChange={(event) => setAnswer(event.target.value)}
@@ -168,14 +178,17 @@ export function QuestionDialog({ api, request, onResolved }: QuestionDialogProps
             {error}
           </p>
         ) : null}
-        <footer className="dialog-actions">
+        <footer className="dialog-actions question-card-actions">
+          <span>Ctrl+Enter 提交</span>
           <button
             type="button"
-            className="primary-button"
+            className="question-submit-button"
+            aria-label="提交回答"
+            title="提交回答"
             disabled={responding || !answer.trim()}
             onClick={() => void respond()}
           >
-            提交回答
+            <Check aria-hidden="true" />
           </button>
         </footer>
       </section>

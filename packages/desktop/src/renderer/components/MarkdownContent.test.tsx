@@ -68,4 +68,13 @@ describe("MarkdownContent", () => {
     expect(new Set(tokenStyles).size).toBeGreaterThanOrEqual(3);
     expect(tokenStyles.some((style) => style?.includes("comment"))).toBe(true);
   });
+
+  it("can render emphasis as regular text for request cards", () => {
+    const { container } = render(
+      <MarkdownContent disableStrong>{"Keep **this text** regular."}</MarkdownContent>,
+    );
+
+    expect(screen.getByText("this text").tagName).toBe("SPAN");
+    expect(container.querySelector("strong")).toBeNull();
+  });
 });

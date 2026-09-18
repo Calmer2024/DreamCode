@@ -84,6 +84,28 @@ describe("DreamCode config", () => {
     });
   });
 
+  it("migrates legacy DeepSeek model ids to deepseek-flash", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-deepseek-"));
+    await writeFile(
+      getConfigPath(home),
+      JSON.stringify({
+        version: 3,
+        currentProfileId: "profile_deepseek",
+        profiles: {
+          profile_deepseek: {
+            alias: "DeepSeek",
+            provider: "deepseek",
+            model: "deepseek-v4-flash",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadDreamCodeConfig(home);
+    expect(config.profiles.profile_deepseek?.model).toBe("deepseek-flash");
+  });
+
   it("keeps stable ids while editing aliases and falls back when deleting the default", () => {
     const first = createLlmProfile(
       { version: 2, profiles: {} },

@@ -78,6 +78,58 @@ describe("JsonlEventLog model delta batching", () => {
     expect(events.filter((event) => event.type === "model.delta")).toHaveLength(2);
   });
 
+  it("merges consecutive reasoning deltas without mixing them with answer text", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-event-log-reasoning-"));
+    const { session, eventLog } = await createSession({ workspaceRoot: home, home });
+
+    await eventLog.append({
+      id: "evt_reasoning_1",
+      sessionId: session.id,
+      turnId: "turn_1",
+      type: "model.reasoning_delta",
+      timestamp: "2026-08-20T00:00:00.000Z",
+      payload: { text: "First " },
+    });
+    await eventLog.append({
+      id: "evt_reasoning_2",
+      sessionId: session.id,
+      turnId: "turn_1",
+      type: "model.reasoning_delta",
+      timestamp: "2026-08-20T00:00:00.010Z",
+      payload: { text: "thought" },
+    });
+    await eventLog.append({
+      id: "evt_answer",
+      sessionId: session.id,
+      turnId: "turn_1",
+      type: "model.delta",
+      timestamp: "2026-08-20T00:00:00.020Z",
+      payload: { text: "Answer" },
+    });
+    await eventLog.append({
+      id: "evt_done",
+      sessionId: session.id,
+      turnId: "turn_1",
+      type: "turn.completed",
+      timestamp: "2026-08-20T00:00:00.030Z",
+      payload: { summary: { message: "Answer" } },
+    });
+
+    const events = await eventLog.readAll();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "evt_reasoning_1",
+        type: "model.reasoning_delta",
+        payload: { text: "First thought", chunkCount: 2 },
+      }),
+      expect.objectContaining({
+        id: "evt_answer",
+        type: "model.delta",
+        payload: { text: "Answer", chunkCount: 1 },
+      }),
+    ]));
+  });
+
   it("serializes concurrent tool event appends without losing JSONL records", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-event-log-concurrent-"));
     const { session, eventLog } = await createSession({ workspaceRoot: home, home });

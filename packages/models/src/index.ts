@@ -20,13 +20,19 @@ export interface ProviderRequest {
   tools?: Array<Record<string, unknown>>;
   stream: true;
   stream_options: { include_usage: true };
+  extra_body?: {
+    thinking?: { type: "enabled" | "disabled" };
+  };
 }
 
 export function sanitizeOpenAIToolName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "__").slice(0, 64) || "tool";
 }
 
-export function buildProviderRequest(input: RequestTokenEstimateInput & { defaultModel?: string }): ProviderRequest {
+export function buildProviderRequest(
+  input: RequestTokenEstimateInput & { defaultModel?: string },
+  options: { includeReasoningContent?: boolean } = {},
+): ProviderRequest {
   const toolNameMap = new Map<string, string>();
   const tools = toOpenAITools(input.tools, toolNameMap) as Array<Record<string, unknown>>;
   const messages = input.messages.map((message) => {
@@ -34,7 +40,21 @@ export function buildProviderRequest(input: RequestTokenEstimateInput & { defaul
       return {
         role: "assistant",
         content: message.content || null,
-        ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: sanitizeOpenAIToolName(call.name), arguments: JSON.stringify(call.input ?? {}) } })) } : {}),
+        ...(message.toolCalls?.length
+          ? {
+              ...(options.includeReasoningContent
+                ? { reasoning_content: message.reasoningContent ?? "" }
+                : {}),
+              tool_calls: message.toolCalls.map((call) => ({
+                id: call.id,
+                type: "function",
+                function: {
+                  name: sanitizeOpenAIToolName(call.name),
+                  arguments: JSON.stringify(call.input ?? {}),
+                },
+              })),
+            }
+          : {}),
       };
     }
     if (message.role === "tool") return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
@@ -55,6 +75,16 @@ export function buildProviderRequest(input: RequestTokenEstimateInput & { defaul
     return { role: message.role, content: message.content };
   });
   return { model: input.model || input.defaultModel || "gpt-5.5", messages, ...(tools.length ? { tools } : {}), stream: true, stream_options: { include_usage: true } };
+}
+
+export function buildDeepSeekProviderRequest(
+  input: RequestTokenEstimateInput & { defaultModel?: string },
+  thinking: "enabled" | "disabled" = "enabled",
+): ProviderRequest {
+  return {
+    ...buildProviderRequest(input, { includeReasoningContent: true }),
+    extra_body: { thinking: { type: thinking } },
+  };
 }
 
 export class UsageCalibrator {
@@ -138,6 +168,9 @@ export interface ResolveModelProviderConfigInput {
   env?: Record<string, string | undefined>;
 }
 
+export const DEEPSEEK_MODEL_IDS = ["deepseek-flash", "deepseek-v4-pro"] as const;
+export type DeepSeekModelId = (typeof DEEPSEEK_MODEL_IDS)[number];
+
 export const MODEL_PROVIDER_PRESETS: readonly ModelProviderPreset[] = [
   {
     id: "openai",
@@ -170,17 +203,17 @@ export const MODEL_PROVIDER_PRESETS: readonly ModelProviderPreset[] = [
     id: "deepseek",
     displayName: "DeepSeek",
     protocol: "openai-compatible",
-    defaultModel: "deepseek-v4-pro",
+    defaultModel: "deepseek-flash",
     models: [
+      {
+        id: "deepseek-flash",
+        label: "DeepSeek V4.1 Flash",
+        description: "最新高速模型, 支持 thinking、工具调用和视觉输入",
+      },
       {
         id: "deepseek-v4-pro",
         label: "DeepSeek V4 Pro",
-        description: "旗舰模型",
-      },
-      {
-        id: "deepseek-v4-flash",
-        label: "DeepSeek V4 Flash",
-        description: "轻量高速模型",
+        description: "DeepSeek V4 Pro 兼容入口",
       },
     ],
     defaultBaseURL: "https://api.deepseek.com",
@@ -611,6 +644,7 @@ export interface OpenAICompatibleModelProviderOptions {
   apiKey?: string;
   baseURL?: string;
   defaultModel?: string;
+  client?: OpenAI;
 }
 
 export interface OpenAIModelProviderOptions {
@@ -619,11 +653,19 @@ export interface OpenAIModelProviderOptions {
   defaultModel?: string;
 }
 
+export interface DeepSeekModelProviderOptions {
+  apiKey?: string;
+  baseURL?: string;
+  defaultModel?: string;
+  thinking?: "enabled" | "disabled";
+  client?: OpenAI;
+}
+
 export class OpenAICompatibleModelProvider implements ModelProvider {
   readonly name: string;
-  private readonly client: OpenAI;
-  private readonly defaultModel: string;
-  private readonly providerId: string;
+  protected readonly client: OpenAI;
+  protected readonly defaultModel: string;
+  protected readonly providerId: string;
 
   constructor(options: OpenAICompatibleModelProviderOptions) {
     if (!options.apiKey?.trim()) {
@@ -632,10 +674,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
     this.name = options.providerId;
     this.providerId = options.providerId;
-    this.client = new OpenAI({
-      apiKey: options.apiKey,
-      baseURL: options.baseURL,
-    });
+    this.client = options.client ?? new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
     this.defaultModel = options.defaultModel ?? "gpt-5.5";
   }
 
@@ -668,14 +707,25 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
   }
 
   async *stream(input: ModelStreamInput): AsyncIterable<ModelEvent> {
+    yield* this.streamWithOptions(input);
+  }
+
+  protected async *streamWithOptions(
+    input: ModelStreamInput,
+    options: { thinking?: "enabled" | "disabled" } = {},
+  ): AsyncIterable<ModelEvent> {
     const toolNameMap = new Map<string, string>();
     const request = await buildProviderRequestWithMedia(
       { messages: input.messages, tools: input.tools, model: input.model, defaultModel: this.defaultModel },
       this.providerId,
+      options.thinking,
     );
     const tools = toOpenAITools(input.tools, toolNameMap);
     const stream = await this.client.chat.completions.create(
-      { ...request, tools: tools as any } as any,
+      {
+        ...request,
+        tools: tools as any,
+      } as any,
       input.signal ? ({ signal: input.signal } as any) : undefined,
     );
 
@@ -683,6 +733,8 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       number,
       { id: string; name: string; argumentsJson: string; raw: unknown[] }
     >();
+    let reasoningContent = "";
+    let reasoningSeen = false;
 
     for await (const chunk of stream as any) {
       const usage = normalizeOpenAIUsage(chunk.usage);
@@ -693,6 +745,15 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       const delta = choice?.delta;
       if (!delta) {
         continue;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(delta, "reasoning_content")) {
+        reasoningSeen = true;
+        const reasoningDelta = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+        reasoningContent += reasoningDelta;
+        if (reasoningDelta) {
+          yield { type: "reasoning_delta", text: reasoningDelta };
+        }
       }
 
       if (delta.content) {
@@ -723,6 +784,10 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       }
     }
 
+    if (reasoningSeen) {
+      yield { type: "reasoning_done", content: reasoningContent };
+    }
+
     for (const pending of pendingToolCalls.values()) {
       yield {
         type: "tool_call",
@@ -740,6 +805,26 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
   }
 }
 
+export class DeepSeekModelProvider extends OpenAICompatibleModelProvider {
+  private readonly thinking: "enabled" | "disabled";
+
+  constructor(options: DeepSeekModelProviderOptions = {}) {
+    super({
+      providerId: "deepseek",
+      displayName: "DeepSeek",
+      apiKey: options.apiKey,
+      baseURL: options.baseURL,
+      defaultModel: options.defaultModel ?? "deepseek-flash",
+      client: options.client,
+    });
+    this.thinking = options.thinking ?? "enabled";
+  }
+
+  override async *stream(input: ModelStreamInput): AsyncIterable<ModelEvent> {
+    yield* this.streamWithOptions(input, { thinking: this.thinking });
+  }
+}
+
 export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const usage = value as Record<string, unknown>;
@@ -748,6 +833,11 @@ export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
   const inputDetails = readUsageObject(
     usage.prompt_tokens_details ?? usage.input_tokens_details,
   );
+  const outputDetails = readUsageObject(
+    usage.completion_tokens_details ?? usage.output_tokens_details,
+  );
+  const reasoningTokens =
+    finiteNumber(outputDetails?.reasoning_tokens) ?? finiteNumber(usage.reasoning_tokens);
   const cachedInputTokens =
     finiteNumber(inputDetails?.cached_tokens) ??
     finiteNumber(usage.cached_input_tokens ?? usage.cache_read_input_tokens);
@@ -782,6 +872,7 @@ export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
     cachedInputTokens,
     uncachedInputTokens,
     outputTokens,
+    reasoningTokens,
     totalTokens,
     costUsd: finiteNumber(usage.cost_usd),
     warnings: warnings.length ? warnings : undefined,
@@ -791,8 +882,11 @@ export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
 export async function buildProviderRequestWithMedia(
   input: RequestTokenEstimateInput & { defaultModel?: string },
   providerId: string,
+  thinking: "enabled" | "disabled" = "enabled",
 ): Promise<ProviderRequest> {
-  const request = buildProviderRequest(input);
+  const request = providerId === "deepseek"
+    ? buildDeepSeekProviderRequest(input, thinking)
+    : buildProviderRequest(input);
   request.messages = await Promise.all(input.messages.map(async (message, index) => {
     if (message.role !== "user" || !message.attachments?.length) return request.messages[index]!;
     const parts: Array<Record<string, unknown>> = [
@@ -916,7 +1010,15 @@ export function resolveModelProviderConfig(
   const modelFromEnv = resolveEnvValue(preset.modelEnvVars, env);
   const apiKey = normalizeOptional(input.apiKey) ?? apiKeyFromEnv.value;
   const baseURL = normalizeOptional(input.baseURL) ?? baseURLFromEnv.value ?? preset.defaultBaseURL;
-  const model = normalizeOptional(input.model) ?? modelFromEnv.value ?? preset.defaultModel;
+  const requestedModel = normalizeOptional(input.model) ?? modelFromEnv.value ?? preset.defaultModel;
+  const model =
+    preset.id === "deepseek" ? canonicalizeDeepSeekModelId(requestedModel) : requestedModel;
+
+  if (preset.id === "deepseek" && !isDeepSeekModelId(model)) {
+    throw new Error(
+      `DeepSeek 仅支持模型: ${DEEPSEEK_MODEL_IDS.join(", ")}。收到: ${requestedModel}`,
+    );
+  }
 
   return {
     providerId: preset.id,
@@ -953,6 +1055,14 @@ export function createModelProvider(config: ResolvedModelProviderConfig): ModelP
     );
   }
 
+  if (config.providerId === "deepseek") {
+    return new DeepSeekModelProvider({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      defaultModel: config.model,
+    });
+  }
+
   return new OpenAICompatibleModelProvider({
     providerId: config.providerId,
     displayName: config.displayName,
@@ -964,6 +1074,25 @@ export function createModelProvider(config: ResolvedModelProviderConfig): ModelP
 
 function normalizeProviderId(provider: string): string {
   return provider.trim().toLowerCase();
+}
+
+export function canonicalizeDeepSeekModelId(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  const canonical = DEEPSEEK_MODEL_IDS.find((id) => id === normalized);
+  if (canonical) return canonical;
+  if (
+    normalized === "deepseek-v4-flash" ||
+    normalized === "deepseek-v4-flash-vision-exp" ||
+    normalized === "deepseek-chat" ||
+    normalized === "deepseek-reasoner"
+  ) {
+    return "deepseek-flash";
+  }
+  return model.trim();
+}
+
+export function isDeepSeekModelId(model: string): model is DeepSeekModelId {
+  return (DEEPSEEK_MODEL_IDS as readonly string[]).includes(model);
 }
 
 function normalizeOptional(value: string | undefined): string | undefined {

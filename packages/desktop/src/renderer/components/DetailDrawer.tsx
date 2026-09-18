@@ -279,7 +279,10 @@ function groupLogEvents(events: AgentEvent[]): AgentEvent[] {
   const grouped: AgentEvent[] = [];
   for (const event of events) {
     const previous = grouped.at(-1);
-    if (event.type !== "model.delta" || previous?.type !== "model.delta") {
+    if (
+      (event.type !== "model.delta" && event.type !== "model.reasoning_delta") ||
+      previous?.type !== event.type
+    ) {
       grouped.push(event);
       continue;
     }

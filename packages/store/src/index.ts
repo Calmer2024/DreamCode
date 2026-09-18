@@ -457,6 +457,7 @@ export async function deleteSessionsForWorkspace(
 export class JsonlEventLog {
   readonly filePath: string;
   private pendingModelDelta?: AgentEvent<{ text?: string; chunkCount?: number }>;
+  private pendingReasoningDelta?: AgentEvent<{ text?: string; chunkCount?: number }>;
   private appendQueue: Promise<void> = Promise.resolve();
 
   constructor(readonly sessionDir: string) {
@@ -497,6 +498,7 @@ export class JsonlEventLog {
         return;
       }
 
+      await this.flushPendingReasoningDelta();
       await this.flushPendingModelDelta();
       this.pendingModelDelta = {
         ...event,
@@ -508,13 +510,45 @@ export class JsonlEventLog {
       return;
     }
 
+    if (event.type === "model.reasoning_delta" && isModelDeltaPayload(event.payload)) {
+      if (
+        this.pendingReasoningDelta &&
+        this.pendingReasoningDelta.sessionId === event.sessionId &&
+        this.pendingReasoningDelta.turnId === event.turnId
+      ) {
+        const previous = this.pendingReasoningDelta.payload.text ?? "";
+        this.pendingReasoningDelta = {
+          ...this.pendingReasoningDelta,
+          payload: {
+            ...this.pendingReasoningDelta.payload,
+            text: previous + event.payload.text,
+            chunkCount: (this.pendingReasoningDelta.payload.chunkCount ?? 1) + 1,
+          },
+        };
+        return;
+      }
+
+      await this.flushPendingModelDelta();
+      await this.flushPendingReasoningDelta();
+      this.pendingReasoningDelta = {
+        ...event,
+        payload: {
+          ...event.payload,
+          chunkCount: event.payload.chunkCount ?? 1,
+        },
+      };
+      return;
+    }
+
     await this.flushPendingModelDelta();
+    await this.flushPendingReasoningDelta();
     await writeFile(this.filePath, `${JSON.stringify(event)}\n`, { flag: "a" });
   }
 
   async readAll(): Promise<AgentEvent[]> {
     await this.appendQueue;
     await this.flushPendingModelDelta();
+    await this.flushPendingReasoningDelta();
     try {
       const content = await readFile(this.filePath, "utf8");
       return content
@@ -533,6 +567,13 @@ export class JsonlEventLog {
     if (!this.pendingModelDelta) return;
     const event = this.pendingModelDelta;
     this.pendingModelDelta = undefined;
+    await writeFile(this.filePath, `${JSON.stringify(event)}\n`, { flag: "a" });
+  }
+
+  private async flushPendingReasoningDelta(): Promise<void> {
+    if (!this.pendingReasoningDelta) return;
+    const event = this.pendingReasoningDelta;
+    this.pendingReasoningDelta = undefined;
     await writeFile(this.filePath, `${JSON.stringify(event)}\n`, { flag: "a" });
   }
 }
@@ -1129,11 +1170,26 @@ function normalizeStoredProfile(
   return {
     alias: normalizeString(alias) ?? provider,
     provider,
-    model: normalizeString(profile.model),
+    model: normalizeStoredModel(provider, profile.model),
     apiKey: normalizeString(profile.apiKey),
     apiKeyEnv: normalizeString(profile.apiKeyEnv),
     baseURL: normalizeString(profile.baseURL),
   };
+}
+
+function normalizeStoredModel(provider: string, model: unknown): string | undefined {
+  const normalized = normalizeString(model);
+  if (provider !== "deepseek" || !normalized) return normalized;
+
+  switch (normalized.toLowerCase()) {
+    case "deepseek-v4-flash":
+    case "deepseek-v4-flash-vision-exp":
+    case "deepseek-chat":
+    case "deepseek-reasoner":
+      return "deepseek-flash";
+    default:
+      return normalized;
+  }
 }
 
 function legacyProfileId(name: string): string {

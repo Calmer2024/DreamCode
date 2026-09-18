@@ -400,7 +400,7 @@ Model Router 负责:
 
 ```toml
 [models]
-default = "deepseek:deepseek-v4-pro"
+default = "deepseek:deepseek-flash"
 fast = "qwen:qwen3.7-plus"
 safe_reviewer = "openai:gpt-5.4-mini"
 
@@ -1070,7 +1070,7 @@ workspace:
 mode = "safe-yolo"
 
 [models]
-default = "deepseek:deepseek-v4-pro"
+default = "deepseek:deepseek-flash"
 fast = "qwen:qwen3.7-plus"
 safety = "openai:gpt-5.4-mini"
 

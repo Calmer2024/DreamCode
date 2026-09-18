@@ -25,6 +25,7 @@ import type {
 import type { DesktopContextUsage } from "../state/desktop-state";
 import { ProviderIcon } from "./ProviderIcon";
 import { SelectMenu } from "./SelectMenu";
+import { useAutoGrowingTextarea } from "./useAutoGrowingTextarea";
 
 interface ComposerProps {
   prompt: string;
@@ -91,6 +92,7 @@ export function Composer({
   const [draggingAttachmentId, setDraggingAttachmentId] = useState<string>();
   const suggestionListId = useId();
   const suggestionListRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useAutoGrowingTextarea();
   const refreshSkills = () => {
     if (!api) return;
     void api.listSkills(workspaceRoot).then((snapshot) => setSkills(snapshot.skills)).catch(() => undefined);
@@ -241,7 +243,9 @@ export function Composer({
         ) : null}
         {attachmentError ? <p className="attachment-error" role="alert">{attachmentError}</p> : null}
         <textarea
+          ref={textareaRef}
           aria-label="给 DreamCode 发送消息"
+          spellCheck={false}
           placeholder="随心输入"
           rows={2}
           value={draft}

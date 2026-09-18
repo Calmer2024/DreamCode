@@ -212,7 +212,11 @@ export class DesktopRunManager {
       })) {
         const outboundEvent = sanitizeEvent(event, sensitiveValues);
         observedSessionId = outboundEvent.sessionId ?? observedSessionId;
-        if (outboundEvent.type === "model.delta" || outboundEvent.type === "model.tool_call") {
+        if (
+          outboundEvent.type === "model.delta" ||
+          outboundEvent.type === "model.reasoning_delta" ||
+          outboundEvent.type === "model.tool_call"
+        ) {
           modelActivity = true;
         }
         await this.#emitEvent({ runId: run.runId, event: outboundEvent });

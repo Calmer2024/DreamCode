@@ -141,7 +141,7 @@ pnpm dreamcode --list-providers
 
 ```powershell
 pnpm dreamcode
-# 在 REPL 中输入 /llm, 用方向键选择 deepseek / deepseek-v4-pro, 粘贴 API key 保存到 config.json。
+# 在 REPL 中输入 /llm, 用方向键选择 deepseek / deepseek-flash 或 deepseek-v4-pro, 粘贴 API key 保存到 config.json。
 # 然后输入:
 # 根据 package.json 和源码更新 README 的使用说明。
 ```

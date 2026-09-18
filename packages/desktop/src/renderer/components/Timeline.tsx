@@ -12,7 +12,6 @@ import {
   CircleX,
   Clock,
   Copy,
-  FileCode2,
   FilePenLine,
   Globe,
   Hammer,
@@ -29,7 +28,7 @@ import {
   Telescope,
   Wrench,
 } from "lucide-react";
-import { memo, type ReactNode, useEffect, useId, useState } from "react";
+import { memo, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type {
   DesktopApi,
   DesktopQuestionRequest,
@@ -41,6 +40,7 @@ import type {
   DesktopTurnUsage,
 } from "../state/desktop-state";
 import { MarkdownContent } from "./MarkdownContent";
+import { useAutoGrowingTextarea } from "./useAutoGrowingTextarea";
 
 interface TimelineProps {
   state: DesktopState;
@@ -144,241 +144,351 @@ function conversationBlocks(
   entries: DesktopTimelineEntry[],
   tools: DesktopToolEvent[],
   turnUsage: Record<string, DesktopTurnUsage>,
-  changedFilesByTurn: Record<string, ChangedFile[]>,
+  _changedFilesByTurn: Record<string, ChangedFile[]>,
   mediaApi?: Pick<DesktopApi, "readAttachment">,
 ): ReactNode[] {
   const blocks: ReactNode[] = [];
-  let execution: DesktopTimelineEntry[] = [];
-  let executionTurnId: string | undefined;
-  const flushExecution = () => {
-    if (!execution.length) return;
-    blocks.push(
-      <ExecutionSegment
-        entries={execution}
-        tools={tools}
-        usage={execution[0]?.turnId ? turnUsage[execution[0].turnId] : undefined}
-        changedFiles={execution.find((entry) => entry.turnId)?.turnId
-          ? changedFilesByTurn[execution.find((entry) => entry.turnId)?.turnId ?? ""] ?? []
-          : []}
-        mediaApi={mediaApi}
-        key={`execution-${execution[0]?.id ?? blocks.length}`}
-      />,
-    );
-    execution = [];
-    executionTurnId = undefined;
+  const pendingActivity: ActivityBlock[] = [];
+  const terminalTurns = new Set(
+    entries.filter((entry) => isTerminalEntry(entry) && entry.turnId).map((entry) => entry.turnId as string),
+  );
+  const turnTimings = new Map<string, { start: number; end?: number }>();
+  for (const entry of entries) {
+    if (!entry.turnId) continue;
+    const timestamp = new Date(entry.timestamp).valueOf();
+    if (!Number.isFinite(timestamp)) continue;
+    const timing = turnTimings.get(entry.turnId);
+    turnTimings.set(entry.turnId, {
+      start: timing ? Math.min(timing.start, timestamp) : timestamp,
+      end: isTerminalEntry(entry) ? timestamp : timing?.end,
+    });
+  }
+  const activeTurnId = [...turnTimings.keys()].reverse().find((turnId) => !terminalTurns.has(turnId));
+  const assistantOutputsByTurn = new Map<string, DesktopTimelineEntry[]>();
+  for (const entry of entries) {
+    if (entry.kind !== "assistant" || !entry.detail?.trim() || !entry.turnId) continue;
+    const outputs = assistantOutputsByTurn.get(entry.turnId) ?? [];
+    outputs.push(entry);
+    assistantOutputsByTurn.set(entry.turnId, outputs);
+  }
+  const lastAssistantOutputByTurn = new Map<string, string>();
+  for (const [turnId, outputs] of assistantOutputsByTurn) {
+    const last = outputs.at(-1);
+    if (!last) continue;
+    lastAssistantOutputByTurn.set(turnId, last.id);
+  }
+  const renderedWorkTime = new Set<string>();
+  const renderedTools = new Set<string>();
+  const completedTurnHistory = new Map<string, ReactNode[]>();
+  const isCompletedTurn = (turnId: string | undefined) =>
+    Boolean(turnId && terminalTurns.has(turnId) && lastAssistantOutputByTurn.has(turnId));
+  const pushBlock = (node: ReactNode, turnId?: string) => {
+    const history = turnId ? completedTurnHistory.get(turnId) : undefined;
+    if (history) {
+      history.push(node);
+    } else {
+      blocks.push(node);
+    }
+  };
+  const flushActivity = () => {
+    const first = pendingActivity.at(0);
+    if (!first) return;
+    if (pendingActivity.length === 1) {
+      pushBlock(first.node, first.turnId);
+    } else {
+      pushBlock(
+        <ActivityGroup
+          active={first.active}
+          items={pendingActivity.map((item) => item.node)}
+          key={`activity-${first.kind}-${first.key}`}
+          kind={first.kind}
+          running={pendingActivity.some((item) => item.running)}
+        />,
+        first.turnId,
+      );
+    }
+    pendingActivity.length = 0;
+  };
+  const queueActivity = (activity: ActivityBlock) => {
+    const first = pendingActivity.at(0);
+    if (first && (first.kind !== activity.kind || first.turnId !== activity.turnId)) {
+      flushActivity();
+    }
+    ensureWorkTime(activity.turnId);
+    pendingActivity.push(activity);
+  };
+  const ensureWorkTime = (turnId: string | undefined) => {
+    if (!turnId || renderedWorkTime.has(turnId)) return;
+    const timing = turnTimings.get(turnId);
+    if (!timing) return;
+    renderedWorkTime.add(turnId);
+    if (isCompletedTurn(turnId)) {
+      const history: ReactNode[] = [];
+      completedTurnHistory.set(turnId, history);
+      blocks.push(
+        <CompletedTurnHistory
+          end={timing.end}
+          items={history}
+          key={`working-${turnId}`}
+          start={timing.start}
+        />,
+      );
+      return;
+    }
+    blocks.push(<TurnWorkingTime active end={timing.end} key={`working-${turnId}`} start={timing.start} />);
   };
 
   for (const entry of entries) {
     if (entry.kind === "session" || entry.kind === "turn") continue;
     if (entry.kind === "user") {
-      flushExecution();
+      flushActivity();
       blocks.push(<TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />);
-    } else {
-      if (execution.length && entry.turnId && executionTurnId && entry.turnId !== executionTurnId) {
-        flushExecution();
-      }
-      if (!executionTurnId && entry.turnId) executionTurnId = entry.turnId;
-      execution.push(entry);
+      continue;
     }
-  }
-  flushExecution();
-  return blocks;
-}
-
-function ExecutionSegment({
-  entries,
-  tools,
-  usage,
-  changedFiles,
-  mediaApi,
-}: {
-  entries: DesktopTimelineEntry[];
-  tools: DesktopToolEvent[];
-  usage?: DesktopTurnUsage;
-  changedFiles: ChangedFile[];
-  mediaApi?: Pick<DesktopApi, "readAttachment">;
-}) {
-  const liveStatusDelayMs = 800;
-  const terminalEntry = [...entries]
-    .reverse()
-    .find(
-      (entry) =>
-        entry.kind === "status" &&
-        (entry.title === "Turn completed" ||
-          entry.title === "Turn failed" ||
-          entry.title === "Turn interrupted"),
-    );
-  const terminal = Boolean(terminalEntry);
-  const completed = terminalEntry?.title === "Turn completed";
-  const terminalLabel =
-    terminalEntry?.title === "Turn completed"
-      ? "已完成"
-      : terminalEntry?.title === "Turn failed"
-        ? "执行失败"
-        : "已中断";
-  const turnId = entries.find((entry) => entry.turnId)?.turnId;
-  const segmentTools = turnId ? tools.filter((tool) => tool.turnId === turnId) : tools;
-  const runningTools = segmentTools.some((tool) => tool.status === "running" || tool.status === "queued");
-  const hasCanonicalTools = segmentTools.length > 0;
-  const processEntries = entries.filter(
-    (entry) =>
-      entry.kind !== "assistant" &&
-      entry.kind !== "file" &&
-      entry.title !== "Turn completed" &&
-      entry.title !== "上下文已压缩",
-  );
-  const notices = entries.filter((entry) => entry.title === "上下文已压缩");
-  const summaries = entries.filter((entry) => entry.kind === "assistant");
-  const latestVisibleSummary = [...summaries].reverse().find((entry) => Boolean(entry.detail?.trim()));
-  const hasVisibleOutput = summaries.some((entry) => Boolean(entry.detail?.trim()));
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (terminal) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [terminal]);
-  const latestOutputAt = latestVisibleSummary ? new Date(latestVisibleSummary.timestamp).valueOf() : Number.NaN;
-  const outputIsFresh = Number.isFinite(latestOutputAt) && now - latestOutputAt < liveStatusDelayMs;
-  const showLiveStatus = !terminal && (runningTools || !hasVisibleOutput || !outputIsFresh);
-  const liveStatus = runningTools ? "正在调用工具" : "正在思考";
-  let processRendered = false;
-
-  return (
-    <>
-      {processEntries.length ? (
-        <details className="execution-segment" open={terminal ? undefined : true}>
-          <summary className="execution-summary">
-            <span>
-              {terminalEntry
-                ? `${terminalLabel} · 耗时 ${formatElapsed(entries)}`
-                : `执行中 · ${formatElapsed(entries, now)}`}
-            </span>
-            <ChevronDown aria-hidden="true" />
-          </summary>
-          <div className="execution-content">
-            {processEntries.map((entry) => {
-              if (entry.kind === "tool" && hasCanonicalTools) {
-                if (processRendered) return null;
-                processRendered = true;
-                return <ToolProcess tools={segmentTools} key={`process-${entry.id}`} />;
-              }
-              return <TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />;
-            })}
-          </div>
-        </details>
-      ) : null}
-      {notices.map((entry) => (
-        <TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />
-      ))}
-      {summaries.map((entry, index) => (
+    if (entry.kind === "assistant") {
+      const isLastAssistant = Boolean(entry.turnId && lastAssistantOutputByTurn.get(entry.turnId) === entry.id);
+      const node = (
         <TimelineItem
           entry={entry}
           mediaApi={mediaApi}
-          usage={index === summaries.length - 1 ? usage : undefined}
-          liveStatus={showLiveStatus && index === summaries.length - 1 ? liveStatus : undefined}
+          usage={isLastAssistant && entry.turnId ? turnUsage[entry.turnId] : undefined}
           key={entry.id}
         />
-      ))}
-      {!summaries.length && showLiveStatus ? (
-        <div className="execution-live-status" role="status" aria-live="polite">
-          <span className="status-shimmer">{liveStatus}</span>
-        </div>
-      ) : null}
-      {completed && changedFiles.length ? <DiffSummaryCard files={changedFiles} /> : null}
-    </>
-  );
-}
-
-function DiffSummaryCard({ files }: { files: ChangedFile[] }) {
-  const [reviewing, setReviewing] = useState(false);
-  const totals = files.reduce(
-    (sum, file) => {
-      const stats = diffStats(file.diff);
-      return {
-        additions: sum.additions + stats.additions,
-        deletions: sum.deletions + stats.deletions,
-      };
-    },
-    { additions: 0, deletions: 0 },
-  );
-
-  return (
-    <section className="diff-summary-card" aria-label={`已编辑 ${files.length} 个文件`}>
-      <header>
-        <span className="diff-summary-icon">
-          <FileCode2 aria-hidden="true" />
-        </span>
-        <div>
-          <h3>{`已编辑 ${files.length} 个文件`}</h3>
-          <p>
-            <span className="diff-additions">+{totals.additions}</span>{" "}
-            <span className="diff-deletions">-{totals.deletions}</span>
-          </p>
-        </div>
-        <button type="button" onClick={() => setReviewing((current) => !current)}>
-          {reviewing ? "收起" : "审核"}
-        </button>
-      </header>
-      <div className="diff-file-list">
-        {files.map((file) => {
-          const stats = diffStats(file.diff);
-          return (
-            <div className="diff-file" key={file.path}>
-              <span data-tooltip={file.path}>{file.path}</span>
-              <span>
-                <b className="diff-additions">+{stats.additions}</b>{" "}
-                <b className="diff-deletions">-{stats.deletions}</b>
-              </span>
-            </div>
-          );
-        })}
-      </div>
-      <div className="diff-review" data-expanded={reviewing}>
-        <div>
-          {files.map((file) => (
-            <pre key={file.path}>{file.diff || `${file.operation}: ${file.path}`}</pre>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function diffStats(diff?: string): { additions: number; deletions: number } {
-  if (!diff) return { additions: 0, deletions: 0 };
-  let additions = 0;
-  let deletions = 0;
-  for (const line of diff.split(/\r?\n/)) {
-    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
-    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+      );
+      if (isReasoningOnlyEntry(entry)) {
+        queueActivity({
+          active: entry.turnId === activeTurnId,
+          key: entry.id,
+          kind: "think",
+          node,
+          running: entry.turnId === activeTurnId,
+          turnId: entry.turnId,
+        });
+      } else {
+        flushActivity();
+        ensureWorkTime(entry.turnId);
+        if (isLastAssistant) {
+          blocks.push(node);
+        } else {
+          pushBlock(node, entry.turnId);
+        }
+      }
+      continue;
+    }
+    if (entry.kind === "tool") {
+      const tool = toolForTimelineEntry(entry, tools, renderedTools);
+      if (tool) {
+        renderedTools.add(tool.id);
+        queueActivity({
+          active: entry.turnId === activeTurnId,
+          key: tool.id,
+          kind: "tool",
+          node: <CommandRow tool={tool} key={`tool-${tool.id}`} />,
+          running: tool.status === "queued" || tool.status === "running",
+          turnId: entry.turnId,
+        });
+      }
+      continue;
+    }
+    if (entry.title === "Skill loaded") {
+      const skillTool = tools.find((tool) =>
+        tool.turnId === entry.turnId && tool.name === "skill" && !renderedTools.has(tool.id),
+      );
+      const tool = skillTool ?? skillToolFromEntry(entry);
+      if (skillTool) {
+        renderedTools.add(skillTool.id);
+      }
+      queueActivity({
+        active: entry.turnId === activeTurnId,
+        key: tool.id,
+        kind: "tool",
+        node: <CommandRow tool={tool} key={`tool-${tool.id}`} />,
+        running: tool.status === "queued" || tool.status === "running",
+        turnId: entry.turnId,
+      });
+      continue;
+    }
+    if (isTerminalEntry(entry) && entry.title !== "Turn completed") {
+      flushActivity();
+      ensureWorkTime(entry.turnId);
+      blocks.push(<TimelineItem entry={entry} mediaApi={mediaApi} key={entry.id} />);
+    }
   }
-  return { additions, deletions };
+
+  flushActivity();
+  const hasRunningTool = activeTurnId
+    ? tools.some((tool) => tool.turnId === activeTurnId && (tool.status === "queued" || tool.status === "running"))
+    : false;
+  const hasAssistantOutput = activeTurnId
+    ? entries.some((entry) =>
+        entry.kind === "assistant" &&
+        entry.turnId === activeTurnId &&
+        Boolean(entry.detail?.trim() || entry.reasoning?.trim()),
+      )
+    : false;
+  if (activeTurnId && !hasRunningTool && !hasAssistantOutput) {
+    ensureWorkTime(activeTurnId);
+    blocks.push(
+      <div className="execution-live-status" role="status" aria-live="polite" key={`thinking-${activeTurnId}`}>
+        <span className="status-shimmer">正在思考</span>
+      </div>,
+    );
+  }
+  return blocks;
 }
 
-function ToolProcess({ tools }: { tools: DesktopToolEvent[] }) {
+type ActivityKind = "think" | "tool";
+
+interface ActivityBlock {
+  active: boolean;
+  key: string;
+  kind: ActivityKind;
+  node: ReactNode;
+  running: boolean;
+  turnId?: string;
+}
+
+const ActivityGroup = memo(function ActivityGroup({
+  active,
+  items,
+  kind,
+  running,
+}: {
+  active: boolean;
+  items: ReactNode[];
+  kind: ActivityKind;
+  running: boolean;
+}) {
+  const [open, setOpen] = useState(() => kind === "tool" && active);
+  const previousActive = useRef(active);
+  const isThink = kind === "think";
+  const label = isThink ? "Think" : "工具调用";
+  const countLabel = isThink ? `${items.length} 段` : `${items.length} 项`;
+
+  useEffect(() => {
+    if (previousActive.current && !active) {
+      setOpen(false);
+    }
+    previousActive.current = active;
+  }, [active]);
+
   return (
-    <details className="tool-process">
-      <summary className="tool-process-summary">
-        <SquareTerminal aria-hidden="true" />
-        <span>{`运行了 ${tools.length} 个命令`}</span>
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className={`activity-group activity-group-${kind}`}
+      data-testid={`activity-group-${kind}`}
+    >
+      <summary aria-label={`${label}，${countLabel}`}>
+        {isThink ? <BrainCircuit aria-hidden="true" /> : <Wrench aria-hidden="true" />}
+        <span className={running ? "status-shimmer" : undefined}>{label}</span>
+        <span className="activity-group-count">{countLabel}</span>
         <ChevronDown aria-hidden="true" />
       </summary>
-      <div className="tool-process-rows">
-        {tools.map((tool) => (
-          <CommandRow tool={tool} key={tool.id} />
-        ))}
-      </div>
+      <div className="activity-group-rows">{items}</div>
     </details>
+  );
+});
+
+const CompletedTurnHistory = memo(function CompletedTurnHistory({
+  end,
+  items,
+  start,
+}: {
+  end?: number;
+  items: ReactNode[];
+  start: number;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!items.length) {
+    return <TurnWorkingTime active={false} end={end} start={start} />;
+  }
+  const elapsed = formatElapsedMilliseconds(Math.max(0, (end ?? Date.now()) - start));
+  return (
+    <details
+      className="turn-history"
+      data-testid="turn-history"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary aria-label={`已工作 ${elapsed}，展开历史内容`}>
+        <span>{`已工作 ${elapsed}`}</span>
+        <ChevronDown aria-hidden="true" />
+      </summary>
+      <div className="turn-history-content">{items}</div>
+    </details>
+  );
+});
+
+function TurnWorkingTime({ start, end, active }: { start: number; end?: number; active: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
+  return (
+    <div className="turn-working-time" data-testid="turn-working-time">
+      <span>{`已工作 ${formatElapsedMilliseconds(Math.max(0, (end ?? now) - start))}`}</span>
+    </div>
   );
 }
 
-function CommandRow({ tool }: { tool: DesktopToolEvent }) {
+function isTerminalEntry(entry: DesktopTimelineEntry): boolean {
+  return entry.kind === "status" && (
+    entry.title === "Turn completed" ||
+    entry.title === "Turn failed" ||
+    entry.title === "Turn interrupted"
+  );
+}
+
+function isReasoningOnlyEntry(entry: DesktopTimelineEntry): boolean {
+  return Boolean(entry.reasoning?.trim()) && !entry.detail?.trim();
+}
+
+function toolForTimelineEntry(
+  entry: DesktopTimelineEntry,
+  tools: DesktopToolEvent[],
+  rendered: Set<string>,
+): DesktopToolEvent | undefined {
+  return tools.find((tool) =>
+    !rendered.has(tool.id) && tool.turnId === entry.turnId &&
+    (tool.startedAt === entry.timestamp || tool.completedAt === entry.timestamp),
+  ) ?? tools.find((tool) =>
+    !rendered.has(tool.id) && tool.turnId === entry.turnId &&
+    `${entry.title} ${entry.detail ?? ""}`.includes(tool.name),
+  );
+}
+
+function skillToolFromEntry(entry: DesktopTimelineEntry): DesktopToolEvent {
+  return {
+    id: entry.id,
+    turnId: entry.turnId,
+    name: "skill",
+    status: "success",
+    summary: entry.detail,
+    inputPreview: entry.detail,
+    startedAt: entry.timestamp,
+    completedAt: entry.timestamp,
+  };
+}
+
+const CommandRow = memo(function CommandRow({ tool }: { tool: DesktopToolEvent }) {
+  const running = tool.status === "running" || tool.status === "queued";
+  const ToolIcon = tool.name === "skill" ? Wrench : tool.name.startsWith("mcp__") ? Globe : SquareTerminal;
   return (
-    <details className={`command-row tone-${tool.status}`} aria-label={`执行命令：${tool.name}`}>
+    <details
+      className={`command-row tool-call-row tone-${tool.status}`}
+      aria-label={`工具调用：${tool.name}`}
+      data-testid="tool-call-row"
+    >
       <summary>
-        <SquareTerminal aria-hidden="true" />
-        <span className="command-state">{commandState(tool)}</span>
-        <code>{commandPreview(tool)}</code>
+        <ToolIcon aria-hidden="true" />
+        <span className={`tool-call-label${running ? " status-shimmer" : ""}`}>
+          <span className="command-state">{toolAction(tool, running)}</span>
+          <span className={running ? "status-shimmer" : undefined}>{toolDisplayText(tool)}</span>
+        </span>
         <ChevronDown aria-hidden="true" />
       </summary>
       <div className="command-detail">
@@ -388,9 +498,9 @@ function CommandRow({ tool }: { tool: DesktopToolEvent }) {
       </div>
     </details>
   );
-}
+});
 
-function TimelineItem({
+const TimelineItem = memo(function TimelineItem({
   entry,
   usage,
   liveStatus,
@@ -416,6 +526,7 @@ function TimelineItem({
   if (entry.kind === "assistant") {
     return (
       <article className="timeline-entry assistant-entry" data-testid="timeline-assistant">
+        {entry.reasoning ? <AssistantReasoning content={entry.reasoning} /> : null}
         {entry.detail ? <MarkdownContent>{entry.detail}</MarkdownContent> : null}
         {liveStatus ? (
           <div className="execution-live-status" role="status" aria-live="polite">
@@ -491,7 +602,7 @@ function TimelineItem({
       </div>
     </article>
   );
-}
+});
 
 function UserMessage({
   content,
@@ -627,13 +738,7 @@ function formatTime(timestamp: string): string {
   return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function formatElapsed(entries: DesktopTimelineEntry[], endAt?: number): string {
-  const timestamps = entries.filter((entry) => entry.kind !== "session")
-    .map((entry) => new Date(entry.timestamp).valueOf())
-    .filter(Number.isFinite);
-  if (!timestamps.length) return "0秒";
-  const end = endAt ?? Math.max(...timestamps);
-  const elapsedMs = Math.max(0, end - Math.min(...timestamps));
+function formatElapsedMilliseconds(elapsedMs: number): string {
   const elapsedSeconds = Math.floor(elapsedMs / 1000);
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
@@ -693,6 +798,21 @@ function HistoryAttachment({
   );
 }
 
+const AssistantReasoning = memo(function AssistantReasoning({ content }: { content: string }) {
+  return (
+    <details className="assistant-reasoning" data-testid="assistant-reasoning">
+      <summary aria-label="Think">
+        <BrainCircuit aria-hidden="true" />
+        <span>Think</span>
+        <ChevronDown aria-hidden="true" />
+      </summary>
+      <div className="assistant-reasoning-body">
+        <MarkdownContent>{content}</MarkdownContent>
+      </div>
+    </details>
+  );
+});
+
 function formatAttachmentSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -731,6 +851,7 @@ function QuestionCard({ api, request, onResolved }: { api: Pick<DesktopApi, "res
   const [answer, setAnswer] = useState("");
   const [responding, setResponding] = useState(false);
   const [error, setError] = useState<string>();
+  const answerRef = useAutoGrowingTextarea();
   const respond = async () => {
     const cleanAnswer = answer.trim();
     if (!cleanAnswer) return;
@@ -741,25 +862,30 @@ function QuestionCard({ api, request, onResolved }: { api: Pick<DesktopApi, "res
     finally { setResponding(false); }
   };
   return <article className="timeline-entry question-inline-card" aria-label="Agent 问题">
-    <div className="question-inline-heading"><CircleHelp aria-hidden="true" /><span>Agent 询问</span></div>
-    <p className="question-inline-prompt">{request.question}</p>
-    <textarea aria-label="回答" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="输入你的回答" rows={3} onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (!responding && answer.trim()) void respond(); } }} />
+    <header className="approval-card-heading question-inline-heading">
+      <span className="approval-card-icon"><CircleHelp aria-hidden="true" /></span>
+      <div>
+        <p className="request-card-kicker">需要输入</p>
+        <MarkdownContent className="request-markdown request-card-message question-inline-prompt" disableStrong>{request.question}</MarkdownContent>
+      </div>
+    </header>
+    <textarea ref={answerRef} aria-label="回答" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="输入你的回答" rows={3} onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (!responding && answer.trim()) void respond(); } }} />
     {error ? <p className="form-error" role="alert">{error}</p> : null}
-    <footer><span>Ctrl/⌘ + Enter 提交</span><button type="button" className="primary-button" disabled={responding || !answer.trim()} onClick={() => void respond()}>提交回答</button></footer>
+    <footer><span>Ctrl+Enter 提交</span><button type="button" className="question-submit-button" aria-label="提交回答" title="提交回答" disabled={responding || !answer.trim()} onClick={() => void respond()}><Check aria-hidden="true" /></button></footer>
   </article>;
 }
 
-function commandState(tool: DesktopToolEvent): string {
-  if (tool.status === "running" || !tool.completedAt) return "正在运行";
-  const started = tool.startedAt ? new Date(tool.startedAt).valueOf() : Number.NaN;
-  const completed = new Date(tool.completedAt).valueOf();
-  const seconds = Number.isFinite(started)
-    ? Math.max(1, Math.round((completed - started) / 1000))
-    : 1;
-  return `已在 ${seconds}s 内运行`;
+function toolAction(tool: DesktopToolEvent, running: boolean): string {
+  if (tool.name === "skill") return running ? "Loading" : "Loaded";
+  if (tool.name.startsWith("mcp__")) return running ? "Calling" : "Called";
+  return running ? "Running" : "Ran";
 }
 
-function commandPreview(tool: DesktopToolEvent): string {
+function toolDisplayText(tool: DesktopToolEvent): string {
+  if (!isShellTool(tool.name)) {
+    if (tool.name === "skill") return skillName(tool.inputPreview) ?? tool.summary ?? "Skill";
+    return tool.name;
+  }
   if (!tool.inputPreview) return tool.summary ?? tool.name;
   try {
     const input = JSON.parse(tool.inputPreview) as Record<string, unknown>;
@@ -768,4 +894,19 @@ function commandPreview(tool: DesktopToolEvent): string {
     // Truncated previews remain useful as fallback labels.
   }
   return tool.inputPreview;
+}
+
+function isShellTool(name: string): boolean {
+  return name === "shell" || name === "process" || name === "pwsh" || name === "bash";
+}
+
+function skillName(inputPreview: string | undefined): string | undefined {
+  if (!inputPreview) return undefined;
+  try {
+    const input = JSON.parse(inputPreview) as Record<string, unknown>;
+    if (typeof input.name === "string") return input.name;
+  } catch {
+    return inputPreview;
+  }
+  return inputPreview;
 }

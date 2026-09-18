@@ -254,6 +254,8 @@ export interface ChatMessage {
   name?: string;
   toolCallId?: string;
   toolCalls?: NormalizedToolCall[];
+  /** Provider metadata required to continue an assistant tool-call turn. */
+  reasoningContent?: string;
 }
 
 export type MediaAttachmentKind = "image" | "audio" | "video";
@@ -291,6 +293,8 @@ export interface CompactionCheckpoint {
 }
 
 export type ModelEvent =
+  | { type: "reasoning_delta"; text: string }
+  | { type: "reasoning_done"; content: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; toolCall: NormalizedToolCall }
   | { type: "usage"; usage: ModelUsage }
@@ -301,6 +305,7 @@ export interface ModelUsage {
   cachedInputTokens?: number;
   uncachedInputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
   costUsd?: number;
   warnings?: string[];
@@ -354,6 +359,7 @@ export type AgentEventType =
   | "context.built"
   | "context.compressed"
   | "model.started"
+  | "model.reasoning_delta"
   | "model.delta"
   | "model.tool_call"
   | "assistant.message"

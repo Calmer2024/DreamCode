@@ -66,6 +66,9 @@ export function App({ api = window.dreamcode }: AppProps) {
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const shouldFollowTimeline = useRef(true);
   const pendingScrollFrame = useRef<number | undefined>(undefined);
+  const previousTimelineLength = useRef(0);
+  const pendingStreamEvents = useRef<DesktopRunEvent[]>([]);
+  const pendingStreamFrame = useRef<number | undefined>(undefined);
 
   const applyDraftStatus = useCallback((status: DesktopRunStatus) => {
     const pending = pendingSubmission.current;
@@ -134,14 +137,50 @@ export function App({ api = window.dreamcode }: AppProps) {
   }, [state.drawer]);
 
   useEffect(() => {
-    const unsubscribeRunEvent = api.onRunEvent((message) => {
+    const flushStreamEvents = () => {
+      const events = pendingStreamEvents.current;
+      pendingStreamEvents.current = [];
+      // DeepSeek can emit hundreds of tiny chunks per frame. Collapse adjacent chunks before reducing them.
+      for (const message of coalesceStreamingEvents(events)) {
+        dispatch({ type: "run.event", message });
+      }
+    };
+    const scheduleStreamFlush = () => {
+      if (pendingStreamFrame.current !== undefined) return;
+      const flush = () => {
+        pendingStreamFrame.current = undefined;
+        flushStreamEvents();
+      };
+      pendingStreamFrame.current =
+        typeof window.requestAnimationFrame === "function"
+          ? window.requestAnimationFrame(flush)
+          : window.setTimeout(flush, 16);
+    };
+    const enqueueRunEvent = (message: DesktopRunEvent) => {
       if (startingRef.current) {
         pendingRunEvents.current.push(message);
         return;
       }
-      dispatch({ type: "run.event", message });
+      if (!isStreamingDelta(message)) {
+        flushStreamEvents();
+        dispatch({ type: "run.event", message });
+        return;
+      }
+      pendingStreamEvents.current.push(message);
+      scheduleStreamFlush();
+    };
+    const unsubscribeRunEvent = api.onRunEvent((message) => {
+      enqueueRunEvent(message);
     });
     const unsubscribeRunStatus = api.onRunStatus((status) => {
+      if (pendingStreamFrame.current !== undefined) {
+        if (typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(pendingStreamFrame.current);
+        }
+        window.clearTimeout(pendingStreamFrame.current);
+        pendingStreamFrame.current = undefined;
+      }
+      flushStreamEvents();
       if (startingRef.current) {
         pendingRunStatuses.current.push(status);
         return;
@@ -158,6 +197,14 @@ export function App({ api = window.dreamcode }: AppProps) {
     const unsubscribeApproval = api.onApprovalRequest(setApprovalRequest);
     const unsubscribeQuestion = api.onQuestionRequest(setQuestionRequest);
     return () => {
+      if (pendingStreamFrame.current !== undefined) {
+        if (typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(pendingStreamFrame.current);
+        }
+        window.clearTimeout(pendingStreamFrame.current);
+        pendingStreamFrame.current = undefined;
+      }
+      pendingStreamEvents.current = [];
       unsubscribeRunEvent();
       unsubscribeRunStatus();
       unsubscribeApproval();
@@ -191,30 +238,39 @@ export function App({ api = window.dreamcode }: AppProps) {
   const activeProject = state.bootstrap?.projects?.find(
     (project) => project.workspaceRoot === state.workspaceRoot,
   );
-  const timelineRevision = `${timeline.length}:${timeline.at(-1)?.detail ?? ""}:${state.request?.prompt ?? ""}`;
+  const lastTimelineEntry = timeline.at(-1);
+  const timelineRevision = `${timeline.length}:${lastTimelineEntry?.detail?.length ?? 0}:${lastTimelineEntry?.reasoning?.length ?? 0}:${state.request?.prompt ?? ""}`;
 
   useEffect(() => {
     const mainPane = mainPaneRef.current;
     const composerStack = composerStackRef.current;
     if (!mainPane || !composerStack) return;
     const composer = composerStack.querySelector<HTMLElement>(".composer-stack, .approval-card");
+    const todo = composerStack.querySelector<HTMLElement>(".todo-panel");
     if (!composer) return;
     const updateHeight = () => {
-      mainPane.style.setProperty("--composer-height", `${composer.getBoundingClientRect().height}px`);
+      const composerHeight = composer.getBoundingClientRect().height;
+      const todoHeight = todo?.getBoundingClientRect().height ?? 0;
+      mainPane.style.setProperty("--composer-height", `${composerHeight}px`);
+      mainPane.style.setProperty(
+        "--timeline-bottom-padding",
+        `${composerHeight + (todo ? todoHeight + 30 : 0) + 32}px`,
+      );
     };
     updateHeight();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(updateHeight);
     observer.observe(composer);
+    if (todo) observer.observe(todo);
     return () => observer.disconnect();
-  }, [approvalRequest, loading, state.workspaceRoot, state.activeSessionId, state.request, timeline.length]);
+  }, [approvalRequest, loading, state.workspaceRoot, state.activeSessionId, state.request, state.todoItems.length, state.drawer, timeline.length]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!timelineRevision || !shouldFollowTimeline.current || !container) return;
+    previousTimelineLength.current = timeline.length;
     container.scrollTop = container.scrollHeight;
   }, [timelineRevision]);
-
   const applyBootstrap = useCallback((bootstrap: DesktopBootstrap) => {
     dispatch({ type: "bootstrap.refreshed", bootstrap });
   }, []);
@@ -612,6 +668,44 @@ export function App({ api = window.dreamcode }: AppProps) {
 
 function lastPathSegment(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function isStreamingDelta(message: DesktopRunEvent): boolean {
+  return message.event.type === "model.delta" || message.event.type === "model.reasoning_delta";
+}
+
+function coalesceStreamingEvents(events: DesktopRunEvent[]): DesktopRunEvent[] {
+  const merged: DesktopRunEvent[] = [];
+  for (const message of events) {
+    const previous = merged.at(-1);
+    if (
+      previous &&
+      previous.runId === message.runId &&
+      previous.event.type === message.event.type &&
+      isStreamingDelta(previous) &&
+      isStreamingDelta(message)
+    ) {
+      const previousText = streamingDeltaText(previous);
+      const nextText = streamingDeltaText(message);
+      merged[merged.length - 1] = {
+        ...message,
+        event: {
+          ...message.event,
+          payload: { text: previousText + nextText },
+        },
+      };
+      continue;
+    }
+    merged.push(message);
+  }
+  return merged;
+}
+
+function streamingDeltaText(message: DesktopRunEvent): string {
+  const payload = message.event.payload;
+  if (!payload || typeof payload !== "object" || !("text" in payload)) return "";
+  const text = (payload as { text?: unknown }).text;
+  return typeof text === "string" ? text : "";
 }
 
 function projectName(bootstrap: DesktopBootstrap | undefined, workspaceRoot: string | undefined) {

@@ -41,6 +41,7 @@ describe("TUI event reducer", () => {
         },
       }),
       agentEvent("model.started", { provider: "fake", model: "default", toolCount: 3 }),
+      agentEvent("model.reasoning_delta", { text: "先检查仓库。" }),
       agentEvent("model.delta", { text: "I will inspect the repo.\n" }),
       agentEvent("todo.updated", {
         items: [{ content: "Patch implementation", status: "in_progress" }],
@@ -76,6 +77,7 @@ describe("TUI event reducer", () => {
     expect(state.assistantText).toContain("inspect the repo");
     expect(state.assistantMessages).toHaveLength(1);
     expect(state.assistantMessages[0]?.text).toContain("inspect the repo");
+    expect(state.assistantMessages[0]?.reasoning).toBe("先检查仓库。");
     expect(state.todos[0]?.content).toBe("Patch implementation");
     expect(state.tools[0]).toMatchObject({ name: "file.patch", status: "success" });
     expect(state.changedFiles[0]).toMatchObject({ path: "src/math.js", operation: "update" });
@@ -135,6 +137,33 @@ describe("TUI event reducer", () => {
       "second full answer",
     ]);
     expect(state.timeline.filter((entry) => entry.title === "Turn completed")).toHaveLength(2);
+  });
+
+  it("keeps reasoning out of assistantText while attaching it to the current message", () => {
+    let state = createInitialTuiState({
+      version: "0.1.0",
+      workspaceRoot: "/repo",
+      mode: "workspace-write",
+      provider: "deepseek",
+      model: "deepseek-flash",
+      home: "/home/.dreamcode",
+    });
+
+    state = reduceTuiEvent(state, agentEvent("turn.started", {
+      turn: {
+        id: "turn_1",
+        prompt: "Inspect the repository",
+        mode: "workspace-write",
+      },
+    }));
+    state = reduceTuiEvent(state, agentEvent("model.reasoning_delta", { text: "先查看工具结果。" }));
+    state = reduceTuiEvent(state, agentEvent("model.delta", { text: "完成。" }));
+
+    expect(state.assistantText).toBe("完成。");
+    expect(state.assistantMessages[0]).toMatchObject({
+      text: "完成。",
+      reasoning: "先查看工具结果。",
+    });
   });
 });
 

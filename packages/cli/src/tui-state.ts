@@ -49,6 +49,7 @@ export interface TuiAssistantMessage {
   id: string;
   turnId?: string;
   text: string;
+  reasoning?: string;
   status: "streaming" | "completed" | "failed" | "interrupted";
   startedAt: string;
   updatedAt: string;
@@ -285,8 +286,21 @@ export function reduceTuiEvent(state: TuiState, event: AgentEvent): TuiState {
         },
       );
 
+    case "model.reasoning_delta":
+      return appendAssistantReasoningDelta(state, event, stringValue(payload.text) ?? "");
+
     case "model.delta":
       return appendAssistantDelta(state, event, stringValue(payload.text) ?? "");
+
+    case "assistant.message": {
+      const message = asRecord(payload.message);
+      const text = stringValue(message.content) ?? "";
+      const reasoning = stringValue(message.reasoningContent);
+      if (!text && reasoning === undefined) {
+        return state;
+      }
+      return reconcileAssistantMessage(state, event, text, reasoning);
+    }
 
     case "model.tool_call": {
       const toolCall = asRecord(payload.toolCall);
@@ -620,6 +634,94 @@ function appendAssistantDelta(state: TuiState, event: AgentEvent, text: string):
     ...current,
     text: `${current.text}${text}`,
     status: "streaming",
+    updatedAt: event.timestamp,
+  };
+  return { ...state, assistantText, assistantMessages };
+}
+
+function appendAssistantReasoningDelta(state: TuiState, event: AgentEvent, text: string): TuiState {
+  if (!text) {
+    return state;
+  }
+  const turnId = event.turnId ?? state.turnId;
+  const index = findLastIndex(
+    state.assistantMessages,
+    (message) => Boolean(turnId) && message.turnId === turnId,
+  );
+  if (index === -1) {
+    return {
+      ...state,
+      assistantMessages: [
+        ...state.assistantMessages,
+        {
+          id: `assistant-${turnId ?? event.id}`,
+          turnId,
+          text: "",
+          reasoning: text,
+          status: "streaming",
+          startedAt: event.timestamp,
+          updatedAt: event.timestamp,
+        },
+      ],
+    };
+  }
+
+  const assistantMessages = [...state.assistantMessages];
+  const current = assistantMessages[index];
+  if (!current) {
+    return state;
+  }
+  assistantMessages[index] = {
+    ...current,
+    reasoning: `${current.reasoning ?? ""}${text}`,
+    status: "streaming",
+    updatedAt: event.timestamp,
+  };
+  return { ...state, assistantMessages };
+}
+
+function reconcileAssistantMessage(
+  state: TuiState,
+  event: AgentEvent,
+  text: string,
+  reasoning: string | undefined,
+): TuiState {
+  const turnId = event.turnId ?? state.turnId;
+  const index = findLastIndex(
+    state.assistantMessages,
+    (message) => Boolean(turnId) && message.turnId === turnId,
+  );
+  const assistantText = event.turnId === undefined || event.turnId === state.turnId
+    ? text || state.assistantText
+    : state.assistantText;
+  if (index === -1) {
+    return {
+      ...state,
+      assistantText,
+      assistantMessages: [
+        ...state.assistantMessages,
+        {
+          id: `assistant-${turnId ?? event.id}`,
+          turnId,
+          text,
+          ...(reasoning === undefined ? {} : { reasoning }),
+          status: "streaming",
+          startedAt: event.timestamp,
+          updatedAt: event.timestamp,
+        },
+      ],
+    };
+  }
+
+  const assistantMessages = [...state.assistantMessages];
+  const current = assistantMessages[index];
+  if (!current) {
+    return { ...state, assistantText };
+  }
+  assistantMessages[index] = {
+    ...current,
+    text: text || current.text,
+    ...(reasoning === undefined ? {} : { reasoning }),
     updatedAt: event.timestamp,
   };
   return { ...state, assistantText, assistantMessages };

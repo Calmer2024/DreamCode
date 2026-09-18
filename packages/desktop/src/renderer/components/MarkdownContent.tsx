@@ -11,11 +11,13 @@ import { CodeBlock } from "./CodeBlock";
 
 interface MarkdownContentProps {
   children: string;
+  className?: string;
+  disableStrong?: boolean;
 }
 
-export function MarkdownContent({ children }: MarkdownContentProps) {
+export function MarkdownContent({ children, className, disableStrong = false }: MarkdownContentProps) {
   return (
-    <div className="markdown-content">
+    <div className={["markdown-content", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -38,6 +40,9 @@ export function MarkdownContent({ children }: MarkdownContentProps) {
             );
           },
           li: TaskListItem,
+          strong: ({ children: strongChildren }) => disableStrong
+            ? <span>{strongChildren}</span>
+            : <strong>{strongChildren}</strong>,
         }}
       >
         {children}

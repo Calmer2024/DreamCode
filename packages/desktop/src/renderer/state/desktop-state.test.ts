@@ -124,6 +124,61 @@ describe("desktop state reducer", () => {
     expect(state.rawEvents).toHaveLength(2);
   });
 
+  it("keeps reasoning separate from the visible assistant answer", () => {
+    let state = desktopReducer(runningState("run_1"), {
+      type: "run.event",
+      message: { runId: "run_1", event: agentEvent("model.reasoning_delta", { text: "先检查 " }) },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: { runId: "run_1", event: agentEvent("model.reasoning_delta", { text: "工具结果。" }) },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: { runId: "run_1", event: agentEvent("model.delta", { text: "完成。" }) },
+    });
+
+    expect(selectTimeline(state)).toContainEqual(
+      expect.objectContaining({
+        kind: "assistant",
+        detail: "完成。",
+        reasoning: "先检查 工具结果。",
+      }),
+    );
+    expect(selectTimeline(state).filter((entry) => entry.kind === "assistant")).toHaveLength(1);
+  });
+
+  it("reconciles assistant.message after a tool event instead of duplicating Think", () => {
+    let state = desktopReducer(runningState("run_1"), {
+      type: "run.event",
+      message: { runId: "run_1", event: agentEvent("model.reasoning_delta", { text: "reasoning" }) },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: {
+        runId: "run_1",
+        event: agentEvent("model.tool_call", {
+          toolCall: { id: "call_1", name: "job_kill", input: { job_id: "job_1" } },
+        }),
+      },
+    });
+    state = desktopReducer(state, {
+      type: "run.event",
+      message: {
+        runId: "run_1",
+        event: agentEvent("assistant.message", {
+          message: { role: "assistant", content: "visible answer", reasoningContent: "reasoning" },
+        }),
+      },
+    });
+
+    const assistants = selectTimeline(state).filter((entry) => entry.kind === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toEqual(
+      expect.objectContaining({ detail: "visible answer", reasoning: "reasoning" }),
+    );
+  });
+
   it("tracks current context usage, aggregates turn tokens, and exposes compaction", () => {
     let state = runningState("run_1");
     for (const event of [

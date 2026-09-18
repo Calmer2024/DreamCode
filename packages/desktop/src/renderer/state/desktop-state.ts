@@ -28,6 +28,7 @@ export interface DesktopTimelineEntry {
   kind: DesktopTimelineKind;
   title: string;
   detail?: string;
+  reasoning?: string;
   tone: DesktopTimelineTone;
   timestamp: string;
   turnId?: string;
@@ -231,6 +232,7 @@ export function desktopReducer(state: DesktopState, action: DesktopAction): Desk
         runStatus: action.status.status,
         error: action.status.error ?? state.error,
         activeRunId: action.status.status === "running" ? state.activeRunId : undefined,
+        todoItems: action.status.status === "running" ? state.todoItems : [],
       };
     case "drawer.open":
       return { ...state, drawer: action.drawer };
@@ -428,6 +430,17 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       const text = stringValue(payload.text);
       return text ? appendAssistantDelta(next, event, text) : next;
     }
+    case "model.reasoning_delta": {
+      const text = stringValue(payload.text);
+      return text ? appendAssistantReasoningDelta(next, event, text) : next;
+    }
+    case "assistant.message": {
+      const message = asRecord(payload.message);
+      const text = stringValue(message.content) ?? "";
+      const reasoning = stringValue(message.reasoningContent);
+      if (!text && reasoning === undefined) return next;
+      return reconcileAssistantMessage(next, event, text, reasoning);
+    }
     case "model.usage": {
       const turnId = event.turnId;
       if (!turnId) return next;
@@ -605,6 +618,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
         {
           ...next,
           runStatus: "completed",
+          todoItems: [],
           changedFiles: mergeChangedFiles(next.changedFiles, changedFilesFromSummary(summary)),
           changedFilesByTurn: event.turnId
             ? {
@@ -627,7 +641,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       return next;
     case "turn.failed":
       return appendTimeline(
-        { ...next, runStatus: "failed" },
+        { ...next, runStatus: "failed", todoItems: [] },
         event,
         "status",
         "Turn failed",
@@ -636,7 +650,7 @@ function reduceAgentEvent(state: DesktopState, event: AgentEvent): DesktopState 
       );
     case "turn.interrupted":
       return appendTimeline(
-        { ...next, runStatus: "interrupted" },
+        { ...next, runStatus: "interrupted", todoItems: [] },
         event,
         "status",
         "Turn interrupted",
@@ -744,6 +758,90 @@ function appendAssistantDelta(state: DesktopState, event: AgentEvent, text: stri
   };
 }
 
+function appendAssistantReasoningDelta(
+  state: DesktopState,
+  event: AgentEvent,
+  text: string,
+): DesktopState {
+  const last = state.timeline.at(-1);
+  if (last?.kind !== "assistant" || last.turnId !== event.turnId) {
+    return {
+      ...state,
+      timeline: [
+        ...state.timeline,
+        {
+          id: event.id,
+          kind: "assistant",
+          title: "Assistant",
+          detail: "",
+          reasoning: text,
+          tone: "muted",
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+        },
+      ],
+    };
+  }
+  return {
+    ...state,
+    timeline: [
+      ...state.timeline.slice(0, -1),
+      {
+        ...last,
+        reasoning: `${last.reasoning ?? ""}${text}`,
+        timestamp: event.timestamp,
+      },
+    ],
+  };
+}
+
+function reconcileAssistantMessage(
+  state: DesktopState,
+  event: AgentEvent,
+  text: string,
+  reasoning: string | undefined,
+): DesktopState {
+  // assistant.message is the canonical snapshot for the model output that
+  // preceded its tool calls. Tool timeline entries may already sit after the
+  // streamed assistant entry, so only looking at timeline.at(-1) would create
+  // a second assistant/Think entry for the same model output.
+  const assistantIndex = state.timeline.findLastIndex(
+    (entry) => entry.kind === "assistant" && entry.turnId === event.turnId,
+  );
+  const previous = assistantIndex >= 0 ? state.timeline[assistantIndex] : undefined;
+  if (previous) {
+    return {
+      ...state,
+      timeline: state.timeline.map((entry, index) =>
+        index === assistantIndex
+          ? {
+              ...entry,
+              detail: text || entry.detail,
+              ...(reasoning === undefined ? {} : { reasoning }),
+              timestamp: event.timestamp,
+            }
+          : entry,
+      ),
+    };
+  }
+  return {
+    ...state,
+    timeline: [
+      ...state.timeline,
+      {
+        id: event.id,
+        kind: "assistant",
+        title: "Assistant",
+        detail: text,
+        ...(reasoning === undefined ? {} : { reasoning }),
+        tone: "muted",
+        timestamp: event.timestamp,
+        turnId: event.turnId,
+      },
+    ],
+  };
+}
+
 function terminalOutput(
   event: AgentEvent,
   payload: Record<string, unknown>,
@@ -838,11 +936,13 @@ function modelUsageFrom(value: unknown, estimated: boolean): DesktopTurnUsage {
   const cachedInputTokens = numberValue(usage.cachedInputTokens);
   const uncachedInputTokens = numberValue(usage.uncachedInputTokens);
   const outputTokens = numberValue(usage.outputTokens);
+  const reasoningTokens = numberValue(usage.reasoningTokens);
   return {
     inputTokens,
     ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
     ...(uncachedInputTokens === undefined ? {} : { uncachedInputTokens }),
     outputTokens,
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
     totalTokens:
       numberValue(usage.totalTokens) ??
       (inputTokens !== undefined || outputTokens !== undefined
@@ -873,6 +973,7 @@ function mergeModelUsage(
           ),
         }),
     outputTokens: sumTokenValues(previous?.outputTokens, current.outputTokens),
+    reasoningTokens: sumTokenValues(previous?.reasoningTokens, current.reasoningTokens),
     totalTokens: sumTokenValues(previous?.totalTokens, current.totalTokens),
     estimated: previous?.estimated === true || current.estimated === true,
     ...(sumTokenValues(previous?.costUsd, current.costUsd) === undefined

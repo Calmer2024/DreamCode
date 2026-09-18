@@ -81,14 +81,13 @@ const CONTEXT_MODEL_PROFILES: readonly ContextModelProfile[] = [
   { provider: "openai", model: /^gpt-5\.4-mini$/, maxContextTokens: 400_000 },
   {
     provider: "deepseek",
-    model: /^deepseek-v4(?:-pro|-flash)(?:-.+)?$/,
+    model: /^(?:deepseek-flash|deepseek-v4-pro)$/,
     maxContextTokens: ONE_MILLION_TOKENS,
     reservedOutputTokens: 64_000,
     compactionBufferTokens: 24_000,
     keepRecentTokens: 64_000,
     tokenCounter: deepSeekV4TokenCounter,
   },
-  { provider: "deepseek", model: /^deepseek-v3(?:\.2)?$/, maxContextTokens: 128_000 },
   {
     provider: "qwen",
     model: /^qwen3\.7-(?:max|plus|flash)(?:-.+)?$/,
@@ -167,6 +166,7 @@ export class ContextBuilder {
         "Use the available platform shell tool for commands. Set run_in_background=true for long-running commands. Use job_output to inspect background work and job_kill to stop unneeded background work.",
         "Prefer parallel tool calls for independent operations.",
         buildSandboxPolicyContext(input.mode, path.resolve(input.workspaceRoot)),
+        buildShellPolicyContext(),
         `Project rules:\n${projectRules || "No DREAMCODE.md found."}`,
         input.skillCatalog
           ? [
@@ -402,6 +402,14 @@ async function readProjectRules(workspaceRoot: string): Promise<string> {
     }
   }
   return sections.length ? compressText(sections.join("\n\n"), 12_000).text : "";
+}
+
+function buildShellPolicyContext(): string {
+  if (process.platform === "win32") {
+    return "Current DreamCode shell policy: pwsh (PowerShell) on Windows. Use PowerShell syntax for shell commands; do not assume Bash/Linux syntax.";
+  }
+  const platform = process.platform === "darwin" ? "macOS" : process.platform === "linux" ? "Linux" : process.platform;
+  return "Current DreamCode shell policy: bash on " + platform + ". Use Bash syntax for shell commands.";
 }
 
 function buildSandboxPolicyContext(

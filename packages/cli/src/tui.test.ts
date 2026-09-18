@@ -198,6 +198,7 @@ describe("DreamCode Ink TUI", () => {
           id: "assistant-turn-2",
           turnId: "turn_2",
           text: "第二轮完整回答，也必须继续显示。",
+          reasoning: "先整理第二轮工具结果。",
           status: "completed",
           startedAt: "2026-07-09T00:00:03.000Z",
           updatedAt: "2026-07-09T00:00:04.000Z",
@@ -246,6 +247,8 @@ describe("DreamCode Ink TUI", () => {
     expect(lines).toContain("* 第一轮完整回答，不能被折叠。");
     expect(lines.some((line) => line.startsWith("› 第二轮问题"))).toBe(true);
     expect(lines).toContain("* 第二轮完整回答，也必须继续显示。");
+    expect(lines).toContain("* Think");
+    expect(lines).toContain("  先整理第二轮工具结果。");
   });
 
   it("renders assistant markdown as terminal transcript blocks", () => {
