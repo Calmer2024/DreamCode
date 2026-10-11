@@ -1,8 +1,0 @@
-{
-  "name": "workspace-ops",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --experimental-strip-types --test"
-  }
-}

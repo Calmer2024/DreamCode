@@ -486,6 +486,10 @@ function collectSensitiveValues(config: DreamCodeConfig): string[] {
   const values = new Set<string>();
   addSensitiveValue(values, config.exaApiKey);
   addSensitiveValue(values, process.env.EXA_API_KEY);
+  addSensitiveValue(values, config.langsmith?.apiKey);
+  addSensitiveValue(values, process.env.LANGSMITH_API_KEY);
+  if (config.langsmith?.apiKeyEnv)
+    addSensitiveValue(values, process.env[config.langsmith.apiKeyEnv]);
   for (const profile of Object.values(config.profiles)) {
     addSensitiveValue(values, profile.apiKey);
     if (profile.apiKeyEnv) {

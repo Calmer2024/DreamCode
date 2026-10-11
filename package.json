@@ -17,10 +17,17 @@
     "desktop:e2e": "pnpm --filter @dreamcode/desktop e2e",
     "dev": "tsx --conditions=development packages/cli/src/main.ts",
     "dreamcode": "tsx --conditions=development packages/cli/src/main.ts",
+    "eval:web": "pnpm --filter @dreamcode/eval-web dev",
+    "eval:web:build": "pnpm --filter @dreamcode/eval-web build",
     "format": "biome format --write .",
     "lint": "biome check .",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit"
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
+    "eval:dataset": "tsx --conditions=development packages/evals/src/dataset/cli.ts",
+    "eval:dataset:calibrate": "tsx --conditions=development packages/evals/scripts/calibrate-dataset.ts",
+    "eval:dataset:preflight": "tsx --conditions=development packages/evals/scripts/calibration-preflight.ts",
+    "eval:dataset:worker:build": "tsup --config packages/evals/dataset-container.build.ts",
+    "eval:agents:install": "node packages/evals/scripts/install-agents.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.4",

@@ -1,0 +1,31 @@
+/* Shared desktop and evaluation visual language. */
+:root {
+  --font-ui: "Noto Sans SC", sans-serif;
+  --text-primary: #242424;
+  --text-secondary: #747474;
+  --text-tertiary: #9a9ba0;
+  --surface: #fff;
+  --surface-subtle: #f5f5f5;
+  --surface-hover: #ebebeb;
+  --surface-selected: #e7e7e7;
+  --border: #dedede;
+  --border-soft: #e7e7e7;
+  --accent: #813cff;
+  --purple-soft: #eee7fa;
+  --purple-hover: #e7dcf8;
+  --danger: #f22c2c;
+  --danger-soft: #fce7e7;
+  --radius-panel: 20px;
+  --radius-control: 12px;
+  --shadow-menu: 0 12px 32px rgb(0 0 0 / 11%);
+  --shadow-dialog: 0 20px 58px rgb(0 0 0 / 15%);
+  --action-primary: #202124;
+  --motion-collapse: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dc-brand: var(--accent);
+  --dc-brand-dark: var(--accent);
+  --dc-sidebar: var(--surface-subtle);
+  --dc-border: var(--border);
+  --dc-text: var(--text-primary);
+  --dc-muted: var(--text-secondary);
+  --dc-warning: #d65a2f;
+}

@@ -197,11 +197,24 @@ export interface DreamCodeStoredLlmProfile extends DreamCodeLlmProfile {
 
 export type DreamCodeMcpServerConfig = McpServerConfig;
 
+export interface DreamCodeLangSmithConfig {
+  enabled?: boolean;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  projectName?: string;
+  endpoint?: string;
+  workspaceId?: string;
+  hideInputs?: boolean;
+  hideOutputs?: boolean;
+  flushTimeoutMs?: number;
+}
+
 export interface DreamCodeConfig {
   version: 2 | 3;
   currentProfileId?: string;
   profiles: Record<string, DreamCodeStoredLlmProfile>;
   exaApiKey?: string;
+  langsmith?: DreamCodeLangSmithConfig;
   mcpServers?: Record<string, unknown>;
   projects?: DreamCodeProject[];
   pinnedSessionIds?: string[];
@@ -1131,11 +1144,13 @@ function normalizeConfig(raw: unknown): DreamCodeConfig {
     : [];
   const sessionTitles = normalizeStringRecord(input.sessionTitles) ?? {};
   const exaApiKey = normalizeString(input.exaApiKey);
+  const langsmith = normalizeLangSmithConfig(input.langsmith);
   return {
     version: 3,
     currentProfileId,
     profiles,
     ...(exaApiKey ? { exaApiKey } : {}),
+    ...(langsmith ? { langsmith } : {}),
     ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
     ...(projects.length ? { projects } : {}),
     ...(pinnedSessionIds.length ? { pinnedSessionIds } : {}),
@@ -1175,6 +1190,27 @@ function normalizeStoredProfile(
     apiKeyEnv: normalizeString(profile.apiKeyEnv),
     baseURL: normalizeString(profile.baseURL),
   };
+}
+
+function normalizeLangSmithConfig(raw: unknown): DreamCodeLangSmithConfig | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const input = raw as Record<string, unknown>;
+  const config: DreamCodeLangSmithConfig = {};
+  for (const key of ["enabled", "hideInputs", "hideOutputs"] as const) {
+    if (typeof input[key] === "boolean") config[key] = input[key];
+  }
+  for (const key of ["apiKey", "apiKeyEnv", "projectName", "endpoint", "workspaceId"] as const) {
+    const value = normalizeString(input[key]);
+    if (value) config[key] = value;
+  }
+  if (
+    typeof input.flushTimeoutMs === "number" &&
+    Number.isFinite(input.flushTimeoutMs) &&
+    input.flushTimeoutMs > 0
+  ) {
+    config.flushTimeoutMs = Math.max(1, Math.min(60_000, Math.floor(input.flushTimeoutMs)));
+  }
+  return Object.keys(config).length ? config : undefined;
 }
 
 function normalizeStoredModel(provider: string, model: unknown): string | undefined {

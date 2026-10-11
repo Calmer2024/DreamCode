@@ -21,6 +21,7 @@
       "@dreamcode/context": ["packages/context/src/index.ts"],
       "@dreamcode/core": ["packages/core/src/index.ts"],
       "@dreamcode/desktop": ["packages/desktop/src/shared/contracts.ts"],
+      "@dreamcode/evals": ["packages/evals/src/index.ts"],
       "@dreamcode/models": ["packages/models/src/index.ts"],
       "@dreamcode/mcp": ["packages/mcp/src/index.ts"],
       "@dreamcode/safety": ["packages/safety/src/index.ts"],

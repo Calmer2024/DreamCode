@@ -40,6 +40,9 @@ import {
 } from "@dreamcode/tools";
 import { ToolResultAggregator } from "./tool-result-aggregator.js";
 import { buildToolCallWaves, mapWithConcurrency } from "./tool-scheduler.js";
+import { loadTraceOptions, type TraceOptions, TurnTrace } from "./tracing.js";
+
+export type { TraceOptions } from "./tracing.js";
 
 export interface ApprovalRequest {
   toolCall: NormalizedToolCall;
@@ -47,6 +50,7 @@ export interface ApprovalRequest {
 }
 
 export interface RunTurnInput {
+  tracing?: TraceOptions;
   prompt: string;
   attachments?: MediaAttachment[];
   workspaceRoot: string;
@@ -74,6 +78,25 @@ export interface RunTurnState {
 }
 
 export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> {
+  const trace = new TurnTrace(await loadTraceOptions(input.home, input.tracing), {
+    prompt: input.prompt,
+    workspaceRoot: input.workspaceRoot,
+    provider: input.provider.name,
+    model: input.model?.trim() || input.provider.defaultModel || "default",
+    mode: input.mode ?? "workspace-write",
+  });
+  let failure: unknown;
+  try {
+    yield* runTurnInternal(input, trace);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await trace.close(failure);
+  }
+}
+
+async function* runTurnInternal(input: RunTurnInput, trace: TurnTrace): AsyncGenerator<AgentEvent> {
   const mode = input.mode ?? "workspace-write";
   const registry = input.registry ?? createDefaultToolRegistry();
   const permissionEngine = input.permissionEngine ?? new PermissionEngine();
@@ -162,6 +185,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       payload,
     });
     await eventLog.append(event);
+    trace.observe(event);
     return event;
   };
 
@@ -199,7 +223,12 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       });
     }
     for (const skillId of explicitSkills.skillIds) {
-      const loaded = await skills.loadExplicit(skillId);
+      const loaded = await trace.measure(
+        "skill.load",
+        { skillId, explicit: true },
+        () => skills.loadExplicit(skillId),
+        "tool",
+      );
       const toolCallId = createId("explicit_skill");
       state.messages.push({
         role: "assistant",
@@ -235,40 +264,45 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       // Freeze the mode-filtered tool view for this model request and its resulting calls.
       const toolSnapshot = registry.snapshot();
       const toolSpecs = synthesizing ? [] : toolSnapshot.toModelSpecs(mode);
-      const context = await contextBuilder.build({
-        mode,
-        workspaceRoot: session.workspaceRoot,
-        messages: synthesisMessage ? [...state.messages, synthesisMessage] : state.messages,
-        todoItems: state.todoItems,
-        skillCatalog,
-        tools: toolSpecs,
-        model: input.model ?? "",
-        estimateInputTokens: input.provider.estimateInputTokens
-          ? async (estimateInput) => {
-              const base = await input.provider.estimateInputTokens!({
-                ...estimateInput,
-                providerId: input.provider.name,
-              });
-              const baseInputTokens = base.baseInputTokens ?? base.inputTokens;
-              const requestClass = estimateInput.tools.length ? "with_tools" : "messages_only";
-              const calibrated = usageCalibrator.estimate(
-                baseInputTokens,
-                input.provider.name,
-                input.model ?? "",
-                requestClass,
-              );
-              return {
-                ...base,
-                baseInputTokens,
-                calibratedInputTokens: calibrated.calibratedInputTokens,
-                correctionRatio: calibrated.correctionRatio,
-                sampleCount: calibrated.sampleCount,
-                coldStart: calibrated.coldStart,
-                inputTokens: calibrated.calibratedInputTokens,
-              };
-            }
-          : undefined,
-      });
+      const context = await trace.measure(
+        "context.build",
+        { model: input.model, toolCount: toolSpecs.length },
+        () =>
+          contextBuilder.build({
+            mode,
+            workspaceRoot: session.workspaceRoot,
+            messages: synthesisMessage ? [...state.messages, synthesisMessage] : state.messages,
+            todoItems: state.todoItems,
+            skillCatalog,
+            tools: toolSpecs,
+            model: input.model ?? "",
+            estimateInputTokens: input.provider.estimateInputTokens
+              ? async (estimateInput) => {
+                  const base = await input.provider.estimateInputTokens!({
+                    ...estimateInput,
+                    providerId: input.provider.name,
+                  });
+                  const baseInputTokens = base.baseInputTokens ?? base.inputTokens;
+                  const requestClass = estimateInput.tools.length ? "with_tools" : "messages_only";
+                  const calibrated = usageCalibrator.estimate(
+                    baseInputTokens,
+                    input.provider.name,
+                    input.model ?? "",
+                    requestClass,
+                  );
+                  return {
+                    ...base,
+                    baseInputTokens,
+                    calibratedInputTokens: calibrated.calibratedInputTokens,
+                    correctionRatio: calibrated.correctionRatio,
+                    sampleCount: calibrated.sampleCount,
+                    coldStart: calibrated.coldStart,
+                    inputTokens: calibrated.calibratedInputTokens,
+                  };
+                }
+              : undefined,
+          }),
+      );
       throwIfInterrupted(input.signal);
       yield await emit("context.built", {
         summary: context.summary,
@@ -291,6 +325,11 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
         }
       }
 
+      trace.startModel(
+        { messages: context.messages, tools: toolSpecs },
+        input.provider.name,
+        input.model?.trim() || input.provider.defaultModel || "default",
+      );
       yield await emit("model.started", {
         provider: input.provider.name,
         model: input.model ?? "default",
@@ -359,11 +398,10 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
       if (!usageReported) {
         const inputTokens = context.estimatedTokens;
         const outputTokens = Math.ceil(
-          (
-            assistantReasoning.length +
+          (assistantReasoning.length +
             assistantText.length +
-            JSON.stringify(toolCalls.map(canonicalToolCall)).length
-          ) / 4,
+            JSON.stringify(toolCalls.map(canonicalToolCall)).length) /
+            4,
         );
         yield await emit("model.usage", {
           usage: {
@@ -461,6 +499,7 @@ export async function* runTurn(input: RunTurnInput): AsyncGenerator<AgentEvent> 
 
         for (const scheduled of wave.calls) {
           const { toolCall } = scheduled;
+          trace.startTool(toolCall);
 
           const preflightResult = await toolSnapshot
             .get(toolCall.name)

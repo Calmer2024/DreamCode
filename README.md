@@ -152,6 +152,44 @@ pnpm dreamcode
 pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 DeepSeek API Key" "分析当前项目结构"
 ```
 
+## LangSmith Trace
+
+已安装的桌面应用使用安装包内的运行时，修改源码不会自动更新它。新增 Trace 功能后，需要重新执行 `pnpm desktop:dist` 并安装新生成的安装包。2026 年 9 月的旧版既不包含 Trace 代码，也会在保存配置时删除不认识的 `langsmith` 字段；请先退出旧版并更新，再填写 LangSmith 配置。`pnpm --filter @dreamcode/desktop chain-test` 会使用模拟密钥和本地 HTTP 接收端验证打包后的桌面应用保留配置并实际上传 Trace。
+
+核心运行时支持完整的每轮 Trace，包含上下文构建、模型请求与响应、首 token 时间、token 用量、工具执行、权限决定、缓存命中和失败/取消状态。每轮对应一个根 Trace，子节点共享 Trace ID；通过 `thread_id`（DreamCode Session ID）和 `turn_id` 关联多轮对话。工具节点带有发起它的 `model_run_id`，并发工具各自保留独立节点。模型返回用量缺失时使用现有估算值，并标记 `usage_estimated`。
+
+可以直接在 `%USERPROFILE%\.dreamcode\config.json` 的顶层增加 `langsmith` 字段，保留原有配置：
+
+```json
+"langsmith": {
+  "enabled": true,
+  "apiKey": "你的 LangSmith API Key",
+  "projectName": "DreamCode",
+  "hideInputs": false,
+  "hideOutputs": false,
+  "flushTimeoutMs": 3000
+}
+```
+
+文件中的 `apiKey` 为明文。也可以将它替换成 `"apiKeyEnv": "MY_LANGSMITH_KEY"`，从指定的环境变量读取密钥。可选的 `endpoint` 和 `workspaceId` 分别指定 API 地址和工作区。CLI、桌面端及本机评测每轮开始时读取配置，因此文件修改从下一轮生效。使用自定义 `home` 时读取该目录中的 `config.json`。
+
+仍然可以在启动 DreamCode 的 PowerShell 中使用环境变量配置或覆盖文件设置：
+
+```powershell
+$env:LANGSMITH_TRACING = "true"
+$env:LANGSMITH_API_KEY = "你的 LangSmith API Key"
+$env:LANGSMITH_PROJECT = "DreamCode"
+pnpm dreamcode
+```
+
+优先级为单次调用的 `tracing` 参数 > 环境变量 > `config.json` > 默认值，逐字段合并；`LANGSMITH_TRACING=false` 可以覆盖文件中的启用设置。密钥按 `LANGSMITH_API_KEY` > 文件中 `apiKeyEnv` 指向的变量 > 文件中 `apiKey` 选择。没有任何启用设置时默认关闭追踪。修改环境变量后，已启动的桌面应用需要退出并从配置了环境变量的进程重新启动。DreamEval 的断网容器 worker 不会继承宿主端的 LangSmith 配置，也不能直接上传 Trace。
+
+可选配置包括 `LANGSMITH_ENDPOINT`（实例的 API 地址）、`LANGSMITH_WORKSPACE_ID`（需要指定工作区的密钥）、`LANGSMITH_HIDE_INPUTS=true` 和 `LANGSMITH_HIDE_OUTPUTS=true`。打开追踪会上传对话和工具输入输出；实现会遮蔽常见密钥字段、Bearer 凭证及环境变量中的已知密钥，但不能保证识别任意正文中的秘密。附件仅记录元数据，不上传二进制内容。较大文本和集合会截断；工具的大输出继续使用本地 artifact 引用。
+
+上传使用异步批处理，每轮生成器结束时等待上传，默认最多等待 3 秒。缺少密钥、上传失败或超时会提示警告，任务仍继续执行；程序强制终止可能丢失未上传记录。调用方应消费生成器至结束，或调用 `return()` 关闭它。程序调用可通过 `runTurn({ ..., tracing: { enabled, projectName, client, hideInputs, hideOutputs, flushTimeoutMs } })` 覆盖配置；`enabled: false` 可禁用单次调用。
+
+消息和 token 数据遵循 [LangSmith 自定义 LLM Trace 格式](https://docs.langchain.com/langsmith/log-llm-trace)。费用显示取决于提供方上报的费用或 LangSmith 中配置的模型价格。
+
 ## MVP 能力
 
 - CLI 入口: `dreamcode [prompt...] --mode plan|guided|yolo|full --cwd <path>`。
@@ -201,6 +239,28 @@ pnpm dreamcode --provider deepseek --model deepseek-v4-pro --api-key "你的 Dee
 - Model usage 区分完整输入、缓存命中输入、未缓存输入和输出 Token；缓存输入仍计入上下文容量。
 - Eval fixtures: 覆盖失败测试修复、README 更新和安全拦截。
 
+## Eval Web 评测平台
+
+本地评测平台复用 `@dreamcode/evals` 的任务发现、Agent 执行、确定性 Oracle 和 LLM-as-Judge 评分链路，可发起单任务或批量评测，并查看历史结果、分项得分、Assertions、工程指标和完整 Session Log。
+
+```bash
+# 开发模式，默认监听 http://127.0.0.1:4178
+pnpm eval:web
+
+# 生产构建与启动
+pnpm eval:web:build
+pnpm --filter @dreamcode/eval-web start
+```
+
+平台仅监听本机回环地址。默认入口已接入新版 60 题数据集与独立评分协议；Agent 框架可选择 DreamCode、Claude Code、Pi、DeepSeek Harness、OpenCode，Agent 与 Judge 分别选择已有认证配置的模型。外部框架运行于题目原有容器，复用验收与评分；安装和协议支持范围见[多框架接入](docs/evals/DreamEval-multi-agent-frameworks-implementation-2026-10-10.md)。平台支持单题、批次、重复运行、三类结果汇总、过程复评和批次比较。执行记录包含框架版本、实际文件改动、公开消息和工具证据，未知费用保持为空。平台采用统一 Radix 控件与图标，旧 V2 页面、接口及题库已退出运行路径。
+
+新 case、数据集、执行记录与评分系统的实现依据见 [DreamEval 文档入口](docs/evals/README.md) 和 [当前决策](docs/evals/DreamEval-case-dataset-scoring-decision-2026-10-09.md)。[历史评分与操作资料](docs/evals/archive/README.md) 已归档，不作为新实现依据。
+
+新的 [DreamEval 数据集](evals/dataset/README.md) 为独立六字段协议，包含完整 60 道题。运行 `python evals/dataset/preparation/restore_git_state.py` 恢复合并题环境，执行 `pnpm eval:dataset validate` / `quality` 核验，再使用 `pnpm eval:dataset run CASE-001 mimo-v2.5-pro`。任务验收、过程评价和工程指标分别报告，具体质量与试跑范围见 [实施报告](docs/evals/DreamEval-dataset-60-implementation-report-2026-10-10.md)。
+
+“新建评测”支持选择已保存的评测组或直接从 DataSet 勾选题目；评测组管理从弹窗中的“管理评测组”进入。总览与评测记录实时显示批次及当前题目运行时间，缺失指标显示 `_`。评测记录支持删除已结束的批次或独立执行记录，并清理对应工作区、日志和产物；运行中及排队中的批次不能删除。
+
+
 ## 验证
 
 ```bash
@@ -231,7 +291,7 @@ pnpm build
   - skill 渐进读取。
   - MCP stdio 与 Streamable HTTP server 原生工具注册和调用。
 
-真实模型链路评测见 [docs/evals/real-model-cinemo-eval.md](docs/evals/real-model-cinemo-eval.md)。fake model 只作为确定性运行时回归, 真实能力以 DeepSeek 读取和理解 `D:\Files\Github\Cinemo`、连续问答、写入项目文档的闭环为准。
+现存真实模型评测报告见 [历史运行报告](docs/evals/archive/README.md#历史运行报告)。Fake model 仅用于确定性运行时回归；历史运行结果不作为新数据集的能力结论。
 
 Phase 2 真实模型验收已使用本地 DeepSeek 配置跑通:
 
@@ -242,6 +302,10 @@ Phase 2 真实模型验收已使用本地 DeepSeek 配置跑通:
 - `dreamcode show` 显示 2 个 turns, `dreamcode diff` 显示 create + update diff。
 
 ## 包结构
+
+DreamEval 使用新版数据集指定的 Linux 容器运行环境。Agent 与工具在断网、只读根目录的容器内执行，模型认证留在宿主端。当前 worker 构建命令为 `pnpm eval:dataset:worker:build`，镜像与工作区由 `evals/dataset/runtime` 中的固定配置指定。执行阶段不会自动下载镜像。
+
+该执行环境解决 DreamEval 在 Windows 上运行 Node 管道工具的阻塞；Windows 原生受限令牌后端仍保留预检，失败时停止模型调用。Pi、Claude Code、OpenCode 等外部 CLI 当前继续使用其原有执行方式。统一活动题库不设留出分区，外部 CLI 的交互澄清支持仍有限制。
 
 ```text
 packages/

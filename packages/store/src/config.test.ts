@@ -17,6 +17,55 @@ import {
 } from "./index";
 
 describe("DreamCode config", () => {
+  it("preserves LangSmith settings when updating model profiles", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
+    const langsmith = {
+      enabled: true,
+      apiKey: "smith-secret",
+      apiKeyEnv: "MY_SMITH_KEY",
+      projectName: "DreamCode",
+      endpoint: "https://example.com",
+      workspaceId: "workspace",
+      hideInputs: false,
+      hideOutputs: true,
+      flushTimeoutMs: 1500,
+    };
+    await saveDreamCodeConfig({ version: 3, profiles: {}, langsmith }, home);
+    const loaded = await loadDreamCodeConfig(home);
+    expect(loaded.langsmith).toEqual(langsmith);
+    await saveDreamCodeConfig(upsertLlmProfile(loaded, "fake", { provider: "fake" }), home);
+    expect((await loadDreamCodeConfig(home)).langsmith).toEqual(langsmith);
+  });
+
+  it("ignores malformed LangSmith fields and normalizes valid settings", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
+    await writeFile(
+      getConfigPath(home),
+      JSON.stringify({
+        version: 3,
+        profiles: {},
+        langsmith: {
+          enabled: "true",
+          apiKey: 123,
+          projectName: "  Test  ",
+          endpoint: [],
+          hideInputs: false,
+          hideOutputs: "false",
+          flushTimeoutMs: -1,
+        },
+      }),
+    );
+    expect((await loadDreamCodeConfig(home)).langsmith).toEqual({
+      projectName: "Test",
+      hideInputs: false,
+    });
+    await writeFile(
+      getConfigPath(home),
+      JSON.stringify({ version: 3, profiles: {}, langsmith: [] }),
+    );
+    expect((await loadDreamCodeConfig(home)).langsmith).toBeUndefined();
+  });
+
   it("returns an empty config when config.json does not exist", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "dreamcode-config-"));
 

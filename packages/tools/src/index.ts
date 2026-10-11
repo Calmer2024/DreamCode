@@ -27,6 +27,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { type ProcessScope, ProcessSupervisor } from "./process-supervisor.js";
 import { prepareSandboxedSpawn } from "./sandbox.js";
+export { prepareSandboxedSpawn } from "./sandbox.js";
 
 export {
   type ManagedProcessInfo,
@@ -1111,9 +1112,12 @@ const platformShellSchema = z.object({
   env: commandEnvironmentSchema.optional(),
   timeoutMs: z.number().int().positive().max(MAX_COMMAND_TIMEOUT_MS).default(30000),
   run_in_background: z.boolean().default(false),
-  sandbox_permissions: z.enum(["use-default", "require-escalated"])
+  sandbox_permissions: z
+    .enum(["use-default", "require-escalated"])
     .default("use-default")
-    .describe("Request require-escalated only when the operation must write outside the active sandbox."),
+    .describe(
+      "Request require-escalated only when the operation must write outside the active sandbox.",
+    ),
 });
 
 const SHELL_ERROR_MARKER = "__DREAMCODE_SHELL_ERROR__:";
@@ -1126,17 +1130,19 @@ function platformShellArgs(windows: boolean, command: string): string[] {
       "set -o pipefail",
       command,
       "__dreamcode_status=$?",
-      "if [ \"$__dreamcode_failure\" -ne 0 ]; then exit \"$__dreamcode_failure\"; fi",
-      "exit \"$__dreamcode_status\"",
+      'if [ "$__dreamcode_failure" -ne 0 ]; then exit "$__dreamcode_failure"; fi',
+      'exit "$__dreamcode_status"',
     ].join("\n");
     return ["-c", wrapped];
   }
   const wrapped = [
+    "$global:LASTEXITCODE = 0",
     "$__dreamcode_error_count = $Error.Count",
     "$__dreamcode_caught = $null",
     "try {",
     "  & {",
     command,
+    "    $global:__dreamcode_native_exit = $LASTEXITCODE",
     "  }",
     "} catch {",
     "  $__dreamcode_caught = $_",
@@ -1149,6 +1155,7 @@ function platformShellArgs(windows: boolean, command: string): string[] {
     `  Write-Error -Message ("${SHELL_ERROR_MARKER}" + $category) -ErrorAction Continue`,
     "  exit 1",
     "}",
+    "if ($null -ne $global:__dreamcode_native_exit -and $global:__dreamcode_native_exit -ne 0) { exit $global:__dreamcode_native_exit }",
   ].join("\n");
   return [
     "-NoProfile",
@@ -1181,9 +1188,10 @@ function createPlatformShellTool(supervisor: ProcessSupervisor): Tool {
     },
     async execute(rawInput, context) {
       const input = platformShellSchema.parse(rawInput);
-      const sandboxPolicy = input.sandbox_permissions === "require-escalated"
-        ? buildSandboxPolicy({ ...context, mode: "danger-full-access" })
-        : sandboxPolicyFor(context);
+      const sandboxPolicy =
+        input.sandbox_permissions === "require-escalated"
+          ? buildSandboxPolicy({ ...context, mode: "danger-full-access" })
+          : sandboxPolicyFor(context);
       const cwd = resolveCommandCwd(context.workspaceRoot, input.cwd);
       const cwdError = await commandCwdError(context.toolCallId, cwd);
       if (cwdError) return cwdError;
@@ -1879,7 +1887,10 @@ async function runProcess(
   },
 ): Promise<ProcessResult> {
   const prepared = await prepareSandboxedSpawn({
-    program: command, args, cwd: options.cwd, env: options.env ?? process.env,
+    program: command,
+    args,
+    cwd: options.cwd,
+    env: options.env ?? process.env,
     policy: options.sandboxPolicy,
   });
   return new Promise((resolve) => {
@@ -1909,7 +1920,10 @@ async function runShellExpression(
   },
 ): Promise<ProcessResult> {
   const prepared = await prepareSandboxedSpawn({
-    program: shell, args, cwd: options.cwd, env: options.env ?? process.env,
+    program: shell,
+    args,
+    cwd: options.cwd,
+    env: options.env ?? process.env,
     policy: options.sandboxPolicy,
   });
   return new Promise((resolve) => {
@@ -2036,30 +2050,30 @@ async function makeCommandToolResult(input: {
   const shellDiagnostic = extractShellDiagnostic(input.result.stderr);
   const result = { ...input.result, stderr: shellDiagnostic.stderr };
   const sandboxDenied =
-    input.sandboxPolicy.enforcement === "managed" &&
+    input.sandboxPolicy.enforcement !== "disabled" &&
     (shellDiagnostic.permissionDenied ||
       (result.exitCode !== 0 && hasPermissionDeniedMessage(result.stderr)));
   const outcome: ExecutionOutcome = sandboxDenied
     ? "sandbox_denied"
     : result.timedOut
-    ? "timed_out"
-    : result.aborted
-      ? "aborted"
-      : result.spawnErrorCode === "ENOENT"
-        ? "program_not_found"
-        : result.spawnErrorCode
-          ? "spawn_failed"
-          : result.exitCode === 0
-            ? "exited_zero"
-            : "exited_nonzero";
+      ? "timed_out"
+      : result.aborted
+        ? "aborted"
+        : result.spawnErrorCode === "ENOENT"
+          ? "program_not_found"
+          : result.spawnErrorCode
+            ? "spawn_failed"
+            : result.exitCode === 0
+              ? "exited_zero"
+              : "exited_nonzero";
   const status: ToolResult["status"] =
     outcome === "sandbox_denied"
       ? "denied"
       : outcome === "timed_out" || outcome === "aborted"
-      ? "cancelled"
-      : outcome === "exited_zero"
-        ? "success"
-        : "error";
+        ? "cancelled"
+        : outcome === "exited_zero"
+          ? "success"
+          : "error";
 
   const warnings: string[] = [];
   const stdout = await makeOutputStream(
@@ -2093,16 +2107,16 @@ async function makeCommandToolResult(input: {
     outcome === "sandbox_denied"
       ? `Command '${input.command}' was blocked by the ${input.sandboxPolicy.mode} file sandbox.`
       : outcome === "exited_zero"
-      ? `Command '${input.command}' completed successfully.`
-      : outcome === "timed_out"
-        ? `Command '${input.command}' timed out after execution began.`
-        : outcome === "aborted"
-          ? `Command '${input.command}' was aborted.`
-          : outcome === "program_not_found"
-            ? `Command program was not found: '${input.command}'.`
-            : outcome === "spawn_failed"
-              ? `Command '${input.command}' could not be started.`
-              : `Command '${input.command}' exited with ${result.exitCode}.`;
+        ? `Command '${input.command}' completed successfully.`
+        : outcome === "timed_out"
+          ? `Command '${input.command}' timed out after execution began.`
+          : outcome === "aborted"
+            ? `Command '${input.command}' was aborted.`
+            : outcome === "program_not_found"
+              ? `Command program was not found: '${input.command}'.`
+              : outcome === "spawn_failed"
+                ? `Command '${input.command}' could not be started.`
+                : `Command '${input.command}' exited with ${result.exitCode}.`;
 
   return {
     toolCallId: input.context.toolCallId,
@@ -2135,7 +2149,8 @@ async function makeCommandToolResult(input: {
           kind: "require_escalated",
           inputPatch: { sandbox_permissions: "require-escalated" },
           requiresApproval: true,
-          reason: "Retry this command outside the active file sandbox only if the requested write is required.",
+          reason:
+            "Retry this command outside the active file sandbox only if the requested write is required.",
         }
       : undefined,
     error,

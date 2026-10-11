@@ -272,7 +272,12 @@ describe("builtin tools", () => {
       .get(shellToolName)!
       .execute(
         { ...shellCommand(command), env: { DREAMCODE_PROCESS_TEST: "structured" } },
-        { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "process" },
+        {
+          workspaceRoot,
+          sessionDir: workspaceRoot,
+          mode: "workspace-write",
+          toolCallId: "process",
+        },
       );
     expect(result.status).toBe("success");
     expect(result.execution).toMatchObject({ outcome: "exited_zero", started: true, exitCode: 0 });
@@ -504,20 +509,49 @@ describe("builtin tools", () => {
     expect((result.data as { stdout: string }).stdout).toContain("nested");
   });
 
+  it("propagates a native program exit code even when followed by shell output", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-native-exit-"));
+    const registry = createDefaultToolRegistry();
+    try {
+      const command =
+        process.platform === "win32"
+          ? "node -e 'process.exit(7)'; Write-Output finished"
+          : "node -e 'process.exit(7)'; printf finished";
+      const result = await registry.get(shellToolName)!.execute(shellCommand(command), {
+        workspaceRoot,
+        sessionDir: workspaceRoot,
+        mode: "workspace-write",
+        toolCallId: "native_exit",
+      });
+      expect(result.status).toBe("error");
+      expect(result.execution?.exitCode).toBe(7);
+    } finally {
+      await registry.processSupervisor.dispose();
+    }
+  });
+
   it("enforces file boundaries for compound shell expressions and read-only processes", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "dreamcode-sandbox-boundary-"));
     const inside = path.join(workspaceRoot, "inside.txt");
-    const outside = path.join(path.dirname(workspaceRoot), `${path.basename(workspaceRoot)}-outside.txt`);
+    const outside = path.join(
+      path.dirname(workspaceRoot),
+      `${path.basename(workspaceRoot)}-outside.txt`,
+    );
     await writeFile(inside, "before", "utf8");
     await writeFile(outside, "outside", "utf8");
     const registry = createDefaultToolRegistry();
-    const workspaceCommand = process.platform === "win32"
-      ? `Set-Content -LiteralPath '${inside}' -Value inside; Set-Content -LiteralPath '${outside}' -Value escaped; Write-Output finished`
-      : `printf inside > '${inside}'; printf escaped > '${outside}'; printf finished`;
-    const workspaceResult = await registry.get(shellToolName)!.execute(
-      shellCommand(workspaceCommand),
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "workspace-write", toolCallId: "workspace_boundary" },
-    );
+    const workspaceCommand =
+      process.platform === "win32"
+        ? `Set-Content -LiteralPath '${inside}' -Value inside; Set-Content -LiteralPath '${outside}' -Value escaped; Write-Output finished`
+        : `printf inside > '${inside}'; printf escaped > '${outside}'; printf finished`;
+    const workspaceResult = await registry
+      .get(shellToolName)!
+      .execute(shellCommand(workspaceCommand), {
+        workspaceRoot,
+        sessionDir: workspaceRoot,
+        mode: "workspace-write",
+        toolCallId: "workspace_boundary",
+      });
     expect(workspaceResult).toMatchObject({
       status: "denied",
       execution: { outcome: "sandbox_denied", started: true },
@@ -531,13 +565,18 @@ describe("builtin tools", () => {
     await expect(readFile(inside, "utf8")).resolves.toContain("inside");
     await expect(readFile(outside, "utf8")).resolves.toBe("outside");
 
-    const readOnlyCommand = process.platform === "win32"
-      ? `Set-Content -LiteralPath '${inside}' -Value changed`
-      : `printf changed > '${inside}'`;
-    const readOnlyResult = await registry.get(shellToolName)!.execute(
-      shellCommand(readOnlyCommand),
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "read-only", toolCallId: "read_only_boundary" },
-    );
+    const readOnlyCommand =
+      process.platform === "win32"
+        ? `Set-Content -LiteralPath '${inside}' -Value changed`
+        : `printf changed > '${inside}'`;
+    const readOnlyResult = await registry
+      .get(shellToolName)!
+      .execute(shellCommand(readOnlyCommand), {
+        workspaceRoot,
+        sessionDir: workspaceRoot,
+        mode: "read-only",
+        toolCallId: "read_only_boundary",
+      });
     expect(readOnlyResult).toMatchObject({
       status: "denied",
       execution: { outcome: "sandbox_denied", started: true },
@@ -545,13 +584,18 @@ describe("builtin tools", () => {
     });
     await expect(readFile(inside, "utf8")).resolves.toContain("inside");
 
-    const unrestrictedCommand = process.platform === "win32"
-      ? `Set-Content -LiteralPath '${outside}' -Value unrestricted`
-      : `printf unrestricted > '${outside}'`;
-    const unrestrictedResult = await registry.get(shellToolName)!.execute(
-      shellCommand(unrestrictedCommand),
-      { workspaceRoot, sessionDir: workspaceRoot, mode: "danger-full-access", toolCallId: "unrestricted_boundary" },
-    );
+    const unrestrictedCommand =
+      process.platform === "win32"
+        ? `Set-Content -LiteralPath '${outside}' -Value unrestricted`
+        : `printf unrestricted > '${outside}'`;
+    const unrestrictedResult = await registry
+      .get(shellToolName)!
+      .execute(shellCommand(unrestrictedCommand), {
+        workspaceRoot,
+        sessionDir: workspaceRoot,
+        mode: "danger-full-access",
+        toolCallId: "unrestricted_boundary",
+      });
     expect(unrestrictedResult.status).toBe("success");
     await expect(readFile(outside, "utf8")).resolves.toContain("unrestricted");
   });
@@ -648,7 +692,12 @@ describe("builtin tools", () => {
     try {
       const result = await tool!.execute(
         { query: "coding agents", maxResults: 3, domains: ["example.com"] },
-        { workspaceRoot, sessionDir: workspaceRoot, mode: "danger-full-access", toolCallId: "call_exa" },
+        {
+          workspaceRoot,
+          sessionDir: workspaceRoot,
+          mode: "danger-full-access",
+          toolCallId: "call_exa",
+        },
       );
       expect(result.status).toBe("success");
       expect(received).toMatchObject({

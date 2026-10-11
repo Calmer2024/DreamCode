@@ -8,7 +8,7 @@ export interface SandboxPolicy {
   readableRoots: "all";
   writableRoots: string[];
   networkAccess: true;
-  enforcement: "managed" | "disabled";
+  enforcement: "managed" | "container" | "disabled";
 }
 
 export type RiskTag =
@@ -343,6 +343,7 @@ export interface ModelStreamInput {
 
 export interface ModelProvider {
   name: string;
+  readonly defaultModel?: string;
   estimateInputTokens?(input: RequestTokenEstimateInput): Promise<RequestTokenEstimate>;
   stream(input: ModelStreamInput): AsyncIterable<ModelEvent>;
 }

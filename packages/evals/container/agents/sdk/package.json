@@ -1,0 +1,6 @@
+{
+  "name": "dreameval-dsh-client",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": { "@deepseek-ai/dsh-sdk-client": "0.0.1-rc.1" }
+}

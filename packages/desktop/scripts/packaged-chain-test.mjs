@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -20,11 +21,16 @@ const assertions = {
   commandExitCodeZero: false,
   usageReported: false,
   sessionResumed: false,
+  traceConfigPreserved: false,
+  traceUploaded: false,
 };
 
 let scenarioRoot;
 let activeApplication;
 let executableSha256 = "";
+let commandResults = [];
+let traceReceiver;
+const tracedRuns = new Map();
 
 try {
   const executable = await readFile(executablePath);
@@ -35,6 +41,31 @@ try {
   const workspace = path.join(scenarioRoot, "workspace");
   await mkdir(home, { recursive: true });
   await createFixtureWorkspace(workspace);
+  traceReceiver = createHttpServer(async (request, response) => {
+    try {
+      if (request.url === "/info") {
+        response.setHeader("Content-Type", "application/json");
+        response.end(JSON.stringify({ batch_ingest_config: { use_multipart_endpoint: false } }));
+        return;
+      }
+      if (request.url !== "/runs/batch" || request.method !== "POST") {
+        response.writeHead(404).end();
+        return;
+      }
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const batch = JSON.parse(body);
+      for (const run of [...(batch.post ?? []), ...(batch.patch ?? [])]) {
+        tracedRuns.set(run.id, { ...tracedRuns.get(run.id), ...run });
+      }
+      response.setHeader("Content-Type", "application/json");
+      response.end("{}");
+    } catch {
+      response.writeHead(400).end();
+    }
+  });
+  await new Promise((resolve) => traceReceiver.listen(0, "127.0.0.1", resolve));
+  const traceEndpoint = `http://127.0.0.1:${traceReceiver.address().port}`;
   await writeFile(
     path.join(home, "config.json"),
     `${JSON.stringify(
@@ -42,6 +73,12 @@ try {
         version: 1,
         currentProfile: "fake-packaged",
         profiles: { "fake-packaged": { provider: "fake", model: "fake" } },
+        langsmith: {
+          enabled: true,
+          apiKey: "synthetic-packaged-trace-key",
+          projectName: "packaged-trace-test",
+          endpoint: traceEndpoint,
+        },
       },
       null,
       2,
@@ -54,7 +91,7 @@ try {
   assertions.startupVisible = await first.page.getByText("DreamCode", { exact: true }).isVisible();
   await chooseWorkspace(first.page);
   await runPrompt(first.page, "修复当前项目的测试失败, 并运行测试确认。");
-  await first.page.getByText(/^已完成 · 耗时 /).waitFor({ timeout: 30_000 });
+  await first.page.getByText("已完成", { exact: true }).waitFor({ timeout: 30_000 });
   assertions.taskCompleted = true;
   assertions.fileChanged = (
     await readFile(path.join(workspace, "src", "math.js"), "utf8")
@@ -68,8 +105,21 @@ try {
     (event) =>
       event.type === "tool.completed" &&
       event.payload?.tool === (process.platform === "win32" ? "pwsh" : "bash") &&
-      event.payload?.data?.exitCode === 0,
+      (event.payload?.execution?.exitCode ?? event.payload?.data?.exitCode) === 0,
   );
+  commandResults = events
+    .filter(
+      (event) =>
+        event.type === "tool.completed" &&
+        event.payload?.tool === (process.platform === "win32" ? "pwsh" : "bash"),
+    )
+    .map((event) => ({
+      status: event.payload.status,
+      execution: event.payload.execution,
+      error: event.payload.error,
+      summary: event.payload.summary,
+      streams: event.payload.streams,
+    }));
   assertions.usageReported = events.some(
     (event) => event.type === "model.usage" && event.payload?.usage?.inputTokens > 0,
   );
@@ -89,6 +139,27 @@ try {
 
   events = await readEvents(sessionDirectory);
   assertions.sessionResumed = events.some((event) => event.type === "session.resumed");
+  assertions.traceConfigPreserved =
+    JSON.parse(await readFile(path.join(home, "config.json"), "utf8")).langsmith?.enabled === true;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const runs = [...tracedRuns.values()];
+    const roots = runs.filter(
+      (run) => !run.parent_run_id && run.outputs?.status === "turn.completed",
+    );
+    assertions.traceUploaded =
+      roots.length >= 2 &&
+      roots.every((root) => {
+        const children = runs.filter((run) => run.parent_run_id === root.id);
+        return (
+          root.end_time &&
+          children.some((run) => run.run_type === "llm") &&
+          children.every((run) => run.end_time && run.trace_id === root.id)
+        );
+      }) &&
+      runs.some((run) => run.run_type === "tool");
+    if (assertions.traceUploaded) break;
+    await delay(100);
+  }
   const failedAssertions = Object.entries(assertions)
     .filter(([, passed]) => !passed)
     .map(([name]) => name);
@@ -106,12 +177,22 @@ try {
     await closeApplication(activeApplication).catch(() => undefined);
   }
   if (scenarioRoot) {
-    await rm(scenarioRoot, { recursive: true, force: true }).catch(() => undefined);
+    const resolvedRoot = path.resolve(scenarioRoot);
+    if (
+      path.dirname(resolvedRoot) === path.resolve(os.tmpdir()) &&
+      path.basename(resolvedRoot).startsWith("dreamcode-packaged-chain-")
+    ) {
+      await rm(resolvedRoot, { recursive: true, force: true }).catch(() => undefined);
+    } else console.error("Refused unexpected test cleanup directory.");
   }
+  if (traceReceiver) await new Promise((resolve) => traceReceiver.close(resolve));
 }
 
 async function launchPackagedApplication({ home, workspace }) {
   const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...environment } = process.env;
+  for (const key of Object.keys(environment)) {
+    if (/^(LANGSMITH_|LANGCHAIN_)/.test(key)) delete environment[key];
+  }
   const debuggingPort = await reserveTcpPort();
   const childProcess = spawn(
     executablePath,
@@ -276,7 +357,8 @@ async function createFixtureWorkspace(workspace) {
   await mkdir(path.join(workspace, "test"), { recursive: true });
   await writeFile(
     path.join(workspace, "package.json"),
-    '{"type":"module","scripts":{"test":"node --test"}}\n',
+    // Run tests in the existing sandboxed Node process; the fixture needs no child test workers.
+    '{"type":"module","scripts":{"test":"node --test --test-isolation=none"}}\n',
     "utf8",
   );
   await writeFile(
@@ -310,6 +392,7 @@ async function writeReport({ status, error }) {
         executable: path.basename(executablePath),
         executableSha256,
         assertions,
+        commandResults,
         status,
         ...(error ? { error } : {}),
       },

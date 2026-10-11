@@ -8,7 +8,7 @@ export interface SpawnSpec {
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
-  backend: "direct" | "linux-bwrap" | "windows-restricted-token";
+  backend: "direct" | "linux-bwrap" | "linux-container" | "windows-restricted-token";
 }
 
 function sandboxEnvironment(
@@ -33,6 +33,26 @@ export async function prepareSandboxedSpawn(input: {
   env: NodeJS.ProcessEnv;
   policy: SandboxPolicy;
 }): Promise<SpawnSpec> {
+  if (input.policy.enforcement === "container") {
+    // Only the eval worker opts into this backend, after its outer Docker policy is installed.
+    if (
+      process.platform !== "linux" ||
+      process.env.DREAMCODE_CONTAINER_SANDBOX !== "1" ||
+      input.policy.mode !== "workspace-write"
+    )
+      throw new SandboxUnavailableError(
+        "Container execution requires the Linux eval worker boundary",
+      );
+    await access("/.dockerenv");
+    await access("/runtime/container-policy.json");
+    const temporaryRoot = input.policy.writableRoots.at(-1);
+    if (temporaryRoot) await mkdir(temporaryRoot, { recursive: true });
+    return {
+      ...input,
+      env: sandboxEnvironment(input.env, temporaryRoot),
+      backend: "linux-container",
+    };
+  }
   if (input.policy.enforcement === "disabled") {
     return { ...input, backend: "direct" };
   }
@@ -40,7 +60,9 @@ export async function prepareSandboxedSpawn(input: {
   if (temporaryRoot) await mkdir(temporaryRoot, { recursive: true });
   if (process.platform === "linux") return prepareLinux(input, temporaryRoot);
   if (process.platform === "win32") return prepareWindows(input, temporaryRoot);
-  throw new SandboxUnavailableError(`No managed DreamCode file sandbox backend exists for ${process.platform}.`);
+  throw new SandboxUnavailableError(
+    `No managed DreamCode file sandbox backend exists for ${process.platform}.`,
+  );
 }
 
 function prepareLinux(
@@ -48,8 +70,19 @@ function prepareLinux(
   temporaryRoot: string | undefined,
 ): SpawnSpec {
   const args = [
-    "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc",
-    "--unshare-uts", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
   ];
   if (input.policy.mode === "read-only") {
     args.push("--tmpfs", "/tmp");
@@ -107,16 +140,40 @@ async function resolveWindowsHelper(): Promise<string> {
   const candidates = [
     process.env.DREAMCODE_WINDOWS_SANDBOX_HELPER,
     path.join(path.dirname(process.execPath), "dreamcode-windows-sandbox.exe"),
-    path.join(process.cwd(), "native", "windows-sandbox", "target", "release", "dreamcode-windows-sandbox.exe"),
-    path.resolve(process.cwd(), "..", "..", "native", "windows-sandbox", "target", "release", "dreamcode-windows-sandbox.exe"),
+    path.join(
+      process.cwd(),
+      "native",
+      "windows-sandbox",
+      "target",
+      "release",
+      "dreamcode-windows-sandbox.exe",
+    ),
+    path.resolve(
+      process.cwd(),
+      "..",
+      "..",
+      "native",
+      "windows-sandbox",
+      "target",
+      "release",
+      "dreamcode-windows-sandbox.exe",
+    ),
   ].filter((value): value is string => Boolean(value));
   for (const candidate of candidates) {
-    try { await access(candidate); return candidate; } catch { /* try next */ }
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      /* try next */
+    }
   }
   throw new SandboxUnavailableError("The Windows DreamCode file sandbox helper is unavailable.");
 }
 
 export class SandboxUnavailableError extends Error {
   readonly code = "sandbox_unavailable";
-  constructor(message: string) { super(message); this.name = "SandboxUnavailableError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxUnavailableError";
+  }
 }

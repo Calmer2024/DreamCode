@@ -1,54 +1,9 @@
+@import "../../../../shared/src/design-tokens.css";
 :root {
   color: #202124;
   background: #fff;
-  font-family: "Noto Sans SC", sans-serif;
+  font-family: var(--font-ui);
   color-scheme: light;
-  --font-ui: "Noto Sans SC", sans-serif;
-  --text-primary: #202124;
-  --text-secondary: #707176;
-  --text-tertiary: #9a9ba0;
-  --surface: #fff;
-  --surface-subtle: #f3f3f3;
-  --surface-hover: #e9e9e9;
-  --surface-selected: #e5e5e5;
-  --border: #dedede;
-  --border-soft: #e8e8e8;
-  --accent: #7935ff;
-  --purple-soft: #eee6f8;
-  --purple-hover: #e7dcf5;
-  --danger: #f22c2c;
-  --danger-soft: #fce7e7;
-  --radius-panel: 18px;
-  --radius-control: 12px;
-  --shadow-menu: 0 10px 28px rgb(0 0 0 / 10%);
-  --shadow-dialog: 0 14px 34px rgb(0 0 0 / 16%);
-  --dc-brand: var(--accent);
-  --dc-brand-dark: var(--accent);
-  --dc-sidebar: var(--surface-subtle);
-  --dc-border: #dedede;
-  --dc-text: var(--text-primary);
-  --dc-muted: var(--text-secondary);
-  --dc-warning: #d65a2f;
-}
-
-/* Codex desktop visual language with DreamCode's purple brand token. */
-:root {
-  --font-ui: "Noto Sans SC", sans-serif;
-  --text-primary: #242424;
-  --text-secondary: #747474;
-  --surface-subtle: #f5f5f5;
-  --surface-hover: #ebebeb;
-  --surface-selected: #e7e7e7;
-  --border: #dedede;
-  --border-soft: #e7e7e7;
-  --accent: #813cff;
-  --purple-soft: #eee7fa;
-  --purple-hover: #e7dcf8;
-  --radius-panel: 20px;
-  --shadow-menu: 0 12px 32px rgb(0 0 0 / 11%);
-  --shadow-dialog: 0 20px 58px rgb(0 0 0 / 15%);
-  --action-primary: #202124;
-  --motion-collapse: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
   interpolate-size: allow-keywords;
 }
 

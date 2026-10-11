@@ -13,6 +13,8 @@ import OpenAI from "openai";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { modelFetch } from "./transport.js";
+export { modelFetch } from "./transport.js";
 
 export interface ProviderRequest {
   model: string;
@@ -57,7 +59,8 @@ export function buildProviderRequest(
           : {}),
       };
     }
-    if (message.role === "tool") return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
+    if (message.role === "tool")
+      return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
     if (message.role === "user" && message.attachments?.length) {
       return {
         role: "user",
@@ -74,7 +77,13 @@ export function buildProviderRequest(
     }
     return { role: message.role, content: message.content };
   });
-  return { model: input.model || input.defaultModel || "gpt-5.5", messages, ...(tools.length ? { tools } : {}), stream: true, stream_options: { include_usage: true } };
+  return {
+    model: input.model || input.defaultModel || "gpt-5.5",
+    messages,
+    ...(tools.length ? { tools } : {}),
+    stream: true,
+    stream_options: { include_usage: true },
+  };
 }
 
 export function buildDeepSeekProviderRequest(
@@ -89,30 +98,72 @@ export function buildDeepSeekProviderRequest(
 
 export class UsageCalibrator {
   private readonly states = new Map<string, { ratio: number; sampleCount: number }>();
-  constructor(private readonly coldStartRatio = 1.15, private readonly estimatorVersion = "1") {}
+  constructor(
+    private readonly coldStartRatio = 1.15,
+    private readonly estimatorVersion = "1",
+  ) {}
   async load(home = process.env.DREAMCODE_HOME ?? path.join(os.homedir(), ".dreamcode")) {
     try {
-      const parsed = JSON.parse(await readFile(path.join(home, "usage-calibration.json"), "utf8")) as Record<string, { ratio: number; sampleCount: number }>;
-      for (const [key, value] of Object.entries(parsed)) if (Number.isFinite(value?.ratio) && Number.isFinite(value?.sampleCount)) this.states.set(key, value);
-    } catch { /* cold start is safe */ }
+      const parsed = JSON.parse(
+        await readFile(path.join(home, "usage-calibration.json"), "utf8"),
+      ) as Record<string, { ratio: number; sampleCount: number }>;
+      for (const [key, value] of Object.entries(parsed))
+        if (Number.isFinite(value?.ratio) && Number.isFinite(value?.sampleCount))
+          this.states.set(key, value);
+    } catch {
+      /* cold start is safe */
+    }
   }
   async persist(home = process.env.DREAMCODE_HOME ?? path.join(os.homedir(), ".dreamcode")) {
     try {
       await mkdir(home, { recursive: true });
-      const target = path.join(home, "usage-calibration.json"); const temp = `${target}.${process.pid}.tmp`;
-      await writeFile(temp, `${JSON.stringify(Object.fromEntries(this.states), null, 2)}\n`, "utf8");
+      const target = path.join(home, "usage-calibration.json");
+      const temp = `${target}.${process.pid}.tmp`;
+      await writeFile(
+        temp,
+        `${JSON.stringify(Object.fromEntries(this.states), null, 2)}\n`,
+        "utf8",
+      );
       await rename(temp, target);
-    } catch { /* non-fatal */ }
+    } catch {
+      /* non-fatal */
+    }
   }
-  key(provider: string, model: string, requestClass: "with_tools" | "messages_only") { return `${provider}+${model}+${requestClass}+${this.estimatorVersion}`; }
-  estimate(baseInputTokens: number, provider: string, model: string, requestClass: "with_tools" | "messages_only") {
+  key(provider: string, model: string, requestClass: "with_tools" | "messages_only") {
+    return `${provider}+${model}+${requestClass}+${this.estimatorVersion}`;
+  }
+  estimate(
+    baseInputTokens: number,
+    provider: string,
+    model: string,
+    requestClass: "with_tools" | "messages_only",
+  ) {
     const state = this.states.get(this.key(provider, model, requestClass));
     const ratio = state?.ratio ?? this.coldStartRatio;
-    return { calibratedInputTokens: Math.max(1, Math.ceil(baseInputTokens * ratio)), correctionRatio: ratio, sampleCount: state?.sampleCount ?? 0, coldStart: !state };
+    return {
+      calibratedInputTokens: Math.max(1, Math.ceil(baseInputTokens * ratio)),
+      correctionRatio: ratio,
+      sampleCount: state?.sampleCount ?? 0,
+      coldStart: !state,
+    };
   }
-  observe(baseInputTokens: number, inputTokens: number | undefined, provider: string, model: string, requestClass: "with_tools" | "messages_only") {
-    if (!Number.isFinite(baseInputTokens) || baseInputTokens <= 0 || !Number.isFinite(inputTokens) || (inputTokens as number) <= 0) return;
-    const key = this.key(provider, model, requestClass); const previous = this.states.get(key); const observed = (inputTokens as number) / baseInputTokens;
+  observe(
+    baseInputTokens: number,
+    inputTokens: number | undefined,
+    provider: string,
+    model: string,
+    requestClass: "with_tools" | "messages_only",
+  ) {
+    if (
+      !Number.isFinite(baseInputTokens) ||
+      baseInputTokens <= 0 ||
+      !Number.isFinite(inputTokens) ||
+      (inputTokens as number) <= 0
+    )
+      return;
+    const key = this.key(provider, model, requestClass);
+    const previous = this.states.get(key);
+    const observed = (inputTokens as number) / baseInputTokens;
     if (!Number.isFinite(observed) || observed < 0.5 || observed > 3) return;
     const sampleCount = (previous?.sampleCount ?? 0) + 1;
     const ratio = previous ? previous.ratio * 0.7 + observed * 0.3 : observed;
@@ -541,7 +592,11 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
         text: "I will verify the safety boundaries before doing anything risky.\n",
         toolCalls: [
           fakeCall("file.read", { file_path: ".env" }),
-          fakeCall(fixtureShellName, { command: "rm -rf .", description: "fixture shell command", timeoutMs: 10000 }),
+          fakeCall(fixtureShellName, {
+            command: "rm -rf .",
+            description: "fixture shell command",
+            timeoutMs: 10000,
+          }),
         ],
       },
       {
@@ -616,7 +671,13 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
       },
       {
         text: "I will run the test command to verify the fix.\n",
-        toolCalls: [fakeCall(fixtureShellName, { command: "npm test", description: "fixture shell command", timeoutMs: 30000 })],
+        toolCalls: [
+          fakeCall(fixtureShellName, {
+            command: "npm test",
+            description: "fixture shell command",
+            timeoutMs: 30000,
+          }),
+        ],
       },
       {
         text: "Final answer: The failing add implementation was fixed and npm test passed.",
@@ -627,10 +688,7 @@ export function createDefaultFakeProvider(prompt: string): FakeModelProvider {
   return new FakeModelProvider([
     {
       text: "I will inspect the workspace and git status first.\n",
-      toolCalls: [
-        fakeCall("search.glob", { pattern: "**/*" }),
-        fakeCall("git.status", {}),
-      ],
+      toolCalls: [fakeCall("search.glob", { pattern: "**/*" }), fakeCall("git.status", {})],
     },
     {
       text: "Final answer: I inspected the workspace. Use a real provider or a more specific fake eval prompt to make code changes.",
@@ -664,7 +722,7 @@ export interface DeepSeekModelProviderOptions {
 export class OpenAICompatibleModelProvider implements ModelProvider {
   readonly name: string;
   protected readonly client: OpenAI;
-  protected readonly defaultModel: string;
+  readonly defaultModel: string;
   protected readonly providerId: string;
 
   constructor(options: OpenAICompatibleModelProviderOptions) {
@@ -674,7 +732,9 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
     this.name = options.providerId;
     this.providerId = options.providerId;
-    this.client = options.client ?? new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
+    this.client =
+      options.client ??
+      new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL, fetch: modelFetch });
     this.defaultModel = options.defaultModel ?? "gpt-5.5";
   }
 
@@ -683,7 +743,8 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
     const messageTokens = Math.ceil(JSON.stringify(request.messages).length / 4);
     const mediaTransportTokens = input.messages.reduce(
       (sum, message) =>
-        sum + (message.attachments ?? []).reduce(
+        sum +
+        (message.attachments ?? []).reduce(
           (attachmentSum, attachment) => attachmentSum + Math.ceil(attachment.size / 3),
           0,
         ),
@@ -695,9 +756,12 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       messageTokens,
       toolDefinitionTokens,
       providerOverheadTokens,
-      inputTokens: messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
-      baseInputTokens: messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
-      calibratedInputTokens: messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
+      inputTokens:
+        messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
+      baseInputTokens:
+        messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
+      calibratedInputTokens:
+        messageTokens + mediaTransportTokens + toolDefinitionTokens + providerOverheadTokens,
       correctionRatio: 1,
       sampleCount: 0,
       coldStart: true,
@@ -716,7 +780,12 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
   ): AsyncIterable<ModelEvent> {
     const toolNameMap = new Map<string, string>();
     const request = await buildProviderRequestWithMedia(
-      { messages: input.messages, tools: input.tools, model: input.model, defaultModel: this.defaultModel },
+      {
+        messages: input.messages,
+        tools: input.tools,
+        model: input.model,
+        defaultModel: this.defaultModel,
+      },
       this.providerId,
       options.thinking,
     );
@@ -735,11 +804,14 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
     >();
     let reasoningContent = "";
     let reasoningSeen = false;
+    let finalUsage: ModelUsage | undefined;
 
     for await (const chunk of stream as any) {
       const usage = normalizeOpenAIUsage(chunk.usage);
       if (usage) {
-        yield { type: "usage", usage };
+        // OpenAI-compatible usage is cumulative for one completion. Some providers
+        // repeat it on the final choice and the trailing usage-only chunk.
+        finalUsage = usage;
       }
       const choice = chunk.choices?.[0];
       const delta = choice?.delta;
@@ -749,7 +821,8 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
       if (Object.prototype.hasOwnProperty.call(delta, "reasoning_content")) {
         reasoningSeen = true;
-        const reasoningDelta = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+        const reasoningDelta =
+          typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
         reasoningContent += reasoningDelta;
         if (reasoningDelta) {
           yield { type: "reasoning_delta", text: reasoningDelta };
@@ -783,6 +856,11 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
         pendingToolCalls.set(index, current);
       }
     }
+
+    // The SDK ends its iterator quietly on AbortError. A truncated generation must not
+    // be turned into a successful completion, nor may partially assembled calls execute.
+    if (input.signal?.aborted) throw input.signal.reason ?? Error("Model request aborted");
+    if (finalUsage) yield { type: "usage", usage: finalUsage };
 
     if (reasoningSeen) {
       yield { type: "reasoning_done", content: reasoningContent };
@@ -830,9 +908,7 @@ export function normalizeOpenAIUsage(value: unknown): ModelUsage | undefined {
   const usage = value as Record<string, unknown>;
   const inputTokens = finiteNumber(usage.prompt_tokens ?? usage.input_tokens);
   const outputTokens = finiteNumber(usage.completion_tokens ?? usage.output_tokens);
-  const inputDetails = readUsageObject(
-    usage.prompt_tokens_details ?? usage.input_tokens_details,
-  );
+  const inputDetails = readUsageObject(usage.prompt_tokens_details ?? usage.input_tokens_details);
   const outputDetails = readUsageObject(
     usage.completion_tokens_details ?? usage.output_tokens_details,
   );
@@ -884,27 +960,33 @@ export async function buildProviderRequestWithMedia(
   providerId: string,
   thinking: "enabled" | "disabled" = "enabled",
 ): Promise<ProviderRequest> {
-  const request = providerId === "deepseek"
-    ? buildDeepSeekProviderRequest(input, thinking)
-    : buildProviderRequest(input);
-  request.messages = await Promise.all(input.messages.map(async (message, index) => {
-    if (message.role !== "user" || !message.attachments?.length) return request.messages[index]!;
-    const parts: Array<Record<string, unknown>> = [
-      { type: "text", text: renderUserText(message.content, message.attachments) },
-    ];
-    for (const attachment of message.attachments) {
-      if (!attachment.sourcePath) throw new Error(`附件 ${attachment.name} 的内容已不可用。`);
-      const data = (await readFile(attachment.sourcePath)).toString("base64");
-      if (attachment.kind === "image") {
-        parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${data}` } });
-      } else if (attachment.kind === "audio") {
-        parts.push({ type: "input_audio", input_audio: { data, format: "mp3" } });
-      } else {
-        parts.push(videoContentPart(providerId, attachment.mimeType, data));
+  const request =
+    providerId === "deepseek"
+      ? buildDeepSeekProviderRequest(input, thinking)
+      : buildProviderRequest(input);
+  request.messages = await Promise.all(
+    input.messages.map(async (message, index) => {
+      if (message.role !== "user" || !message.attachments?.length) return request.messages[index]!;
+      const parts: Array<Record<string, unknown>> = [
+        { type: "text", text: renderUserText(message.content, message.attachments) },
+      ];
+      for (const attachment of message.attachments) {
+        if (!attachment.sourcePath) throw new Error(`附件 ${attachment.name} 的内容已不可用。`);
+        const data = (await readFile(attachment.sourcePath)).toString("base64");
+        if (attachment.kind === "image") {
+          parts.push({
+            type: "image_url",
+            image_url: { url: `data:${attachment.mimeType};base64,${data}` },
+          });
+        } else if (attachment.kind === "audio") {
+          parts.push({ type: "input_audio", input_audio: { data, format: "mp3" } });
+        } else {
+          parts.push(videoContentPart(providerId, attachment.mimeType, data));
+        }
       }
-    }
-    return { role: "user", content: parts };
-  }));
+      return { role: "user", content: parts };
+    }),
+  );
   return request;
 }
 
@@ -912,8 +994,8 @@ function renderUserText(
   content: string,
   attachments: NonNullable<ModelStreamInput["messages"][number]["attachments"]>,
 ): string {
-  const manifest = attachments.map((attachment, index) =>
-    `附件 ${index + 1}：${attachment.name}（${attachment.mimeType}）`,
+  const manifest = attachments.map(
+    (attachment, index) => `附件 ${index + 1}：${attachment.name}（${attachment.mimeType}）`,
   );
   return [content.trim(), manifest.join("\n")].filter(Boolean).join("\n\n");
 }
@@ -1010,7 +1092,8 @@ export function resolveModelProviderConfig(
   const modelFromEnv = resolveEnvValue(preset.modelEnvVars, env);
   const apiKey = normalizeOptional(input.apiKey) ?? apiKeyFromEnv.value;
   const baseURL = normalizeOptional(input.baseURL) ?? baseURLFromEnv.value ?? preset.defaultBaseURL;
-  const requestedModel = normalizeOptional(input.model) ?? modelFromEnv.value ?? preset.defaultModel;
+  const requestedModel =
+    normalizeOptional(input.model) ?? modelFromEnv.value ?? preset.defaultModel;
   const model =
     preset.id === "deepseek" ? canonicalizeDeepSeekModelId(requestedModel) : requestedModel;
 

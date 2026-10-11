@@ -20,6 +20,7 @@
     "@dreamcode/shared": "workspace:*",
     "@dreamcode/skills": "workspace:*",
     "@dreamcode/store": "workspace:*",
-    "@dreamcode/tools": "workspace:*"
+    "@dreamcode/tools": "workspace:*",
+    "langsmith": "^0.10.8"
   }
 }

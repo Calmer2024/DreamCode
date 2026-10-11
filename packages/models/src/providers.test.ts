@@ -241,6 +241,8 @@ describe("模型 provider preset", () => {
         }],
       };
       yield { choices: [{ delta: { content: "完成。" } }] };
+      yield { choices: [], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } };
+      yield { choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } };
       yield {
         choices: [],
         usage: {
@@ -277,6 +279,9 @@ describe("模型 provider preset", () => {
       }),
       undefined,
     );
+    expect(events.filter(event => event.type === "usage")).toEqual([
+      { type: "usage", usage: expect.objectContaining({ inputTokens: 100, outputTokens: 20, reasoningTokens: 12 }) },
+    ]);
     expect(events).toEqual(expect.arrayContaining([
       { type: "reasoning_delta", text: "先检查 " },
       { type: "reasoning_delta", text: "工具结果。" },

@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+*.pyc
 dist/
 coverage/
 .tmp/
@@ -13,7 +15,27 @@ packages/*/dist/
 packages/desktop/release*/
 packages/desktop/dist-main/
 packages/desktop/dist-renderer/
+packages/eval-web/dist-client/
+packages/eval-web/dist-server/
+packages/evals/dist-container/
+packages/evals/dist-dataset-container/
 packages/desktop/test-results/
 packages/desktop/.dev-user-data/
 native/**/target/
 evals/runs/
+evals/agents/installation.json
+
+# Restore the authored merge state from preparation/CASE-049 archives.
+evals/dataset/cases/CASE-049/workspace/
+evals/dataset/preparation/CASE-049/reference/
+evals/dataset/preparation/CASE-049/resolved/
+evals/dataset/preparation/scoring-closure/runtime/
+
+# Retired DreamEval v2 recovery archive; excluded from active code and dataset.
+.archive/
+
+# Local evaluation datasets and authored task translations are not published.
+/evals/dataset/
+/evals/dataset-*/
+/evals/groups.json
+/packages/eval-web/src/dataset-instructions.zh-CN.json
